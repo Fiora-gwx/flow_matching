@@ -33,6 +33,27 @@ logger = logging.getLogger(__name__)
 PRINT_FREQUENCY = 50
 
 
+def rho(gamma: torch.Tensor, alpha: float) -> torch.Tensor:
+    return (1.0 - gamma).clamp(min=1e-6).pow(2.0 * alpha - 1.0)
+
+
+def radial_correction(
+    v: torch.Tensor,
+    z: torch.Tensor,
+    x_hat: torch.Tensor,
+    kappa: float,
+    alpha: float,
+    eps_safe: float = 1e-6,
+) -> torch.Tensor:
+    delta = z - x_hat
+    norm_sq = (delta**2).flatten(start_dim=1).sum(dim=-1, keepdim=True)
+    norm_2a = norm_sq.pow(alpha)
+    radial_v = (delta * v).flatten(start_dim=1).sum(dim=-1, keepdim=True)
+    beta = (-kappa * norm_2a - 2.0 * radial_v) / (2.0 * norm_sq + eps_safe)
+    view_shape = [beta.shape[0]] + [1] * (z.dim() - 1)
+    return v + beta.view(view_shape) * delta
+
+
 class CFGScaledModel(ModelWrapper):
     def __init__(self, model: Module):
         super().__init__(model)
@@ -114,6 +135,9 @@ def eval_model(
     args: Namespace,
 ):
     gc.collect()
+    if args.use_ft_eqm and args.use_nt_ft_fm:
+        raise ValueError("--use_ft_eqm and --use_nt_ft_fm are mutually exclusive.")
+
     cfg_scaled_model = CFGScaledModel(model=model)
     cfg_scaled_model.train(False)
 
@@ -176,7 +200,48 @@ def eval_model(
                 # Continuous sampling
                 x_0 = torch.randn(samples.shape, dtype=torch.float32, device=device)
 
-                if args.use_ft_eqm:
+                if args.use_nt_ft_fm:
+                    steps = 100
+                    if args.ode_options and "step_size" in args.ode_options:
+                        steps = int(1.0 / args.ode_options["step_size"])
+                    steps = max(steps, 1)
+
+                    z = x_0
+                    dg = 1.0 / steps
+                    gamma = 0.0
+
+                    for _ in range(steps):
+                        gamma_t = torch.full(
+                            (z.shape[0],),
+                            gamma,
+                            dtype=z.dtype,
+                            device=device,
+                        )
+
+                        v = solver.velocity_model(
+                            z,
+                            gamma_t,
+                            label=labels,
+                            cfg_scale=args.cfg_scale,
+                        )
+                        rho_val = rho(gamma_t, args.alpha).view(
+                            [z.shape[0]] + [1] * (z.dim() - 1)
+                        )
+                        x_hat = z + v / rho_val
+                        u = radial_correction(
+                            v=v,
+                            z=z,
+                            x_hat=x_hat,
+                            kappa=args.kappa,
+                            alpha=args.alpha,
+                        )
+
+                        z = z + u * (dg / rho_val)
+                        gamma += dg
+
+                    synthetic_samples = z
+
+                elif args.use_ft_eqm:
                     # FT-EqM 专用采样器 (在 Tau 域积分)
                     
                     # 1. 计算参数
