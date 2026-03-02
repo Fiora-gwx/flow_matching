@@ -13,6 +13,7 @@ from typing import Iterable
 import PIL.Image
 
 import torch
+from torchdiffeq import odeint
 from flow_matching.path import MixtureDiscreteProbPath
 from flow_matching.path.scheduler import PolynomialConvexScheduler
 from flow_matching.solver import MixtureDiscreteEulerSolver
@@ -126,6 +127,111 @@ def exact_tau_from_gamma(gamma, alpha, lamb):
     return tau
 
 
+@torch.no_grad()
+def sample_nt_ft_fm(
+    solver: ODESolver,
+    x_0: torch.Tensor,
+    labels: torch.Tensor,
+    args: Namespace,
+) -> torch.Tensor:
+    if args.nt_solver == "midpoint":
+        steps = 100
+        if args.ode_options and "step_size" in args.ode_options:
+            steps = int(1.0 / args.ode_options["step_size"])
+        steps = max(steps, 1)
+
+        z = x_0
+        dg = 1.0 / steps
+        gamma = 0.0
+
+        for _ in range(steps):
+            gamma_t = torch.full(
+                (z.shape[0],),
+                gamma,
+                dtype=z.dtype,
+                device=z.device,
+            )
+            rho_val = rho(gamma_t, args.alpha).view([z.shape[0]] + [1] * (z.dim() - 1))
+
+            v_start = solver.velocity_model(
+                z,
+                gamma_t,
+                label=labels,
+                cfg_scale=args.cfg_scale,
+            )
+            k1 = radial_correction(
+                v=v_start,
+                z=z,
+                x_hat=z + v_start / rho_val,
+                kappa=args.kappa,
+                alpha=args.alpha,
+            ) / rho_val
+
+            gamma_mid = min(gamma + 0.5 * dg, 1.0)
+            gamma_mid_t = torch.full(
+                (z.shape[0],),
+                gamma_mid,
+                dtype=z.dtype,
+                device=z.device,
+            )
+            z_mid = z + 0.5 * dg * k1
+            rho_mid = rho(gamma_mid_t, args.alpha).view([z.shape[0]] + [1] * (z.dim() - 1))
+
+            v_mid = solver.velocity_model(
+                z_mid,
+                gamma_mid_t,
+                label=labels,
+                cfg_scale=args.cfg_scale,
+            )
+            k2 = radial_correction(
+                v=v_mid,
+                z=z_mid,
+                x_hat=z_mid + v_mid / rho_mid,
+                kappa=args.kappa,
+                alpha=args.alpha,
+            ) / rho_mid
+
+            z = z + dg * k2
+            gamma += dg
+
+        return z
+
+    if args.nt_solver == "rk45":
+        atol = args.ode_options.get("atol", 1e-5) if args.ode_options else 1e-5
+        rtol = args.ode_options.get("rtol", 1e-5) if args.ode_options else 1e-5
+
+        def vector_field(gamma_t: torch.Tensor, z_t: torch.Tensor) -> torch.Tensor:
+            gamma_batch = torch.full(
+                (z_t.shape[0],),
+                float(gamma_t.item()),
+                dtype=z_t.dtype,
+                device=z_t.device,
+            )
+            rho_val = rho(gamma_batch, args.alpha).view(
+                [z_t.shape[0]] + [1] * (z_t.dim() - 1)
+            )
+            v = solver.velocity_model(
+                z_t,
+                gamma_batch,
+                label=labels,
+                cfg_scale=args.cfg_scale,
+            )
+            u = radial_correction(
+                v=v,
+                z=z_t,
+                x_hat=z_t + v / rho_val,
+                kappa=args.kappa,
+                alpha=args.alpha,
+            )
+            return u / rho_val
+
+        gamma_grid = torch.tensor([0.0, 1.0], device=x_0.device, dtype=x_0.dtype)
+        result = odeint(vector_field, x_0, gamma_grid, method="dopri5", atol=atol, rtol=rtol)
+        return result[-1]
+
+    raise ValueError(f"Unsupported --nt_solver value: {args.nt_solver}")
+
+
 def eval_model(
     model: DistributedDataParallel,
     data_loader: Iterable,
@@ -201,45 +307,12 @@ def eval_model(
                 x_0 = torch.randn(samples.shape, dtype=torch.float32, device=device)
 
                 if args.use_nt_ft_fm:
-                    steps = 100
-                    if args.ode_options and "step_size" in args.ode_options:
-                        steps = int(1.0 / args.ode_options["step_size"])
-                    steps = max(steps, 1)
-
-                    z = x_0
-                    dg = 1.0 / steps
-                    gamma = 0.0
-
-                    for _ in range(steps):
-                        gamma_t = torch.full(
-                            (z.shape[0],),
-                            gamma,
-                            dtype=z.dtype,
-                            device=device,
-                        )
-
-                        v = solver.velocity_model(
-                            z,
-                            gamma_t,
-                            label=labels,
-                            cfg_scale=args.cfg_scale,
-                        )
-                        rho_val = rho(gamma_t, args.alpha).view(
-                            [z.shape[0]] + [1] * (z.dim() - 1)
-                        )
-                        x_hat = z + v / rho_val
-                        u = radial_correction(
-                            v=v,
-                            z=z,
-                            x_hat=x_hat,
-                            kappa=args.kappa,
-                            alpha=args.alpha,
-                        )
-
-                        z = z + u * (dg / rho_val)
-                        gamma += dg
-
-                    synthetic_samples = z
+                    synthetic_samples = sample_nt_ft_fm(
+                        solver=solver,
+                        x_0=x_0,
+                        labels=labels,
+                        args=args,
+                    )
 
                 elif args.use_ft_eqm:
                     # FT-EqM 专用采样器 (在 Tau 域积分)

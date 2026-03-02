@@ -221,6 +221,13 @@ def get_args_parser():
         help="Finite-time stability coefficient used in NT-FT-FM radial correction.",
     )
     parser.add_argument(
+        "--nt_solver",
+        type=str,
+        default="midpoint",
+        choices=["midpoint", "rk45"],
+        help="NT-FT-FM sampler solver: fixed-step midpoint or adaptive RK45.",
+    )
+    parser.add_argument(
         "--alpha",
         type=float,
         default=0.7,
