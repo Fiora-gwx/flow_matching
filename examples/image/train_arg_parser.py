@@ -228,6 +228,13 @@ def get_args_parser():
         help="NT-FT-FM sampler solver: fixed-step midpoint or adaptive RK45.",
     )
     parser.add_argument(
+        "--ft_eqm_solver",
+        type=str,
+        default="midpoint",
+        choices=["midpoint", "rk45"],
+        help="FT-EqM sampler solver: fixed-step midpoint or adaptive RK45.",
+    )
+    parser.add_argument(
         "--alpha",
         type=float,
         default=0.7,

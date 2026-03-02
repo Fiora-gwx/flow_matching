@@ -232,6 +232,84 @@ def sample_nt_ft_fm(
     raise ValueError(f"Unsupported --nt_solver value: {args.nt_solver}")
 
 
+@torch.no_grad()
+def sample_ft_eqm(
+    solver: ODESolver,
+    x_0: torch.Tensor,
+    labels: torch.Tensor,
+    args: Namespace,
+) -> torch.Tensor:
+    lamb = args.lambda_scale if args.lambda_scale is not None else (2.0 * args.alpha)
+    if abs(args.alpha - 1.0) < 0.01:
+        t_total = 10.0
+    else:
+        t_total = 1.0 / (lamb * (2.0 - 2.0 * args.alpha))
+
+    if args.ft_eqm_solver == "midpoint":
+        steps = 100
+        if args.ode_options and "step_size" in args.ode_options:
+            steps = int(1.0 / args.ode_options["step_size"])
+        steps = max(steps, 1)
+
+        z = x_0
+        tau_grid = torch.linspace(0.0, t_total, steps + 1, device=x_0.device)
+
+        for i in range(steps):
+            tau_start = tau_grid[i].item()
+            tau_end = tau_grid[i + 1].item()
+            dt = tau_end - tau_start
+
+            gamma_start = exact_gamma_from_tau(tau_start, args.alpha, lamb)
+            gamma_start_batch = torch.full(
+                (z.shape[0],), gamma_start, dtype=z.dtype, device=z.device
+            )
+            v_start = solver.velocity_model(
+                z,
+                gamma_start_batch,
+                label=labels,
+                cfg_scale=args.cfg_scale,
+            )
+
+            z_mid = z + v_start * (dt / 2.0)
+            tau_mid = tau_start + (dt / 2.0)
+            gamma_mid = exact_gamma_from_tau(tau_mid, args.alpha, lamb)
+            gamma_mid_batch = torch.full(
+                (z.shape[0],), gamma_mid, dtype=z.dtype, device=z.device
+            )
+            v_mid = solver.velocity_model(
+                z_mid,
+                gamma_mid_batch,
+                label=labels,
+                cfg_scale=args.cfg_scale,
+            )
+
+            z = z + v_mid * dt
+
+        return z
+
+    if args.ft_eqm_solver == "rk45":
+        atol = args.ode_options.get("atol", 1e-5) if args.ode_options else 1e-5
+        rtol = args.ode_options.get("rtol", 1e-5) if args.ode_options else 1e-5
+
+        def vector_field(tau_t: torch.Tensor, z_t: torch.Tensor) -> torch.Tensor:
+            gamma = exact_gamma_from_tau(float(tau_t.item()), args.alpha, lamb)
+            gamma_batch = torch.full(
+                (z_t.shape[0],), gamma, dtype=z_t.dtype, device=z_t.device
+            )
+            return solver.velocity_model(
+                z_t,
+                gamma_batch,
+                label=labels,
+                cfg_scale=args.cfg_scale,
+            )
+
+        tau_grid = torch.tensor([0.0, t_total], device=x_0.device, dtype=x_0.dtype)
+        result = odeint(vector_field, x_0, tau_grid, method="dopri5", atol=atol, rtol=rtol)
+        return result[-1]
+
+    raise ValueError(f"Unsupported --ft_eqm_solver value: {args.ft_eqm_solver}")
+
+
 def eval_model(
     model: DistributedDataParallel,
     data_loader: Iterable,
@@ -315,77 +393,12 @@ def eval_model(
                     )
 
                 elif args.use_ft_eqm:
-                    # FT-EqM 专用采样器 (在 Tau 域积分)
-                    
-                    # 1. 计算参数
-                    # 确保和训练时的 lambda 一致
-                    lamb = args.lambda_scale if args.lambda_scale is not None else (2.0 * args.alpha)
-                    
-                    # 计算总物理时间 T_total = 1 / (lambda * (2 - 2*alpha))
-                    # 推导: int_0^1 1/c(g) dg
-                    if abs(args.alpha - 1.0) < 0.01:  # α 接近 1
-                        T_total = 10.0  # 设置一个合理的上界
-                    else:
-                        T_total = 1.0 / (lamb * (2.0 - 2.0 * args.alpha))
-                    
-                    # 设定步数 (默认 100 步，或者读取 ode_options)
-                    steps = 100 
-                    if args.ode_options and "step_size" in args.ode_options:
-                        # 简单的启发式: 0.01 step_size 对应 100 步
-                        steps = int(1.0 / args.ode_options["step_size"])
-                    
-                    dt = T_total / steps  # 这是 d_tau
-                    
-                    # 初始化状态
-                    z = x_0
-    
-                    tau_grid = torch.linspace(0.0, T_total, steps + 1, device=device)
-    
-                    for i in range(steps):
-                        tau_start = tau_grid[i].item()
-                        tau_end = tau_grid[i + 1].item()
-                        dt = tau_end - tau_start
-                        
-                        # -----------------------------------------------------------
-                        # Step 1: K1 (起点计算)
-                        # 严格对齐：z_start 与 gamma_start
-                        # -----------------------------------------------------------
-                        gamma_start = exact_gamma_from_tau(tau_start, args.alpha, lamb)
-                        gamma_start_batch = torch.full((z.shape[0],), gamma_start, dtype=z.dtype, device=device)
-                        
-                        v_start = solver.velocity_model(
-                            z,
-                            gamma_start_batch,
-                            label=labels,
-                            cfg_scale=args.cfg_scale
-                        )
-                        
-                        # -----------------------------------------------------------
-                        # Step 2: 预测中点状态 (Midpoint)
-                        # -----------------------------------------------------------
-                        z_mid = z + v_start * (dt / 2.0)
-                        tau_mid = tau_start + (dt / 2.0)
-                        
-                        # -----------------------------------------------------------
-                        # Step 3: K2 (中点计算)
-                        # 严格对齐：z_mid 与 gamma_mid
-                        # -----------------------------------------------------------
-                        gamma_mid = exact_gamma_from_tau(tau_mid, args.alpha, lamb)
-                        gamma_mid_batch = torch.full((z.shape[0],), gamma_mid, dtype=z.dtype, device=device)
-                        
-                        v_mid = solver.velocity_model(
-                            z_mid,
-                            gamma_mid_batch,
-                            label=labels,
-                            cfg_scale=args.cfg_scale
-                        )
-                        
-                        # -----------------------------------------------------------
-                        # Step 4: 正式更新 (使用中点速度走完全程)
-                        # -----------------------------------------------------------
-                        z = z + v_mid * dt
-                    
-                    synthetic_samples = z
+                    synthetic_samples = sample_ft_eqm(
+                        solver=solver,
+                        x_0=x_0,
+                        labels=labels,
+                        args=args,
+                    )
 
                 else:
                     if args.edm_schedule:
@@ -399,7 +412,7 @@ def eval_model(
                         method=args.ode_method,
                         return_intermediates=False,
                         atol=ode_opts["atol"] if "atol" in ode_opts else 1e-5,
-                        rtol=ode_opts["rtol"] if "atol" in ode_opts else 1e-5,
+                        rtol=ode_opts["rtol"] if "rtol" in ode_opts else 1e-5,
                         step_size=ode_opts["step_size"]
                         if "step_size" in ode_opts
                         else None,
