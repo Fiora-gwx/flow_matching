@@ -23,6 +23,28 @@ MASK_TOKEN = 256
 PRINT_FREQUENCY = 50
 
 
+def rho(gamma: torch.Tensor, alpha: float) -> torch.Tensor:
+    return (1.0 - gamma).clamp(min=1e-6).pow(2.0 * alpha - 1.0)
+
+
+def radial_correction(
+    v: torch.Tensor,
+    z: torch.Tensor,
+    x_hat: torch.Tensor,
+    kappa: float,
+    alpha: float,
+    eps_safe: float = 1e-6,
+) -> torch.Tensor:
+    delta = z - x_hat
+    norm_sq = (delta**2).flatten(start_dim=1).sum(dim=-1, keepdim=True)
+    norm_2a = norm_sq.pow(alpha)
+    radial_v = (delta * v).flatten(start_dim=1).sum(dim=-1, keepdim=True)
+
+    beta = (-kappa * norm_2a - 2.0 * radial_v) / (2.0 * norm_sq + eps_safe)
+    view_shape = [beta.shape[0]] + [1] * (z.dim() - 1)
+    return v + beta.view(view_shape) * delta
+
+
 def skewed_timestep_sample(num_samples: int, device: torch.device) -> torch.Tensor:
     P_mean = -1.2
     P_std = 1.2
@@ -49,6 +71,9 @@ def train_one_epoch(
     epoch_loss = MeanMetric().to(device, non_blocking=True)
 
     accum_iter = args.accum_iter
+    if args.use_ft_eqm and args.use_nt_ft_fm:
+        raise ValueError("--use_ft_eqm and --use_nt_ft_fm are mutually exclusive.")
+
     if args.discrete_flow_matching:
         scheduler = PolynomialConvexScheduler(n=3.0)
         path = MixtureDiscreteProbPath(scheduler=scheduler)
@@ -104,8 +129,26 @@ def train_one_epoch(
             x_t = path_sample.x_t
             u_t = path_sample.dx_t # 原始速度场 (x - epsilon)
 
+            # NT-FT-FM 逻辑
+            if args.use_nt_ft_fm:
+                view_shape = [t.shape[0]] + [1] * (samples.dim() - 1)
+                t_view = t.view(view_shape)
+
+                v_base = u_t * rho(t_view, args.alpha)
+                u_target = radial_correction(
+                    v=v_base,
+                    z=x_t,
+                    x_hat=samples,
+                    kappa=args.kappa,
+                    alpha=args.alpha,
+                )
+
+                with torch.cuda.amp.autocast():
+                    v_pred = model(x_t, t, extra=conditioning)
+                    loss = torch.pow(v_pred - u_target, 2).mean()
+
             # FT-EqM 逻辑
-            if args.use_ft_eqm:
+            elif args.use_ft_eqm:
                 lamb = args.lambda_scale if args.lambda_scale is not None else (2.0 * args.alpha)
                 gamma_term = (1 - t).clamp(min=1e-6) 
                 c_gamma_raw = lamb * gamma_term.pow(2 * args.alpha - 1) # 形状: [Batch]

@@ -210,6 +210,31 @@ def get_args_parser():
         help="Enable Finite-Time Equilibrium Matching (FT-EqM) training.",
     )
     parser.add_argument(
+        "--use_nt_ft_fm",
+        action="store_true",
+        help="Enable Non-Tangential Finite-Time Flow Matching (NT-FT-FM).",
+    )
+    parser.add_argument(
+        "--kappa",
+        type=float,
+        default=1.0,
+        help="Finite-time stability coefficient used in NT-FT-FM radial correction.",
+    )
+    parser.add_argument(
+        "--nt_solver",
+        type=str,
+        default="midpoint",
+        choices=["midpoint", "rk45"],
+        help="NT-FT-FM sampler solver: fixed-step midpoint or adaptive RK45.",
+    )
+    parser.add_argument(
+        "--ft_eqm_solver",
+        type=str,
+        default="midpoint",
+        choices=["midpoint", "rk45"],
+        help="FT-EqM sampler solver: fixed-step midpoint or adaptive RK45.",
+    )
+    parser.add_argument(
         "--alpha",
         type=float,
         default=0.7,
