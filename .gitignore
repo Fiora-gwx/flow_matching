@@ -74,4 +74,5 @@ output_dir/
 
 
 data/
-experiments/
+experiments/logs
+experiments/results/*/cifar10

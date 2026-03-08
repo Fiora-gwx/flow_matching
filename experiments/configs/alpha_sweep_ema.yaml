@@ -1,0 +1,80 @@
+experiment_name: "alpha_sweep_ema"
+base_config:
+  dataset: "cifar10"
+  data_path: "/home/gwx/flow_matching/data/cifar10"
+  epochs: 900
+  batch_size: 128
+  num_gpus: 4
+
+experiments:
+  # === Baseline (Alpha 0.5) ===
+  - name: "base_0.5"
+    alpha: 0.5
+    use_ft_eqm: false
+    # 评估多个检查点，看收敛速度
+    eval_epochs: [99, 199, 299, 399, 499,599,699,799,899]
+    # 对每个检查点，看不同步数的表现
+    eval_nfes: [4,10, 20, 50, 100]
+
+  # === FT-EqM 细粒度扫描 ===
+  - name: "fteqm_0.10"
+    alpha: 0.10
+    use_ft_eqm: true
+    eval_epochs: [99, 199, 299, 399, 499,599,699,799,899]
+    eval_nfes: [4,10, 20, 50, 100]
+
+  - name: "fteqm_0.20"
+    alpha: 0.20
+    use_ft_eqm: true
+    eval_epochs: [99, 199, 299, 399, 499,599,699,799,899]
+    eval_nfes: [4,10, 20, 50, 100]
+
+  - name: "fteqm_0.30"
+    alpha: 0.30
+    use_ft_eqm: true
+    eval_epochs: [99, 199, 299, 399, 499,599,699,799,899]
+    eval_nfes: [4,10, 20, 50, 100]
+
+  - name: "fteqm_0.40"
+    alpha: 0.40
+    use_ft_eqm: true
+    eval_epochs: [99, 199, 299, 399, 499,599,699,799,899]
+    eval_nfes: [4,10, 20, 50, 100]
+
+  - name: "fteqm_0.45"
+    alpha: 0.45
+    use_ft_eqm: true
+    eval_epochs: [99, 199, 299, 399, 499,599,699,799,899] #
+    eval_nfes: [4,10, 20, 50, 100]
+
+
+  - name: "fteqm_0.55"
+    alpha: 0.55
+    use_ft_eqm: true
+    eval_epochs: [99, 199, 299, 399, 499,599,699,799,899]
+    eval_nfes: [4,10, 20, 50, 100]
+
+  - name: "fteqm_0.60"
+    alpha: 0.60
+    use_ft_eqm: true
+    eval_epochs: [99, 199, 299, 399, 499,599,699,799,899]
+    eval_nfes: [4,10, 20, 50, 100]
+
+  - name: "fteqm_0.70"
+    alpha: 0.70
+    use_ft_eqm: true
+    eval_epochs: [99, 199, 299, 399, 499,599,699,799,899]
+    eval_nfes: [4,10, 20, 50, 100]
+  
+  - name: "fteqm_0.80"
+    alpha: 0.80
+    use_ft_eqm: true
+    eval_epochs: [99, 199, 299, 399, 499,599,699,799,899]
+    eval_nfes: [4,10, 20, 50, 100]
+
+  - name: "fteqm_0.90"
+    alpha: 0.90
+    use_ft_eqm: true
+    eval_epochs: [99, 199, 299, 399, 499,599,699,799,899]
+    eval_nfes: [4,10, 20, 50, 100]
+    
