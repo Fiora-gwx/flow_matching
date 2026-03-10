@@ -1,0 +1,182 @@
+# Task 001 - Rebuild FT-Clock Experiment Platform
+
+## Metadata
+
+- Task ID: 001
+- Title: Rebuild FT-Clock Experiment Platform
+- Slug: ft-clock-experiment-platform
+- Status: in_progress
+- Type: refactor
+- Priority: high
+- Owner: agent
+- Reviewer: pending
+- Created At: 2026-03-10 23:10
+- Updated At: 2026-03-10 23:18
+- Branch: codex/refactor/t001-ft-clock-experiment-platform
+- Worktree: ../wt-t001-ft-clock-experiment-platform
+- Related Issues: N/A
+- Related PRs: N/A
+- Dependencies: none
+- Follow-up Tasks: 002-core-ft-clock-runtime, 003-paper-results-pipeline, 004-mechanism-analysis-suite
+
+---
+
+## Goal
+
+将当前以 `alpha/use_ft_eqm/use_nt_ft_fm` 为中心的实验代码，重构为面向论文的通用 FT-clock 实验平台。平台必须能用统一配置驱动 linear path、VP-style path、FT-clock、其他 schedule family、CIFAR-10/CIFAR-100、Heun/Euler、主图主表和机制分析，并输出论文就绪结果。
+
+---
+
+## Background / Context
+
+- 当前连续模型训练在 `examples/image/training/train_loop.py` 中硬编码为线性 `CondOTProbPath`，FT-EqM 与 NT-FT-FM 只是特例分支，不具备通用 `path + clock` 结构。
+- 当前评估与实验脚本在 `experiments/run_experiments.py`、`experiments/visualize_results.py` 中强绑定 `alpha/use_ft_eqm`，结果表结构过窄，只适合旧 alpha sweep。
+- 当前数据集入口仅支持 `cifar10` 和 `imagenet`，不支持 `cifar100`。
+- 最新研究笔记已经把目标语义明确为“严格的时间重参数化训练”，不是仅改推理 schedule。
+- 当前主分支是 `main`，工作树干净；`tasks/` 下只有模板，没有正式任务文件。
+- 当前 shell 环境未就绪：`python` 命令不存在，`python3` 环境里也缺少 `torchdiffeq`，执行阶段必须先补环境或绕开硬依赖。
+
+---
+
+## Scope
+
+- 引入统一的 YAML-first 实验规格，覆盖 dataset、training、path、clock、solver、metrics、analysis、sweeps。
+- 将连续训练目标重写为通用 FT-clock 语义：采样 `r`，计算 `s=ψ(r)`，构造 `z_r` 与 `\\tilde b_r`，回归重参数化条件速度。
+- 支持两条 base path：`linear` 与 `trig_vp`。
+- 支持 clock family：`uniform`、`ft_linear_beta`、`ft_vp_beta`、`poly_a0.5`、`poly_a2.0`、`cosine`、`sigmoid_k8`、`exp_l3`。
+- 支持两类数据集：`cifar10`、`cifar100`。
+- 支持主采样器 `heun2` 和对比采样器 `euler`。
+- 将 NFE 统一定义为真实网络调用次数，并同时记录 `step_count`。
+- 重写实验调度、结果记录、绘图和分析脚本，生成论文就绪 CSV/JSONL、PNG/PDF 和主表汇总。
+- 覆盖实验 1-9 所需能力，但按父任务 + 子任务方式拆分执行。
+- 增加最小测试集与 smoke checks，覆盖数学正确性、配置展开、NFE 计数和图表产物。
+
+---
+
+## Non-goals
+
+- 不改 UNet/backbone 结构。
+- 不扩展到 ImageNet 或 discrete flow 主线。
+- 不保留旧 `--use_ft_eqm/--use_nt_ft_fm/alpha` 接口兼容性。
+- 不在首轮实现里做全面多 seed 统计。
+- 不把 SLURM/多机集群作为默认执行目标。
+
+---
+
+## Approach
+
+- 平台主入口改为 YAML-first。CLI 只负责选择配置文件和做少量 override，不再让实验脚本拼接大段旧参数。
+- 训练语义固定为严格重参数化训练：`r ~ U[0,1]`，`s=ψ(r)`，`z_r = α(s)x + σ(s)ε`，`\\tilde b_r = ψ'(r)[α'(s)x + σ'(s)ε]`。
+- path 定义固定为闭式实现。`linear` 用 `α(s)=s, σ(s)=1-s`。`trig_vp` 用 `α(s)=sin(πs/2), σ(s)=cos(πs/2)`。
+- clock 定义固定为闭式实现。`uniform: ψ(r)=r`。`ft_linear_beta: 1-(1-r)^{1/[2(1-β)]}`。`ft_vp_beta: (2/π) asin(1-(1-r)^{1/(1-β)})`。`poly_a0.5: 1-(1-r)^{0.5}`。`poly_a2.0: 1-(1-r)^2`。`cosine: 1-cos(πr/2)`。`sigmoid_k8` 为归一化 logistic。`exp_l3` 为归一化指数。
+- 采样默认用 `heun2` 作为主结果 solver。solver 敏感性实验只比较 `euler` 与 `heun2`。所有横轴和主表中的 NFE 都按真实 model eval 统计。
+- 结果记录采用 tidy long-form CSV/JSONL。每行表示一个 `run/checkpoint/eval-point/metric`，至少记录 `dataset`、`seed`、`path_family`、`clock_family`、`clock_param_name`、`clock_param_value`、`solver`、`nfe`、`step_count`、`metric`、`value`、`status`、`artifact_group`。
+- 机制分析固定为离线分析脚本，不在训练期长期记录，不在常规 eval 中大规模落盘轨迹。
+- 非 FT schedule family 固定代表参数，不额外做同级 sweep。公平性通过“统一 backbone、统一训练、统一 solver、统一 NFE 口径”保证。
+
+---
+
+## Execution Plan
+
+1. 创建父任务 `001-ft-clock-experiment-platform`，作为总范围、总验收和总风险记录入口。
+2. 创建子任务 `002-core-ft-clock-runtime`，负责通用 `path + clock + solver budget + dataset` 运行时重构。
+3. 创建子任务 `003-paper-results-pipeline`，负责 YAML schema、runner、tidy results、主图主表、实验 1-5。
+4. 创建子任务 `004-mechanism-analysis-suite`，负责实验 6-9 的离线分析、热力图、loss density、轨迹预算和 solver sensitivity。
+5. 子任务 `002` 完成后，先做 `cifar10` 和 `cifar100` 最小 smoke 流程，再进入大 sweep。
+6. 子任务 `003` 固定覆盖实验 1-5，子任务 `004` 固定覆盖实验 6-9。
+7. Sweep 执行优先级固定为 `Exp1 -> Exp2/Exp4 -> Exp3/Exp5 -> Exp6-9`。如果算力或时间紧张，优先保证实验 1、2、4、6、9。
+8. 每完成一个子任务或一个可回滚阶段，都提示可以提交 checkpoint commit。
+
+---
+
+## Test Plan
+
+- 验证每个 clock 都满足 `ψ(0)=0`、`ψ(1)=1`、单调递增和导数符号正确。
+- 验证 `linear` 与 `trig_vp` 的 `α,σ,α',σ'` 与 `\\tilde b_r` 公式，必要时用有限差分做数值比对。
+- 验证 `euler/heun2` 的 NFE 预算换算后，记录到的真实 NFE 与 model wrapper 计数一致。
+- 验证 YAML schema 能展开为确定性的 concrete runs，且 artifact 命名稳定。
+- 验证 tidy result 行结构与聚合脚本一致，best-beta 选择逻辑、cross-path 汇总逻辑正确。
+- 运行 `cifar10` 与 `cifar100` 的 one-batch smoke train/eval。
+- 运行一条最小链路的 `train -> eval -> plot -> analyze` dry run。
+- 用 synthetic fixture 结果文件回归测试主曲线、热力图和主表导出。
+
+---
+
+## Risks
+
+- 当前环境缺少 `torchdiffeq`，且 `python` alias 不存在，执行阶段若不先修环境会直接阻塞。
+- 破坏性重构会使旧 alpha-sweep 脚本和历史目录失去主线地位，需要明确迁移说明。
+- `euler/heun2` 的 NFE 统一口径如果做错，会直接污染论文主结论。
+- `Precision/Recall` 会增加依赖和计算开销，可能需要额外 metric backend 适配。
+- `cifar100` 会显著增加训练成本，4 卡工作站下必须严格按优先级推进。
+- 机制分析若直接存全轨迹会产生过大存储压力，因此必须坚持离线、抽样、按需分析。
+
+---
+
+## Open Questions
+
+- None.
+
+---
+
+## Plan Self-Review
+
+### Gaps
+
+- 仓库当前没有测试体系，不能只靠手工跑通；子任务 `002` 必须顺手建立最小测试骨架。
+- 父任务范围过大，不能直接作为单一实现单元执行。
+
+### Feasibility
+
+- 在 4 卡单机预算下可行，但必须按既定优先级分阶段推进。
+- 现有代码已提供 affine path 与 ODE solver 基础，因此这次是结构重构，不是从零搭平台。
+
+### Risks Review
+
+- 最大工程风险是新旧语义并存后互相污染；本计划通过允许 breaking rewrite 避免双轨长期共存。
+- 最大科研风险是把分析实验做得太早；本计划把机制分析独立成子任务并排在主结果之后。
+
+### Should This Task Be Split?
+
+- Yes.
+- 本任务应作为父任务保留。
+- 立即拆分为 `002-core-ft-clock-runtime`、`003-paper-results-pipeline`、`004-mechanism-analysis-suite` 三个子任务。
+
+---
+
+## Approval-Ready Summary
+
+- 这是一次面向论文的实验平台重构，不是对旧 FT-EqM 代码做局部补丁。
+- 目标平台以通用 `path + clock + solver + metric + analysis` 为核心，覆盖实验 1-9。
+- 科学口径已经锁死：严格重参数化训练、uniform baseline、Heun 主结果、真实 NFE 计数、固定 schedule family 代表参数、离线机制分析、单 seed 首轮矩阵、4 卡单机、论文就绪产物。
+- 为了可审查和可执行，必须按父任务 + 3 个子任务推进。
+
+---
+
+## Progress Log
+
+- 2026-03-10 23:10 — Task planned with status: pending.
+- 2026-03-10 23:18 — Execute stage started on `main`; parent task created directly as `in_progress`; child task creation and worktree bootstrap initiated.
+
+---
+
+## Decisions
+
+- 使用 breaking rewrite，不保留旧 `alpha/use_ft_eqm/use_nt_ft_fm` 兼容层。
+- 使用 YAML-first 作为主入口，CLI 仅作轻量封装。
+- 主结果 solver 固定为 `heun2`，敏感性对比使用 `euler`。
+- 真实 NFE 定义为网络实际前向调用次数。
+- 父任务仅负责总控与集成，核心运行时、结果管线、机制分析分别下沉到子任务。
+
+---
+
+## Working Notes
+
+### Files Touched
+
+- tasks/001-ft-clock-experiment-platform.md
+
+### Notes
+
+- 当前 examples/image 路径受 `torchdiffeq` 硬依赖影响，运行前必须解除入口级 import 阻塞或补装依赖。
+- 当前仓库没有正式 task 文件，需要先补齐 lifecycle 所需任务记录层。
