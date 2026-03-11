@@ -1,7 +1,8 @@
 import csv
+import statistics
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 RESULT_FIELDS = [
     "run_id",
@@ -17,6 +18,8 @@ RESULT_FIELDS = [
     "solver",
     "nfe",
     "step_count",
+    "real_samples",
+    "synthetic_samples",
     "metric",
     "value",
     "status",
@@ -28,6 +31,8 @@ NUMERIC_FIELDS = {
     "checkpoint_epoch": int,
     "nfe": int,
     "step_count": int,
+    "real_samples": int,
+    "synthetic_samples": int,
     "value": float,
 }
 
@@ -36,12 +41,42 @@ OPTIONAL_NUMERIC_FIELDS = {
 }
 
 
+def _write_results_header(csv_path: Path) -> None:
+    with open(csv_path, "w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=RESULT_FIELDS)
+        writer.writeheader()
+
+
+def _read_header(csv_path: Path) -> List[str]:
+    with open(csv_path, "r", newline="", encoding="utf-8") as handle:
+        reader = csv.reader(handle)
+        try:
+            return next(reader)
+        except StopIteration:
+            return []
+
+
+def validate_results_schema(csv_path: Path) -> None:
+    header = _read_header(csv_path)
+    if not header:
+        return
+    if header != RESULT_FIELDS:
+        raise ValueError(
+            f"Result schema mismatch in {csv_path}. "
+            f"Expected header {RESULT_FIELDS}, got {header}. "
+            "Migrate or remove the legacy results.csv before writing new FT-clock results."
+        )
+
+
 def ensure_results_file(csv_path: Path) -> None:
     csv_path.parent.mkdir(parents=True, exist_ok=True)
-    if not csv_path.exists():
-        with open(csv_path, "w", newline="", encoding="utf-8") as handle:
-            writer = csv.DictWriter(handle, fieldnames=RESULT_FIELDS)
-            writer.writeheader()
+    if not csv_path.exists() or csv_path.stat().st_size == 0:
+        _write_results_header(csv_path)
+        return
+    if not _read_header(csv_path):
+        _write_results_header(csv_path)
+        return
+    validate_results_schema(csv_path)
 
 
 def append_result_rows(csv_path: Path, rows: Iterable[Dict[str, object]]) -> None:
@@ -68,6 +103,7 @@ def _coerce_row(row: Dict[str, str]) -> Dict[str, object]:
 def load_result_rows(csv_path: Path) -> List[Dict[str, object]]:
     if not csv_path.exists():
         return []
+    validate_results_schema(csv_path)
     with open(csv_path, "r", newline="", encoding="utf-8") as handle:
         reader = csv.DictReader(handle)
         return [_coerce_row(row) for row in reader]
@@ -104,7 +140,7 @@ def best_rows_by_key(
     for row in rows:
         key = tuple(row[field] for field in key_fields)
         current = best.get(key)
-        if current is None or float(row["value"]) < float(current["value"]):
+        if current is None or _row_value(row) < _row_value(current):
             best[key] = row
     return list(best.values())
 
@@ -113,20 +149,23 @@ def baseline_vs_best_beta(
     rows: Sequence[Dict[str, object]],
     baseline_clock: str = "uniform",
     ft_clock_prefix: str = "ft_",
+    already_aggregated: bool = False,
 ) -> List[Dict[str, object]]:
+    aggregated_rows = list(rows) if already_aggregated else aggregate_seed_rows(rows)
     grouped: Dict[tuple, Dict[str, object]] = defaultdict(dict)
-    for row in rows:
+    for row in aggregated_rows:
         key = (
             row["dataset"],
             row["path_family"],
             row["solver"],
+            row["checkpoint_epoch"],
             row["nfe"],
         )
         if row["clock_family"] == baseline_clock:
             grouped[key]["baseline"] = row
         elif str(row["clock_family"]).startswith(ft_clock_prefix):
             best_ft = grouped[key].get("best_ft")
-            if best_ft is None or float(row["value"]) < float(best_ft["value"]):
+            if best_ft is None or _row_value(row) < _row_value(best_ft):
                 grouped[key]["best_ft"] = row
 
     table = []
@@ -140,15 +179,23 @@ def baseline_vs_best_beta(
                 "dataset": baseline["dataset"],
                 "path_family": baseline["path_family"],
                 "solver": baseline["solver"],
+                "checkpoint_epoch": baseline["checkpoint_epoch"],
                 "nfe": baseline["nfe"],
-                "baseline_fid": baseline["value"],
+                "baseline_fid_mean": baseline["value_mean"],
+                "baseline_fid_std": baseline["value_std"],
+                "baseline_num_seeds": baseline["num_seeds"],
                 "best_clock_family": best_ft["clock_family"],
                 "best_clock_param_name": best_ft["clock_param_name"],
                 "best_clock_param_value": best_ft["clock_param_value"],
-                "best_fid": best_ft["value"],
+                "best_fid_mean": best_ft["value_mean"],
+                "best_fid_std": best_ft["value_std"],
+                "best_num_seeds": best_ft["num_seeds"],
             }
         )
-    return sorted(table, key=lambda row: (row["dataset"], row["path_family"], row["nfe"]))
+    return sorted(
+        table,
+        key=lambda row: (row["dataset"], row["path_family"], row["checkpoint_epoch"], row["nfe"]),
+    )
 
 
 def rows_to_matrix(
@@ -156,7 +203,7 @@ def rows_to_matrix(
 ) -> Dict[object, Dict[object, float]]:
     matrix: Dict[object, Dict[object, float]] = defaultdict(dict)
     for row in rows:
-        matrix[row[row_field]][row[col_field]] = float(row["value"])
+        matrix[row[row_field]][row[col_field]] = _row_value(row)
     return matrix
 
 
@@ -171,3 +218,125 @@ def write_table_csv(path: Path, rows: Sequence[Dict[str, object]]) -> None:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
+
+
+def infer_clock_parameter(
+    clock_family: str,
+    clock_beta: Optional[float] = None,
+) -> Tuple[str, Optional[float]]:
+    if clock_family in {"ft_linear_beta", "ft_vp_beta"}:
+        return "beta", clock_beta
+    if clock_family == "poly_a0.5":
+        return "a", 0.5
+    if clock_family == "poly_a2.0":
+        return "a", 2.0
+    if clock_family == "sigmoid_k8":
+        return "k", 8.0
+    if clock_family == "exp_l3":
+        return "lambda", 3.0
+    return "none", None
+
+
+def _row_value(row: Dict[str, object]) -> float:
+    if "value_mean" in row:
+        return float(row["value_mean"])
+    return float(row["value"])
+
+
+def aggregate_seed_rows(
+    rows: Sequence[Dict[str, object]],
+    group_fields: Optional[Sequence[str]] = None,
+) -> List[Dict[str, object]]:
+    if not rows:
+        return []
+    if group_fields is None:
+        group_fields = [
+            field
+            for field in RESULT_FIELDS
+            if field not in {"run_id", "seed", "value", "real_samples", "synthetic_samples"}
+        ]
+    grouped: Dict[tuple, List[Dict[str, object]]] = defaultdict(list)
+    for row in rows:
+        key = tuple(row.get(field) for field in group_fields)
+        grouped[key].append(row)
+
+    aggregated_rows = []
+    for key, group_rows in grouped.items():
+        result = {field: group_rows[0].get(field) for field in group_fields}
+        values = [float(row["value"]) for row in group_rows]
+        result["run_id"] = f"aggregate:{len(aggregated_rows)}"
+        result["seed"] = "aggregate"
+        result["value"] = statistics.mean(values)
+        result["value_mean"] = statistics.mean(values)
+        result["value_std"] = statistics.stdev(values) if len(values) > 1 else 0.0
+        result["num_seeds"] = len(values)
+        for sample_field in ("real_samples", "synthetic_samples"):
+            observed = [
+                int(row[sample_field])
+                for row in group_rows
+                if row.get(sample_field) not in {"", None}
+            ]
+            if observed:
+                result[sample_field] = round(statistics.mean(observed))
+        aggregated_rows.append(result)
+    return aggregated_rows
+
+
+def resolve_best_beta_reference(
+    reference: Dict[str, object],
+    workspace_root: Optional[Path] = None,
+) -> float:
+    workspace_root = workspace_root or Path.cwd()
+    if reference.get("results_csv"):
+        csv_path = Path(str(reference["results_csv"]))
+        if not csv_path.is_absolute():
+            csv_path = workspace_root / csv_path
+    else:
+        artifact_group = str(reference["artifact_group"])
+        csv_path = workspace_root / "experiments" / "results" / artifact_group / "results.csv"
+    rows = load_result_rows(csv_path)
+    rows = filter_rows(
+        rows,
+        metric=str(reference.get("metric", "fid")),
+        status=str(reference.get("status", "completed")),
+        artifact_group=reference.get("artifact_group"),
+        dataset=reference.get("dataset"),
+        path_family=reference.get("path_family"),
+    )
+    solver = reference.get("solver")
+    if solver is not None:
+        rows = [row for row in rows if row.get("solver") == solver]
+    checkpoint_epoch = reference.get("checkpoint_epoch")
+    if checkpoint_epoch is not None:
+        rows = [row for row in rows if row.get("checkpoint_epoch") == checkpoint_epoch]
+    clock_family = reference.get("clock_family")
+    if clock_family is not None:
+        rows = [row for row in rows if row.get("clock_family") == clock_family]
+    else:
+        rows = [row for row in rows if str(row.get("clock_family", "")).startswith("ft_")]
+    selection_nfes = reference.get("selection_nfes")
+    if selection_nfes is not None:
+        selection_nfes = {int(nfe) for nfe in selection_nfes}
+        rows = [row for row in rows if int(row.get("nfe", -1)) in selection_nfes]
+    aggregated = aggregate_seed_rows(rows)
+    if not aggregated:
+        raise ValueError(f"Unable to resolve best beta from {csv_path}; no matching rows found.")
+
+    grouped: Dict[float, List[Dict[str, object]]] = defaultdict(list)
+    for row in aggregated:
+        beta = row.get("clock_param_value")
+        if beta is None:
+            continue
+        grouped[float(beta)].append(row)
+    if not grouped:
+        raise ValueError(f"Unable to resolve best beta from {csv_path}; no beta rows found.")
+
+    best_beta = None
+    best_score = None
+    for beta, beta_rows in grouped.items():
+        score = statistics.mean(_row_value(row) for row in beta_rows)
+        if best_score is None or score < best_score:
+            best_beta = beta
+            best_score = score
+    assert best_beta is not None
+    return best_beta

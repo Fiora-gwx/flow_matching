@@ -9,7 +9,12 @@ IMAGE_ROOT = os.path.join(ROOT, 'examples', 'image')
 if IMAGE_ROOT not in sys.path:
     sys.path.insert(0, IMAGE_ROOT)
 
-from training.continuous_runtime import CLOCK_FAMILIES, build_continuous_batch, evaluate_clock
+from training.continuous_runtime import (
+    CLOCK_FAMILIES,
+    build_continuous_batch,
+    evaluate_clock,
+    sample_strict_unit_interval,
+)
 
 
 class ContinuousRuntimeTest(unittest.TestCase):
@@ -22,6 +27,8 @@ class ContinuousRuntimeTest(unittest.TestCase):
             self.assertAlmostEqual(float(clock.s[-1]), 1.0, places=5)
             self.assertTrue(torch.all(clock.s[1:] >= clock.s[:-1]))
             self.assertTrue(torch.all(clock.ds_dr >= 0.0))
+            self.assertFalse(torch.isnan(clock.ds_dr).any())
+            self.assertFalse(torch.isinf(clock.ds_dr).any())
 
     def test_build_continuous_batch_matches_linear_endpoint(self):
         samples = torch.ones(4, 3, 2, 2)
@@ -37,6 +44,11 @@ class ContinuousRuntimeTest(unittest.TestCase):
         )
         self.assertTrue(torch.allclose(batch.x_t, noise))
         self.assertEqual(batch.target_velocity.shape, samples.shape)
+
+    def test_sample_strict_unit_interval_avoids_endpoints(self):
+        r = sample_strict_unit_interval(1024, device=torch.device('cpu'))
+        self.assertTrue(torch.all(r > 0.0))
+        self.assertTrue(torch.all(r < 1.0))
 
 
 if __name__ == '__main__':

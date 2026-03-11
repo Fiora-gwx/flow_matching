@@ -1,20 +1,22 @@
-experiment_name: "main_results"
+experiment_name: main_results
+# Legacy filename retained; content has been migrated to FT-clock naming.
 base_config:
-  dataset: "cifar10"
-  data_path: "./data/cifar10"
+  dataset: cifar10
+  data_path: ./data/cifar10
   epochs: 500
   batch_size: 128
   num_gpus: 4
-
+  path_family: linear
+  sampling_solver: heun2
+  cfg_scale: 0.0
+  class_drop_prob: 1.0
+  metrics: [fid, precision_recall]
+  eval_epochs: [499]
 experiments:
-  - name: "base_alpha0.5"
-    alpha: 0.5
-    use_ft_eqm: false
-    importance_weighting: false
+  - name: linear_uniform_main
+    clock_family: uniform
     eval_nfes: [4, 10, 20, 50, 100]
-
-  - name: "fteqm_alpha0.6"
-    alpha: 0.6
-    use_ft_eqm: true
-    importance_weighting: true
+  - name: linear_ft_beta_0_5_main
+    clock_family: ft_linear_beta
+    clock_beta: 0.5
     eval_nfes: [4, 10, 20, 50, 100]

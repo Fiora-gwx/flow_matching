@@ -86,6 +86,9 @@ def main(args):
     sampler_train = torch.utils.data.DistributedSampler(
         dataset_train, num_replicas=num_tasks, rank=global_rank, shuffle=True
     )
+    sampler_eval = torch.utils.data.DistributedSampler(
+        dataset_train, num_replicas=num_tasks, rank=global_rank, shuffle=False
+    )
     data_loader_train = torch.utils.data.DataLoader(
         dataset_train,
         sampler=sampler_train,
@@ -93,6 +96,14 @@ def main(args):
         num_workers=args.num_workers,
         pin_memory=args.pin_mem,
         drop_last=True,
+    )
+    data_loader_eval = torch.utils.data.DataLoader(
+        dataset_train,
+        sampler=sampler_eval,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+        pin_memory=args.pin_mem,
+        drop_last=False,
     )
     logger.info(str(sampler_train))
 
@@ -185,7 +196,7 @@ def main(args):
                     epoch=epoch,
                 )
             if args.distributed:
-                data_loader_train.sampler.set_epoch(0)
+                data_loader_eval.sampler.set_epoch(0)
             if distributed_mode.is_main_process():
                 fid_samples = args.fid_samples - (num_tasks - 1) * (
                     args.fid_samples // num_tasks
@@ -194,7 +205,7 @@ def main(args):
                 fid_samples = args.fid_samples // num_tasks
             eval_stats = eval_model(
                 model,
-                data_loader_train,
+                data_loader_eval,
                 device,
                 epoch=epoch,
                 fid_samples=fid_samples,

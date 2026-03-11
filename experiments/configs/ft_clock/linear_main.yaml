@@ -1,4 +1,6 @@
 experiment_name: ft_clock_linear_main
+# E6 beta-NFE heatmap directly reuses this sweep.
+# Reproduce with: python3 experiments/visualize_results.py --csv experiments/results/ft_clock_linear_main/results.csv --out experiments/results/ft_clock_linear_main/plots --artifact_group ft_clock_linear_main --plot_heatmap_only
 base_config:
   dataset: cifar10
   data_path: ./data/cifar10
@@ -7,6 +9,8 @@ base_config:
   num_gpus: 4
   path_family: linear
   sampling_solver: heun2
+  cfg_scale: 0.0
+  class_drop_prob: 1.0
   metrics: [fid, precision_recall]
   eval_epochs: [499]
   eval_nfes: [4, 6, 8, 10, 15, 20, 30, 50, 100]

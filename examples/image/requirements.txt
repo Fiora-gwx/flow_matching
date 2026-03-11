@@ -1,4 +1,6 @@
 submitit
+matplotlib
+scikit-learn
 torchmetrics[image]
 torchvision
 

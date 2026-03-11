@@ -23,6 +23,7 @@ from torch.nn.parallel import DistributedDataParallel
 from torchvision.utils import save_image
 
 from training import distributed_mode
+from training.eval_utils import iter_batches_until_target
 from training.fixed_step_solver import solve_fixed_budget
 from training.metric_utils import (
     compute_precision_recall,
@@ -66,11 +67,11 @@ class CFGScaledModel(ModelWrapper):
                 conditional = self.model(x, t, extra={"label": label})
                 condition_free = self.model(x, t, extra={})
             result = (1.0 + cfg_scale) * conditional - cfg_scale * condition_free
+            self.nfe_counter += 2
         else:
             with torch.cuda.amp.autocast(), torch.no_grad():
                 result = self.model(x, t, extra={"label": label})
-
-        self.nfe_counter += 1
+            self.nfe_counter += 1
         if is_discrete:
             return torch.softmax(result.to(dtype=torch.float32), dim=-1)
         return result.to(dtype=torch.float32)
@@ -129,111 +130,117 @@ def eval_model(
         (Path(args.output_dir) / "snapshots").mkdir(parents=True, exist_ok=True)
 
     num_synthetic = 0
+    num_real = 0
     snapshots_saved = False
     last_nfe = 0
     last_step_count = 0
 
-    for data_iter_step, (samples, labels) in enumerate(data_loader):
+    loader_length = len(data_loader) if hasattr(data_loader, "__len__") else "?"
+    for data_iter_step, batch in iter_batches_until_target(
+        data_loader=data_loader,
+        target_samples=fid_samples,
+        test_run=args.test_run,
+    ):
+        samples, labels = batch
         samples = samples.to(device, non_blocking=True)
         labels = labels.to(device, non_blocking=True)
+        num_real += samples.shape[0]
 
         if metric_backend is not None and "fid" in active_metrics:
             metric_backend.update(samples, real=True)
         if metric_backend is not None and "precision_recall" in active_metrics:
             real_features.append(extract_inception_features(metric_backend, samples).cpu())
 
-        if num_synthetic < fid_samples:
-            cfg_scaled_model.reset_nfe_counter()
-            if args.discrete_flow_matching:
-                x_0 = torch.full(samples.shape, fill_value=MASK_TOKEN, dtype=torch.long, device=device)
-                if args.sym_func:
-                    sym = lambda t: 12.0 * torch.pow(t, 2.0) * torch.pow(1.0 - t, 0.25)
-                else:
-                    sym = args.sym
-                dtype = torch.float32 if args.sampling_dtype == "float32" else torch.float64
-                synthetic_samples = discrete_solver.sample(
-                    x_init=x_0,
-                    step_size=1.0 / args.discrete_fm_steps,
-                    verbose=False,
-                    div_free=sym,
-                    dtype_categorical=dtype,
-                    label=labels,
-                    cfg_scale=args.cfg_scale,
-                )
-                last_nfe = cfg_scaled_model.get_nfe()
-                last_step_count = args.discrete_fm_steps
+        cfg_scaled_model.reset_nfe_counter()
+        if args.discrete_flow_matching:
+            x_0 = torch.full(samples.shape, fill_value=MASK_TOKEN, dtype=torch.long, device=device)
+            if args.sym_func:
+                sym = lambda t: 12.0 * torch.pow(t, 2.0) * torch.pow(1.0 - t, 0.25)
             else:
-                x_0 = torch.randn(samples.shape, dtype=torch.float32, device=device)
-                sampling = solve_fixed_budget(
-                    velocity_model=cfg_scaled_model,
-                    x_init=x_0,
-                    solver_name=args.sampling_solver,
-                    nfe_budget=args.eval_nfe,
-                    return_trajectory=False,
-                    label=labels,
-                    cfg_scale=args.cfg_scale,
-                )
-                synthetic_samples = sampling.sample
-                last_nfe = sampling.nfe
-                last_step_count = sampling.step_count
-                synthetic_samples = torch.clamp(
-                    synthetic_samples * 0.5 + 0.5, min=0.0, max=1.0
-                )
-                synthetic_samples = torch.floor(synthetic_samples * 255)
-
-            synthetic_samples = synthetic_samples.to(torch.float32) / 255.0
-            logger.info(
-                f"{samples.shape[0]} samples generated in {last_nfe} evaluations and {last_step_count} steps."
+                sym = args.sym
+            dtype = torch.float32 if args.sampling_dtype == "float32" else torch.float64
+            synthetic_samples = discrete_solver.sample(
+                x_init=x_0,
+                step_size=1.0 / args.discrete_fm_steps,
+                verbose=False,
+                div_free=sym,
+                dtype_categorical=dtype,
+                label=labels,
+                cfg_scale=args.cfg_scale,
             )
-            if num_synthetic + synthetic_samples.shape[0] > fid_samples:
-                synthetic_samples = synthetic_samples[: fid_samples - num_synthetic]
+            last_nfe = cfg_scaled_model.get_nfe()
+            last_step_count = args.discrete_fm_steps
+        else:
+            x_0 = torch.randn(samples.shape, dtype=torch.float32, device=device)
+            sampling = solve_fixed_budget(
+                velocity_model=cfg_scaled_model,
+                x_init=x_0,
+                solver_name=args.sampling_solver,
+                nfe_budget=args.eval_nfe,
+                return_trajectory=False,
+                label=labels,
+                cfg_scale=args.cfg_scale,
+            )
+            synthetic_samples = sampling.sample
+            last_nfe = sampling.nfe
+            last_step_count = sampling.step_count
+            synthetic_samples = torch.clamp(
+                synthetic_samples * 0.5 + 0.5, min=0.0, max=1.0
+            )
+            synthetic_samples = torch.floor(synthetic_samples * 255)
 
-            if metric_backend is not None and "fid" in active_metrics:
-                metric_backend.update(synthetic_samples, real=False)
-            if metric_backend is not None and "precision_recall" in active_metrics:
-                fake_features.append(
-                    extract_inception_features(metric_backend, synthetic_samples).cpu()
-                )
-            num_synthetic += synthetic_samples.shape[0]
+        synthetic_samples = synthetic_samples.to(torch.float32) / 255.0
+        logger.info(
+            f"{samples.shape[0]} samples generated in {last_nfe} evaluations and {last_step_count} steps."
+        )
+        if num_synthetic + synthetic_samples.shape[0] > fid_samples:
+            synthetic_samples = synthetic_samples[: fid_samples - num_synthetic]
 
-            if not snapshots_saved and args.output_dir:
-                save_image(
-                    synthetic_samples,
-                    fp=Path(args.output_dir) / "snapshots" / f"{epoch}_{data_iter_step}.png",
-                )
-                snapshots_saved = True
+        if metric_backend is not None and "fid" in active_metrics:
+            metric_backend.update(synthetic_samples, real=False)
+        if metric_backend is not None and "precision_recall" in active_metrics:
+            fake_features.append(
+                extract_inception_features(metric_backend, synthetic_samples).cpu()
+            )
+        num_synthetic += synthetic_samples.shape[0]
 
-            if args.save_fid_samples and args.output_dir:
-                images_np = (
-                    (synthetic_samples * 255.0)
-                    .clip(0, 255)
-                    .to(torch.uint8)
-                    .permute(0, 2, 3, 1)
-                    .cpu()
-                    .numpy()
+        if not snapshots_saved and args.output_dir:
+            save_image(
+                synthetic_samples,
+                fp=Path(args.output_dir) / "snapshots" / f"{epoch}_{data_iter_step}.png",
+            )
+            snapshots_saved = True
+
+        if args.save_fid_samples and args.output_dir:
+            images_np = (
+                (synthetic_samples * 255.0)
+                .clip(0, 255)
+                .to(torch.uint8)
+                .permute(0, 2, 3, 1)
+                .cpu()
+                .numpy()
+            )
+            for batch_index, image_np in enumerate(images_np):
+                image_dir = Path(args.output_dir) / "fid_samples"
+                os.makedirs(image_dir, exist_ok=True)
+                image_path = (
+                    image_dir
+                    / f"{distributed_mode.get_rank()}_{data_iter_step}_{batch_index}.png"
                 )
-                for batch_index, image_np in enumerate(images_np):
-                    image_dir = Path(args.output_dir) / "fid_samples"
-                    os.makedirs(image_dir, exist_ok=True)
-                    image_path = (
-                        image_dir
-                        / f"{distributed_mode.get_rank()}_{data_iter_step}_{batch_index}.png"
-                    )
-                    PIL.Image.fromarray(image_np, "RGB").save(image_path)
+                PIL.Image.fromarray(image_np, "RGB").save(image_path)
 
         if data_iter_step % PRINT_FREQUENCY == 0 and metric_backend is not None and "fid" in active_metrics:
             gc.collect()
             running_fid = metric_backend.compute()
             logger.info(
-                f"Evaluating [{data_iter_step}/{len(data_loader)}] samples generated [{num_synthetic}/{fid_samples}] running fid {running_fid}"
+                f"Evaluating [{data_iter_step}/{loader_length}] samples generated [{num_synthetic}/{fid_samples}] running fid {running_fid}"
             )
-
-        if args.test_run:
-            break
 
     results = {
         "nfe": float(last_nfe),
         "step_count": float(last_step_count),
+        "real_samples": float(num_real),
+        "synthetic_samples": float(num_synthetic),
     }
     if metric_backend is not None and "fid" in active_metrics:
         results["fid"] = float(metric_backend.compute().detach().cpu())

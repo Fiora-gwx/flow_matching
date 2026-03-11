@@ -7,6 +7,8 @@ base_config:
   num_gpus: 4
   path_family: trig_vp
   sampling_solver: heun2
+  cfg_scale: 0.0
+  class_drop_prob: 1.0
   metrics: [fid, precision_recall]
   eval_epochs: [499]
   eval_nfes: [10, 20, 50]

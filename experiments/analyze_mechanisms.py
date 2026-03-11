@@ -11,9 +11,13 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import torch
 import torchvision.datasets as datasets
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 import yaml
 
-ROOT = Path(__file__).resolve().parents[1]
+from experiments.checkpoint_utils import resolve_checkpoint_path
 IMAGE_ROOT = ROOT / 'examples' / 'image'
 if str(IMAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(IMAGE_ROOT))
@@ -103,8 +107,12 @@ def main(config_path: Path):
 
     for experiment in config.get('experiments', []):
         spec = merge_dicts(base_config, experiment)
-        checkpoint_path = base_dir / spec['dataset'] / spec['name'] / 'checkpoint.pth'
-        if not checkpoint_path.exists():
+        checkpoint_path = resolve_checkpoint_path(
+            base_dir=base_dir,
+            spec=spec,
+            workspace_root=ROOT,
+        )
+        if checkpoint_path is None:
             print(f'Skipping {spec["name"]}: missing checkpoint {checkpoint_path}')
             continue
 
@@ -138,7 +146,8 @@ def main(config_path: Path):
         plot_profile(loss_rows, output_dir / 'loss_density_vs_r.png', 'mean_loss', 'Mean Loss')
 
         labels = torch.zeros(args.analysis_num_samples, dtype=torch.long, device=device)
-        sample_shape = (args.analysis_num_samples, 3, 32, 32)
+        image_size = int(spec.get('image_size', 32))
+        sample_shape = (args.analysis_num_samples, 3, image_size, image_size)
         trajectory_rows = collect_trajectory_profile(
             CFGScaledModel(model),
             device,

@@ -11,7 +11,7 @@
 - Owner: agent
 - Reviewer: pending
 - Created At: 2026-03-10 23:10
-- Updated At: 2026-03-11 13:55
+- Updated At: 2026-03-11 21:32
 - Branch: codex/refactor/t001-ft-clock-experiment-platform
 - Worktree: ../wt-t001-ft-clock-experiment-platform
 - Related Issues: N/A
@@ -160,6 +160,12 @@
 - 2026-03-11 12:41 — Subtask slice 002 completed in parent branch: replaced the continuous training/evaluation path with generic path+clock runtime, added fixed-step Euler/Heun2 NFE accounting, added CIFAR-100 dataset support, and added initial runtime tests.
 - 2026-03-11 13:55 — Subtask slice 003 completed in parent branch: rewrote the experiments layer around YAML configs, tidy CSV results, reusable aggregation helpers, paper plot/table generation, and FT-clock experiment config templates.
 - 2026-03-11 13:55 — Subtask slice 004 completed in parent branch: added offline analysis utilities and analysis entrypoint for velocity/loss profiles and trajectory budget statistics, plus visualization regression tests.
+- 2026-03-11 20:29 — Consistency remediation pass started after external review: correcting unconditional defaults, CFG real-NFE accounting, endpoint handling, legacy config drift, experiment matrix gaps, and heatmap/mechanism reproducibility details.
+- 2026-03-11 20:35 — Consistency remediation pass completed: unconditional defaults now explicit, CFG counts real forward calls, analysis sampling avoids exact endpoints, mechanism configs include baselines, solver sensitivity covers linear and VP, legacy configs were migrated, and a heatmap-only plotting entrypoint was added.
+- 2026-03-11 20:53 — Second remediation pass started: addressing auto best-beta resolution for downstream experiments, seed-aggregated statistics, eval sample-count correctness, analysis checkpoint reproducibility, README drift, and lightweight pipeline smoke tests.
+- 2026-03-11 21:04 — Second remediation pass completed: E2/E3/E5 now resolve FT-best beta automatically from source experiment results, result aggregation now uses seed mean/std before best-beta selection, eval records actual sample counts, analysis supports checkpoint_epoch/checkpoint_path, README was migrated to the YAML-first workflow, and lightweight smoke tests passed without requiring runtime ML dependencies.
+- 2026-03-11 21:25 — Third remediation pass completed: fixed double-aggregation in visualization/main-table export, added results.csv schema validation with fail-fast errors for legacy headers, added a conservative legacy-results migration script, and verified the fixes with regression tests plus a migration smoke run.
+- 2026-03-11 21:32 — Fourth remediation pass completed: fixed the empty-results.csv edge case by forcing header creation for 0-byte files, added regression tests covering empty-file append/read flows, and re-ran the result-utils test suite.
 
 ---
 
@@ -174,6 +180,16 @@
 - continuous 主线不再通过 `torchdiffeq` 导入 solver；主实验使用本地 fixed-step 实现。
 - 结果层统一采用 tidy CSV schema，并用 `experiments/result_utils.py` 作为 runner/plot/table 的共享聚合层。
 - 机制分析固定通过离线 checkpoint 脚本完成，不在常规训练或 eval 中长期记录中间轨迹。
+- legacy `alpha/use_ft_eqm` config keys 视为无效输入；runner 现在显式拒绝这类字段，避免旧配置被静默误用。
+- CIFAR-10/100 的 FT-clock YAML 基线显式固定为无条件生成：`cfg_scale=0.0`、`class_drop_prob=1.0`。
+- 机制分析除终端预算外，额外记录 `final_step_ratio` 与 `mean_curvature`，用于支撑 E8 的轨迹几何叙事。
+- 下游配置通过 `best_beta_from` 自动解析 FT-best beta，避免 E2/E3/E5 手工同步 E1/E4 最优 beta。
+- 主图主表的统计口径改为“先按 seed 聚合 mean/std，再选择 best beta”，禁止对多 seed 结果直接取最小 FID。
+- 为了在无 `torch` 环境下保留最小回归保护，新增纯 Python smoke tests 覆盖 runner、checkpoint resolution、seed aggregation 和 eval batch replay 逻辑。
+- `baseline_vs_best_beta` 新增 `already_aggregated` 语义，避免 visualize 层传入已聚合行后再次聚合导致 `std/num_seeds` 被压平。
+- `results.csv` 现在强制校验表头是否等于当前 schema；遇到旧 `alpha_sweep` 结果文件会直接报错，而不是继续向错误表头追加新列。
+- 提供 `experiments/migrate_legacy_results.py`，可把旧 `alpha`-schema 结果迁移到新 CSV 结构；迁移后的非 baseline 行统一标记为 `clock_family=legacy_alpha`，避免被误当作 FT-clock 主结果。
+- `ensure_results_file` 现在同时覆盖“文件不存在”和“文件存在但 0 字节”两种初始化场景，避免第一条结果被写成伪表头。
 
 ---
 
@@ -194,7 +210,10 @@
 - tests/test_fixed_step_solver.py
 - examples/image/training/analysis_utils.py
 - experiments/result_utils.py
+- experiments/checkpoint_utils.py
 - experiments/run_experiments.py
+- experiments/resolve_best_betas.py
+- experiments/migrate_legacy_results.py
 - experiments/visualize_results.py
 - experiments/analyze_mechanisms.py
 - experiments/configs/ft_clock/linear_main.yaml
@@ -204,10 +223,18 @@
 - experiments/configs/ft_clock/cross_path.yaml
 - experiments/configs/ft_clock/mechanism_analysis.yaml
 - experiments/configs/ft_clock/solver_sensitivity.yaml
+- experiments/configs/main_results.yaml
+- experiments/configs/alpha_sweep.yaml
+- experiments/configs/alpha_sweep_ema.yaml
 - tests/test_result_utils.py
 - tests/test_visualize_results.py
+- tests/test_checkpoint_utils.py
+- tests/test_eval_utils.py
+- tests/test_run_experiments.py
 - environment.yml
 - examples/image/requirements.txt
+- README.md
+- examples/image/README.md
 
 ### Notes
 
@@ -217,3 +244,10 @@
 - 本地系统 Python 缺少 `torch`、`torchvision`、`torchmetrics`、`yaml`、`sklearn`；因此本轮只能完成语法级检查，无法在当前 shell 直接跑训练或单测。
 - 新增 `pyyaml` 依赖声明到 `environment.yml` 与 `examples/image/requirements.txt`，以支持 YAML-first runner。
 - 由于当前系统 Python 仍缺训练依赖，runner/analysis/visualization 只完成了语法校验，尚未在真实 checkpoint 上执行。
+- 外部审查发现旧 `experiments/configs/*.yaml` 仍残留 `alpha/use_ft_eqm` 命名；本轮已将主入口配置全部迁移到 `path_family/clock_family/clock_beta`，并给 legacy 文件加了迁移注释。
+- `cifar100_transfer.yaml`、`schedule_family.yaml` 与 `cross_path.yaml` 已改为通过 `best_beta_from` 自动解析上游实验中的 FT-best beta，不再依赖手工替换。
+- 2026-03-11 验证补充：`python3 -m py_compile ...` 通过，`python3 -m unittest tests/test_result_utils.py` 通过；`tests/test_continuous_runtime.py` 因缺少 `torch` 无法执行，`tests/test_visualize_results.py` 因缺少 `matplotlib` 无法执行。探针确认当前环境同时缺少 `torch`、`matplotlib`、`yaml`。
+- 第二轮整改后，`best_beta_from` 已替代手工 beta 占位，`experiments/resolve_best_betas.py` 可将自动解析后的配置物化成独立 YAML 以便归档。
+- 第二轮验证补充：`python3 -m unittest tests/test_result_utils.py tests/test_checkpoint_utils.py tests/test_eval_utils.py tests/test_run_experiments.py tests/test_visualize_results.py` 全部通过；这些测试通过 stub 避开了本机缺失的 `torch` 和 `matplotlib`，但仍不能替代真实训练/eval smoke run。
+- 第三轮验证补充：`python3 -m unittest tests/test_result_utils.py tests/test_visualize_results.py` 通过，覆盖了“已聚合输入不再二次聚合”和“legacy schema fail-fast”；`python3 experiments/migrate_legacy_results.py --src experiments/results/alpha_sweep/results.csv --out <tmp>` smoke run 成功。
+- 第四轮验证补充：`python3 -m unittest tests/test_result_utils.py` 通过，新增覆盖“空文件补表头”和“空文件后 append 仍可读”。

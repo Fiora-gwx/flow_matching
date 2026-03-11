@@ -16,7 +16,7 @@ from torchmetrics.aggregation import MeanMetric
 
 from flow_matching.path import MixtureDiscreteProbPath
 from flow_matching.path.scheduler import PolynomialConvexScheduler
-from training.continuous_runtime import build_continuous_batch
+from training.continuous_runtime import build_continuous_batch, sample_strict_unit_interval
 from training.grad_scaler import NativeScalerWithGradNormCount
 
 logger = logging.getLogger(__name__)
@@ -75,7 +75,7 @@ def train_one_epoch(
         else:
             samples = samples * 2.0 - 1.0
             noise = torch.randn_like(samples)
-            r = torch.rand(samples.shape[0], device=device)
+            r = sample_strict_unit_interval(samples.shape[0], device=device)
             continuous_batch = build_continuous_batch(
                 x_1=samples,
                 x_0=noise,

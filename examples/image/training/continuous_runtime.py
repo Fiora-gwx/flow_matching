@@ -1,10 +1,11 @@
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Optional
 
 import torch
 from torch import Tensor
 
 EPS = 1e-8
+TIME_EPS = 1e-5
 PATH_FAMILIES = ("linear", "trig_vp")
 CLOCK_FAMILIES = (
     "uniform",
@@ -59,6 +60,8 @@ def _safe_one_minus(x: Tensor) -> Tensor:
 def _with_exact_endpoints(r: Tensor, s: Tensor, ds_dr: Tensor) -> ClockOutput:
     s = torch.where(r <= 0.0, torch.zeros_like(s), s)
     s = torch.where(r >= 1.0, torch.ones_like(s), s)
+    ds_dr = torch.where(r <= 0.0, torch.zeros_like(ds_dr), ds_dr)
+    ds_dr = torch.where(r >= 1.0, torch.zeros_like(ds_dr), ds_dr)
     return ClockOutput(s=s.clamp(0.0, 1.0), ds_dr=ds_dr)
 
 
@@ -160,6 +163,15 @@ def expand_like(time_tensor: Tensor, reference: Tensor) -> Tensor:
     return time_tensor.view(view_shape)
 
 
+def sample_strict_unit_interval(
+    batch_size: int,
+    device: torch.device,
+    dtype: torch.dtype = torch.float32,
+) -> Tensor:
+    r = torch.rand(batch_size, device=device, dtype=dtype)
+    return r * (1.0 - 2.0 * TIME_EPS) + TIME_EPS
+
+
 def build_continuous_batch(
     x_1: Tensor,
     x_0: Tensor,
@@ -189,17 +201,3 @@ def build_continuous_batch(
         base_velocity=base_velocity,
         target_velocity=target_velocity,
     )
-
-
-def infer_clock_parameter(clock_family: str, clock_beta: Optional[float]) -> Tuple[str, Optional[float]]:
-    if clock_family in {"ft_linear_beta", "ft_vp_beta"}:
-        return "beta", clock_beta
-    if clock_family == "poly_a0.5":
-        return "a", 0.5
-    if clock_family == "poly_a2.0":
-        return "a", 2.0
-    if clock_family == "sigmoid_k8":
-        return "k", 8.0
-    if clock_family == "exp_l3":
-        return "lambda", 3.0
-    return "none", None

@@ -2,7 +2,7 @@ from typing import Dict, List
 
 import torch
 
-from training.continuous_runtime import build_continuous_batch
+from training.continuous_runtime import build_continuous_batch, sample_strict_unit_interval
 from training.fixed_step_solver import solve_fixed_budget
 
 
@@ -20,7 +20,7 @@ def collect_loss_and_velocity_profile(model, data_loader, device, args) -> List[
         samples = samples.to(device, non_blocking=True) * 2.0 - 1.0
         labels = labels.to(device, non_blocking=True)
         noise = torch.randn_like(samples)
-        r = torch.rand(samples.shape[0], device=device)
+        r = sample_strict_unit_interval(samples.shape[0], device=device)
         batch = build_continuous_batch(
             x_1=samples,
             x_0=noise,
@@ -79,6 +79,13 @@ def collect_trajectory_profile(model_wrapper, device, args, sample_shape, labels
         terminal_mask = times > 0.8
         terminal_budget = float(step_norms[terminal_mask].sum().item()) if terminal_mask.any() else 0.0
         total_budget = float(step_norms.sum().item())
+        terminal_mean_step = float(step_norms[terminal_mask].mean().item()) if terminal_mask.any() else 0.0
+        final_step_ratio = float(step_norms[-1].item() / total_budget) if total_budget > 0 else 0.0
+        mean_curvature = 0.0
+        if sample.trajectory is not None and sample.trajectory.shape[0] >= 3:
+            second_diff = sample.trajectory[2:] - 2.0 * sample.trajectory[1:-1] + sample.trajectory[:-2]
+            curvature = second_diff.flatten(start_dim=2).norm(dim=2).mean(dim=1).cpu()
+            mean_curvature = float(curvature.mean().item())
         rows.append(
             {
                 "nfe": int(nfe),
@@ -87,6 +94,9 @@ def collect_trajectory_profile(model_wrapper, device, args, sample_shape, labels
                 "mean_step_length": float(step_norms.mean().item()),
                 "terminal_budget": terminal_budget,
                 "terminal_budget_ratio": terminal_budget / total_budget if total_budget > 0 else 0.0,
+                "terminal_mean_step_length": terminal_mean_step,
+                "final_step_ratio": final_step_ratio,
+                "mean_curvature": mean_curvature,
                 "terminal_steps": int(terminal_mask.sum().item()),
             }
         )

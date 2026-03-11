@@ -3,13 +3,24 @@ import argparse
 import json
 import logging
 import subprocess
+import sys
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import yaml
 
-from experiments.result_utils import append_result_rows, ensure_results_file
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from experiments.checkpoint_utils import find_checkpoint
+from experiments.result_utils import (
+    append_result_rows,
+    ensure_results_file,
+    infer_clock_parameter,
+    resolve_best_beta_reference,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -17,6 +28,7 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger(__name__)
+LEGACY_CONFIG_KEYS = {"alpha", "use_ft_eqm", "use_nt_ft_fm", "importance_weighting"}
 
 
 def load_config(config_path: Path) -> Dict:
@@ -81,32 +93,30 @@ def extract_eval_stats(log_path: Path) -> Dict[str, float]:
     return latest
 
 
-def find_checkpoint(exp_dir: Path, epoch: int) -> Optional[Path]:
-    candidates = [
-        exp_dir / f"checkpoint-{epoch}.pth",
-        exp_dir / f"checkpoint{epoch}.pth",
-        exp_dir / f"checkpoint{epoch:04d}.pth",
-        exp_dir / "checkpoint.pth",
-    ]
-    for path in candidates:
-        if path.exists():
-            return path
-    return None
+def assert_no_legacy_keys(spec: Dict) -> None:
+    legacy_keys = sorted(key for key in LEGACY_CONFIG_KEYS if key in spec)
+    if legacy_keys:
+        raise ValueError(
+            f"Legacy config keys are no longer supported: {legacy_keys}. "
+            "Use path_family/clock_family/clock_beta instead."
+        )
 
 
-def infer_clock_param(experiment: Dict) -> Tuple[str, Optional[float]]:
-    clock_family = experiment.get("clock_family", "uniform")
-    if clock_family.startswith("ft_"):
-        return "beta", experiment.get("clock_beta")
-    if clock_family == "poly_a0.5":
-        return "a", 0.5
-    if clock_family == "poly_a2.0":
-        return "a", 2.0
-    if clock_family == "sigmoid_k8":
-        return "k", 8.0
-    if clock_family == "exp_l3":
-        return "lambda", 3.0
-    return "none", None
+def resolve_dynamic_spec_fields(spec: Dict, workspace_root: Optional[Path] = None) -> Dict:
+    resolved = dict(spec)
+    best_beta_from = resolved.get("best_beta_from")
+    if best_beta_from is not None:
+        resolved["clock_beta"] = resolve_best_beta_reference(
+            reference=best_beta_from,
+            workspace_root=workspace_root,
+        )
+        logger.info(
+            "Resolved best beta for %s to %.4f from %s",
+            resolved.get("name", "<unnamed>"),
+            resolved["clock_beta"],
+            best_beta_from,
+        )
+    return resolved
 
 
 class ExperimentManager:
@@ -208,9 +218,12 @@ class ExperimentManager:
 
     def _result_rows(self, spec: Dict, epoch: int, nfe: int, stats: Dict[str, float]) -> List[Dict[str, object]]:
         rows = []
-        clock_param_name, clock_param_value = infer_clock_param(spec)
+        clock_param_name, clock_param_value = infer_clock_parameter(
+            spec.get("clock_family", "uniform"),
+            spec.get("clock_beta"),
+        )
         for metric_name, value in stats.items():
-            if metric_name in {"nfe", "step_count"}:
+            if metric_name in {"nfe", "step_count", "real_samples", "synthetic_samples"}:
                 continue
             rows.append(
                 {
@@ -227,6 +240,8 @@ class ExperimentManager:
                     "solver": spec.get("sampling_solver", "heun2"),
                     "nfe": int(stats.get("nfe", nfe)),
                     "step_count": int(stats.get("step_count", 0)),
+                    "real_samples": int(stats.get("real_samples", 0)),
+                    "synthetic_samples": int(stats.get("synthetic_samples", 0)),
                     "metric": metric_name,
                     "value": float(value),
                     "status": "completed",
@@ -237,9 +252,12 @@ class ExperimentManager:
 
     def run_all(self) -> None:
         base_config = self.config.get("base_config", {})
+        assert_no_legacy_keys(base_config)
         experiments = self.config.get("experiments", [])
         for experiment in experiments:
             spec = merge_dicts(base_config, experiment)
+            assert_no_legacy_keys(spec)
+            spec = resolve_dynamic_spec_fields(spec, workspace_root=Path.cwd())
             spec.setdefault("dataset", base_config.get("dataset", "cifar10"))
             spec.setdefault("data_path", base_config.get("data_path", "./data/cifar10"))
             spec.setdefault("epochs", base_config.get("epochs", 500))

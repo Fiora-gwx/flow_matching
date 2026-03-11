@@ -54,7 +54,7 @@ def get_args_parser():
     parser.add_argument(
         "--class_drop_prob",
         type=float,
-        default=0.2,
+        default=1.0,
         help="Probability to drop conditioning during training",
     )
     parser.add_argument(
@@ -175,7 +175,7 @@ def get_args_parser():
     )
     parser.add_argument(
         "--cfg_scale",
-        default=0.2,
+        default=0.0,
         type=float,
         help="Classifier-free guidance scale for generating samples.",
     )

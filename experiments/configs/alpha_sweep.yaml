@@ -1,67 +1,53 @@
-experiment_name: "alpha_sweep"
+experiment_name: alpha_sweep
+# Legacy filename retained; this is now a beta sweep under FT-clock naming.
 base_config:
-  dataset: "cifar10"
-  data_path: "/home/gwx/flow_matching/data/cifar10"
+  dataset: cifar10
+  data_path: ./data/cifar10
   epochs: 500
   batch_size: 128
   num_gpus: 4
-
+  path_family: linear
+  sampling_solver: heun2
+  cfg_scale: 0.0
+  class_drop_prob: 1.0
+  metrics: [fid]
 experiments:
-  # === Baseline (Alpha 0.5) ===
-  - name: "base_0.5"
-    alpha: 0.5
-    use_ft_eqm: false
-    # 评估多个检查点，看收敛速度
+  - name: linear_uniform
+    clock_family: uniform
     eval_epochs: [99, 199, 299, 399, 499]
-    # 对每个检查点，看不同步数的表现
-    eval_nfes: [4,10, 20, 50, 100]
-
-  # === FT-EqM 细粒度扫描 ===
-
-  - name: "fteqm_0.30"
-    alpha: 0.30
-    use_ft_eqm: true
-    eval_epochs: [99, 199, 299, 399, 499] 
-    eval_nfes: [4,10, 20, 50, 100]
-
-  - name: "fteqm_0.40"
-    alpha: 0.40
-    use_ft_eqm: true
-    eval_epochs: [99, 199, 299, 399, 499] 
-    eval_nfes: [4,10, 20, 50, 100]
-
-  - name: "fteqm_0.45"
-    alpha: 0.45
-    use_ft_eqm: true
-    eval_epochs: [99, 199, 299, 399, 499] #
-    eval_nfes: [4,10, 20, 50, 100]
-
-  - name: "fteqm_0.48"
-    alpha: 0.48
-    use_ft_eqm: true
-    eval_epochs: [99, 199, 299, 399, 499] #
-    eval_nfes: [4,10, 20, 50, 100]
-
-  - name: "fteqm_0.52"
-    alpha: 0.52
-    use_ft_eqm: true
-    eval_epochs: [99, 199, 299, 399, 499] # 重点关注
-    eval_nfes: [4,10, 20, 50, 100]
-
-  - name: "fteqm_0.55"
-    alpha: 0.55
-    use_ft_eqm: true
+    eval_nfes: [4, 10, 20, 50, 100]
+  - name: linear_ft_beta_0_2
+    clock_family: ft_linear_beta
+    clock_beta: 0.2
     eval_epochs: [99, 199, 299, 399, 499]
-    eval_nfes: [4,10, 20, 50, 100]
-
-  - name: "fteqm_0.60"
-    alpha: 0.60
-    use_ft_eqm: true
+    eval_nfes: [4, 10, 20, 50, 100]
+  - name: linear_ft_beta_0_3
+    clock_family: ft_linear_beta
+    clock_beta: 0.3
     eval_epochs: [99, 199, 299, 399, 499]
-    eval_nfes: [4,10, 20, 50, 100]
-
-  - name: "fteqm_0.70"
-    alpha: 0.70
-    use_ft_eqm: true
+    eval_nfes: [4, 10, 20, 50, 100]
+  - name: linear_ft_beta_0_4
+    clock_family: ft_linear_beta
+    clock_beta: 0.4
     eval_epochs: [99, 199, 299, 399, 499]
-    eval_nfes: [4,10, 20, 50, 100]
+    eval_nfes: [4, 10, 20, 50, 100]
+  - name: linear_ft_beta_0_5
+    clock_family: ft_linear_beta
+    clock_beta: 0.5
+    eval_epochs: [99, 199, 299, 399, 499]
+    eval_nfes: [4, 10, 20, 50, 100]
+  - name: linear_ft_beta_0_6
+    clock_family: ft_linear_beta
+    clock_beta: 0.6
+    eval_epochs: [99, 199, 299, 399, 499]
+    eval_nfes: [4, 10, 20, 50, 100]
+  - name: linear_ft_beta_0_7
+    clock_family: ft_linear_beta
+    clock_beta: 0.7
+    eval_epochs: [99, 199, 299, 399, 499]
+    eval_nfes: [4, 10, 20, 50, 100]
+  - name: linear_ft_beta_0_8
+    clock_family: ft_linear_beta
+    clock_beta: 0.8
+    eval_epochs: [99, 199, 299, 399, 499]
+    eval_nfes: [4, 10, 20, 50, 100]
