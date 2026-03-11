@@ -10,6 +10,7 @@ dependencies:
   - matplotlib
   - jupyter
   - numpy
+  - pyyaml
   - pip
   - tqdm
   - pip:

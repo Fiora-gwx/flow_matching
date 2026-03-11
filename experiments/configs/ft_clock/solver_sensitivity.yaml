@@ -1,0 +1,42 @@
+experiment_name: ft_clock_solver_sensitivity
+base_config:
+  dataset: cifar10
+  data_path: ./data/cifar10
+  epochs: 500
+  batch_size: 128
+  num_gpus: 4
+  path_family: linear
+  metrics: [fid]
+  eval_epochs: [499]
+  eval_nfes: [4, 10, 20, 50]
+experiments:
+  - name: linear_uniform_euler
+    sampling_solver: euler
+    clock_family: uniform
+  - name: linear_uniform_heun2
+    sampling_solver: heun2
+    clock_family: uniform
+  - name: linear_ft_beta_0_3_euler
+    sampling_solver: euler
+    clock_family: ft_linear_beta
+    clock_beta: 0.3
+  - name: linear_ft_beta_0_3_heun2
+    sampling_solver: heun2
+    clock_family: ft_linear_beta
+    clock_beta: 0.3
+  - name: linear_ft_beta_0_5_euler
+    sampling_solver: euler
+    clock_family: ft_linear_beta
+    clock_beta: 0.5
+  - name: linear_ft_beta_0_5_heun2
+    sampling_solver: heun2
+    clock_family: ft_linear_beta
+    clock_beta: 0.5
+  - name: linear_ft_beta_0_7_euler
+    sampling_solver: euler
+    clock_family: ft_linear_beta
+    clock_beta: 0.7
+  - name: linear_ft_beta_0_7_heun2
+    sampling_solver: heun2
+    clock_family: ft_linear_beta
+    clock_beta: 0.7

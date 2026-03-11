@@ -1,0 +1,34 @@
+experiment_name: ft_clock_schedule_family
+base_config:
+  dataset: cifar10
+  data_path: ./data/cifar10
+  epochs: 500
+  batch_size: 128
+  num_gpus: 4
+  path_family: linear
+  sampling_solver: heun2
+  metrics: [fid]
+  eval_epochs: [499]
+  eval_nfes: [10, 20, 50]
+experiments:
+  - name: linear_uniform
+    clock_family: uniform
+  - name: linear_poly_a0_5
+    clock_family: poly_a0.5
+  - name: linear_poly_a2_0
+    clock_family: poly_a2.0
+  - name: linear_cosine
+    clock_family: cosine
+  - name: linear_sigmoid_k8
+    clock_family: sigmoid_k8
+  - name: linear_exp_l3
+    clock_family: exp_l3
+  - name: linear_ft_beta_0_3
+    clock_family: ft_linear_beta
+    clock_beta: 0.3
+  - name: linear_ft_beta_0_5
+    clock_family: ft_linear_beta
+    clock_beta: 0.5
+  - name: linear_ft_beta_0_7
+    clock_family: ft_linear_beta
+    clock_beta: 0.7

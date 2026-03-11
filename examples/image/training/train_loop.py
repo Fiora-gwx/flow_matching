@@ -10,11 +10,13 @@ import math
 from typing import Iterable
 
 import torch
-from flow_matching.path import CondOTProbPath, MixtureDiscreteProbPath
-from flow_matching.path.scheduler import PolynomialConvexScheduler
 from models.ema import EMA
 from torch.nn.parallel import DistributedDataParallel
 from torchmetrics.aggregation import MeanMetric
+
+from flow_matching.path import MixtureDiscreteProbPath
+from flow_matching.path.scheduler import PolynomialConvexScheduler
+from training.continuous_runtime import build_continuous_batch
 from training.grad_scaler import NativeScalerWithGradNormCount
 
 logger = logging.getLogger(__name__)
@@ -23,43 +25,11 @@ MASK_TOKEN = 256
 PRINT_FREQUENCY = 50
 
 
-def rho(gamma: torch.Tensor, alpha: float) -> torch.Tensor:
-    return (1.0 - gamma).clamp(min=1e-6).pow(2.0 * alpha - 1.0)
-
-
-def radial_correction(
-    v: torch.Tensor,
-    z: torch.Tensor,
-    x_hat: torch.Tensor,
-    kappa: float,
-    alpha: float,
-    eps_safe: float = 1e-6,
-) -> torch.Tensor:
-    delta = z - x_hat
-    norm_sq = (delta**2).flatten(start_dim=1).sum(dim=-1, keepdim=True)
-    norm_2a = norm_sq.pow(alpha)
-    radial_v = (delta * v).flatten(start_dim=1).sum(dim=-1, keepdim=True)
-
-    beta = (-kappa * norm_2a - 2.0 * radial_v) / (2.0 * norm_sq + eps_safe)
-    view_shape = [beta.shape[0]] + [1] * (z.dim() - 1)
-    return v + beta.view(view_shape) * delta
-
-
-def skewed_timestep_sample(num_samples: int, device: torch.device) -> torch.Tensor:
-    P_mean = -1.2
-    P_std = 1.2
-    rnd_normal = torch.randn((num_samples,), device=device)
-    sigma = (rnd_normal * P_std + P_mean).exp()
-    time = 1 / (1 + sigma)
-    time = torch.clip(time, min=0.0001, max=1.0)
-    return time
-
-
 def train_one_epoch(
     model: torch.nn.Module,
     data_loader: Iterable,
     optimizer: torch.optim.Optimizer,
-    lr_schedule: torch.torch.optim.lr_scheduler.LRScheduler,
+    lr_schedule: torch.optim.lr_scheduler.LRScheduler,
     device: torch.device,
     epoch: int,
     loss_scaler: NativeScalerWithGradNormCount,
@@ -71,14 +41,12 @@ def train_one_epoch(
     epoch_loss = MeanMetric().to(device, non_blocking=True)
 
     accum_iter = args.accum_iter
-    if args.use_ft_eqm and args.use_nt_ft_fm:
-        raise ValueError("--use_ft_eqm and --use_nt_ft_fm are mutually exclusive.")
 
     if args.discrete_flow_matching:
         scheduler = PolynomialConvexScheduler(n=3.0)
         path = MixtureDiscreteProbPath(scheduler=scheduler)
     else:
-        path = CondOTProbPath()
+        path = None
 
     for data_iter_step, (samples, labels) in enumerate(data_loader):
         if data_iter_step % accum_iter == 0:
@@ -97,88 +65,28 @@ def train_one_epoch(
 
         if args.discrete_flow_matching:
             samples = (samples * 255.0).to(torch.long)
-            t = torch.torch.rand(samples.shape[0]).to(device)
-
-            # sample probability path
-            x_0 = (
-                torch.zeros(samples.shape, dtype=torch.long, device=device) + MASK_TOKEN
-            )
+            t = torch.rand(samples.shape[0], device=device)
+            x_0 = torch.full_like(samples, fill_value=MASK_TOKEN)
             path_sample = path.sample(t=t, x_0=x_0, x_1=samples)
-
-            # discrete flow matching loss
             logits = model(path_sample.x_t, t=t, extra=conditioning)
             loss = torch.nn.functional.cross_entropy(
                 logits.reshape([-1, 257]), samples.reshape([-1])
             ).mean()
         else:
-            # Scaling to [-1, 1] from [0, 1]
             samples = samples * 2.0 - 1.0
-            noise = torch.randn_like(samples).to(device)
-            
-            # 采样时间 t (即公式中的 gamma)
-            # 你的理论建议使用均匀分布 U(0,1)，因此这里不要开启 --skewed_timesteps
-            if args.skewed_timesteps:
-                 t = skewed_timestep_sample(samples.shape[0], device=device)
-            else:
-                t = torch.rand(samples.shape[0], device=device)
-
-            # 采样路径 x_t
-            # CondOTProbPath 默认就是线性插值: x_t = (1-t)*x_0 + t*x_1
-            # path.sample 返回的 dx_t 默认是 (x_1 - x_0)，即 (x - epsilon)
-            path_sample = path.sample(t=t, x_0=noise, x_1=samples)
-            x_t = path_sample.x_t
-            u_t = path_sample.dx_t # 原始速度场 (x - epsilon)
-
-            # NT-FT-FM 逻辑
-            if args.use_nt_ft_fm:
-                view_shape = [t.shape[0]] + [1] * (samples.dim() - 1)
-                t_view = t.view(view_shape)
-
-                v_base = u_t * rho(t_view, args.alpha)
-                u_target = radial_correction(
-                    v=v_base,
-                    z=x_t,
-                    x_hat=samples,
-                    kappa=args.kappa,
-                    alpha=args.alpha,
-                )
-
-                with torch.cuda.amp.autocast():
-                    v_pred = model(x_t, t, extra=conditioning)
-                    loss = torch.pow(v_pred - u_target, 2).mean()
-
-            # FT-EqM 逻辑
-            elif args.use_ft_eqm:
-                lamb = args.lambda_scale if args.lambda_scale is not None else (2.0 * args.alpha)
-                gamma_term = (1 - t).clamp(min=1e-6) 
-                c_gamma_raw = lamb * gamma_term.pow(2 * args.alpha - 1) # 形状: [Batch]
-                
-                # 为了和图像广播，调整形状
-                view_shape = [t.shape[0]] + [1] * (samples.dim() - 1)
-                c_gamma = c_gamma_raw.view(view_shape)
-                
-                # 2. 计算目标速度
-                target_v = u_t * c_gamma
-                
-                # 3. === 核心：计算方差归一化权重 (Min-SNR 策略) ===
-                # w = min( 5.0, 1 / c(gamma)^2 )
-                # 阈值 5.0 是业界常用的超参数，可以根据训练情况微调 (e.g., 5.0 ~ 10.0)
-                max_weight = 5.0 
-                loss_weight = torch.clamp(1.0 / (c_gamma_raw ** 2 + 1e-6), max=max_weight)
-                
-                with torch.cuda.amp.autocast():
-                    v_pred = model(x_t, t, extra=conditioning)
-                    
-                    # 4. 计算加权的 MSE
-                    # 先计算每个样本的均方误差 (在空间和通道维度上平均)
-                    raw_loss = torch.pow(v_pred - target_v, 2).mean(dim=[1, 2, 3]) # 形状: [Batch]
-                    
-                    # 乘以权重后求 Batch 的平均
-                    loss = (raw_loss * loss_weight).mean()
-            else:
-                # 原有的 Flow Matching Loss
-                with torch.cuda.amp.autocast():
-                    loss = torch.pow(model(x_t, t, extra=conditioning) - u_t, 2).mean()
+            noise = torch.randn_like(samples)
+            r = torch.rand(samples.shape[0], device=device)
+            continuous_batch = build_continuous_batch(
+                x_1=samples,
+                x_0=noise,
+                r=r,
+                path_family=args.path_family,
+                clock_family=args.clock_family,
+                clock_beta=args.clock_beta,
+            )
+            with torch.cuda.amp.autocast():
+                pred = model(continuous_batch.x_t, continuous_batch.r, extra=conditioning)
+                loss = torch.pow(pred - continuous_batch.target_velocity, 2).mean()
 
         loss_value = loss.item()
         batch_loss.update(loss)
@@ -188,9 +96,6 @@ def train_one_epoch(
             raise ValueError(f"Loss is {loss_value}, stopping training")
 
         loss /= accum_iter
-
-        # Loss scaler applies the optimizer when update_grad is set to true.
-        # Otherwise just updates the internal gradient scales
         apply_update = (data_iter_step + 1) % accum_iter == 0
         loss_scaler(
             loss,

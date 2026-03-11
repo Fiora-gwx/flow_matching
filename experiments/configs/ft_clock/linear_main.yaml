@@ -1,0 +1,38 @@
+experiment_name: ft_clock_linear_main
+base_config:
+  dataset: cifar10
+  data_path: ./data/cifar10
+  epochs: 500
+  batch_size: 128
+  num_gpus: 4
+  path_family: linear
+  sampling_solver: heun2
+  metrics: [fid, precision_recall]
+  eval_epochs: [499]
+  eval_nfes: [4, 6, 8, 10, 15, 20, 30, 50, 100]
+  precision_recall_neighbors: 3
+  precision_recall_max_samples: 10000
+experiments:
+  - name: linear_uniform
+    clock_family: uniform
+  - name: linear_ft_beta_0_2
+    clock_family: ft_linear_beta
+    clock_beta: 0.2
+  - name: linear_ft_beta_0_3
+    clock_family: ft_linear_beta
+    clock_beta: 0.3
+  - name: linear_ft_beta_0_4
+    clock_family: ft_linear_beta
+    clock_beta: 0.4
+  - name: linear_ft_beta_0_5
+    clock_family: ft_linear_beta
+    clock_beta: 0.5
+  - name: linear_ft_beta_0_6
+    clock_family: ft_linear_beta
+    clock_beta: 0.6
+  - name: linear_ft_beta_0_7
+    clock_family: ft_linear_beta
+    clock_beta: 0.7
+  - name: linear_ft_beta_0_8
+    clock_family: ft_linear_beta
+    clock_beta: 0.8

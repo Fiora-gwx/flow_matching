@@ -1,0 +1,24 @@
+experiment_name: ft_clock_trig_vp
+base_config:
+  dataset: cifar10
+  data_path: ./data/cifar10
+  epochs: 500
+  batch_size: 128
+  num_gpus: 4
+  path_family: trig_vp
+  sampling_solver: heun2
+  metrics: [fid, precision_recall]
+  eval_epochs: [499]
+  eval_nfes: [10, 20, 50]
+experiments:
+  - name: trig_vp_uniform
+    clock_family: uniform
+  - name: trig_vp_ft_beta_0_3
+    clock_family: ft_vp_beta
+    clock_beta: 0.3
+  - name: trig_vp_ft_beta_0_5
+    clock_family: ft_vp_beta
+    clock_beta: 0.5
+  - name: trig_vp_ft_beta_0_7
+    clock_family: ft_vp_beta
+    clock_beta: 0.7

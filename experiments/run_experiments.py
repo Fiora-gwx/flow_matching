@@ -2,268 +2,306 @@
 import argparse
 import json
 import logging
-import os
 import subprocess
 import time
-import glob
 from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
 import yaml
 
-# --- Logging Setup ---
+from experiments.result_utils import append_result_rows, ensure_results_file
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S"
+    datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger(__name__)
 
-# --- Helper Functions ---
 
-def load_config(config_path):
-    with open(config_path, 'r') as f:
-        return yaml.safe_load(f)
+def load_config(config_path: Path) -> Dict:
+    with open(config_path, "r", encoding="utf-8") as handle:
+        return yaml.safe_load(handle)
 
-def run_command(cmd, log_file=None, env=None, retries=0):
-    """Execute a shell command with optional retries and file logging."""
+
+def merge_dicts(base: Dict, override: Dict) -> Dict:
+    merged = dict(base)
+    merged.update(override)
+    return merged
+
+
+def run_command(cmd: str, log_file: Path, retries: int = 0) -> bool:
     for attempt in range(retries + 1):
         try:
-            logger.info(f"Executing: {cmd}")
-            if log_file:
-                with open(log_file, "a") as f:
-                    f.write(f"\n--- Execution Attempt {attempt + 1} at {time.ctime()} ---\n")
-                    f.write(f"Command: {cmd}\n\n")
-                    
-                    process = subprocess.Popen(
-                        cmd, shell=True, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True
-                    )
-                    for line in process.stdout:
-                        print(line, end="") 
-                        f.write(line)       
-                    process.wait()
-            else:
-                process = subprocess.run(cmd, shell=True, env=env, check=True)
-                
+            logger.info("Executing: %s", cmd)
+            with open(log_file, "a", encoding="utf-8") as handle:
+                handle.write(f"\n--- Execution Attempt {attempt + 1} at {time.ctime()} ---\n")
+                handle.write(f"Command: {cmd}\n\n")
+                process = subprocess.Popen(
+                    cmd,
+                    shell=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    universal_newlines=True,
+                )
+                assert process.stdout is not None
+                for line in process.stdout:
+                    print(line, end="")
+                    handle.write(line)
+                process.wait()
             if process.returncode != 0:
                 raise subprocess.CalledProcessError(process.returncode, cmd)
-            return True 
-            
-        except subprocess.CalledProcessError as e:
-            logger.error(f"Command failed with exit code {e.returncode}")
+            return True
+        except subprocess.CalledProcessError as error:
+            logger.error("Command failed with exit code %s", error.returncode)
             if attempt < retries:
-                logger.warning(f"Retrying in 5 seconds...")
                 time.sleep(5)
             else:
                 return False
+    return False
 
-def extract_fid_from_log(log_path):
-    """Parses log.txt to find the latest eval_fid."""
-    if not os.path.exists(log_path):
-        return None
-    latest_fid = None
-    try:
-        with open(log_path, 'r') as f:
-            for line in f:
-                try:
-                    data = json.loads(line.strip())
-                    if "eval_fid" in data:
-                        latest_fid = data["eval_fid"]
-                except json.JSONDecodeError:
-                    continue
-    except Exception:
-        pass
-    return latest_fid
 
-def find_checkpoint(exp_dir, epoch):
-    """
-    尝试寻找对应 epoch 的 checkpoint。
-    逻辑：
-    1. 如果 epoch 是 'latest' 或配置的最大 epoch，优先找 checkpoint.pth
-    2. 否则找 checkpoint{epoch}.pth 或 checkpoint_{epoch}.pth
-    """
-    # 常见命名模式
+def extract_eval_stats(log_path: Path) -> Dict[str, float]:
+    if not log_path.exists():
+        return {}
+    latest = {}
+    with open(log_path, "r", encoding="utf-8") as handle:
+        for line in handle:
+            try:
+                data = json.loads(line.strip())
+            except json.JSONDecodeError:
+                continue
+            eval_stats = {
+                key.removeprefix("eval_"): value
+                for key, value in data.items()
+                if key.startswith("eval_")
+            }
+            if eval_stats:
+                latest = eval_stats
+    return latest
+
+
+def find_checkpoint(exp_dir: Path, epoch: int) -> Optional[Path]:
     candidates = [
-        f"checkpoint{epoch:04d}.pth", # checkpoint0100.pth
-        f"checkpoint{epoch}.pth",     # checkpoint100.pth
-        f"checkpoint-{epoch}.pth",    # checkpoint_100.pth
-        "checkpoint.pth"               # 默认最新
+        exp_dir / f"checkpoint-{epoch}.pth",
+        exp_dir / f"checkpoint{epoch}.pth",
+        exp_dir / f"checkpoint{epoch:04d}.pth",
+        exp_dir / "checkpoint.pth",
     ]
-    
-    for fname in candidates:
-        p = exp_dir / fname
-        if p.exists():
-            return p
-            
-    # 如果没找到，且请求的是最大 epoch，可能 checkpoint.pth 就是我们要的
-    default_ckpt = exp_dir / "checkpoint.pth"
-    if default_ckpt.exists():
-        logger.warning(f"Specific checkpoint for epoch {epoch} not found. Using default checkpoint.pth (Warning: Ensure this is the correct epoch).")
-        return default_ckpt
-        
+    for path in candidates:
+        if path.exists():
+            return path
     return None
 
-# --- Experiment Manager ---
+
+def infer_clock_param(experiment: Dict) -> Tuple[str, Optional[float]]:
+    clock_family = experiment.get("clock_family", "uniform")
+    if clock_family.startswith("ft_"):
+        return "beta", experiment.get("clock_beta")
+    if clock_family == "poly_a0.5":
+        return "a", 0.5
+    if clock_family == "poly_a2.0":
+        return "a", 2.0
+    if clock_family == "sigmoid_k8":
+        return "k", 8.0
+    if clock_family == "exp_l3":
+        return "lambda", 3.0
+    return "none", None
+
 
 class ExperimentManager:
-    def __init__(self, config_path):
+    def __init__(self, config_path: Path):
+        self.config_path = config_path
         self.config = load_config(config_path)
-        self.exp_group_name = self.config.get("experiment_name", "unnamed")
-        
+        self.exp_group_name = self.config.get("experiment_name", config_path.stem)
         self.base_dir = Path(f"./experiments/results/{self.exp_group_name}")
         self.logs_dir = Path(f"./experiments/logs/{self.exp_group_name}")
         self.base_dir.mkdir(parents=True, exist_ok=True)
         self.logs_dir.mkdir(parents=True, exist_ok=True)
-        
         self.state_file = self.base_dir / "experiment_status.json"
         self.state = self._load_state()
-        
         self.results_csv = self.base_dir / "results.csv"
-        if not self.results_csv.exists():
-            with open(self.results_csv, "w") as f:
-                # 新增 epoch 列
-                f.write("exp_name,dataset,alpha,lambda_scale,epoch,nfe,fid,status\n")
+        ensure_results_file(self.results_csv)
 
-    def _load_state(self):
+    def _load_state(self) -> Dict[str, str]:
         if self.state_file.exists():
-            with open(self.state_file, 'r') as f:
-                return json.load(f)
+            with open(self.state_file, "r", encoding="utf-8") as handle:
+                return json.load(handle)
         return {}
 
-    def _save_state(self):
-        with open(self.state_file, 'w') as f:
-            json.dump(self.state, f, indent=4)
+    def _save_state(self) -> None:
+        with open(self.state_file, "w", encoding="utf-8") as handle:
+            json.dump(self.state, handle, indent=2)
 
-    def _record_result(self, exp_name, dataset, alpha, lamb, epoch, nfe, fid, status):
-        with open(self.results_csv, "a") as f:
-            f.write(f"{exp_name},{dataset},{alpha},{lamb},{epoch},{nfe},{fid},{status}\n")
+    def _launcher(self, num_gpus: int) -> str:
+        if num_gpus <= 1:
+            return "python3"
+        return f"torchrun --standalone --nproc_per_node={num_gpus}"
 
-    def build_train_cmd(self, exp_cfg, out_dir):
-        base_cfg = self.config["base_config"]
-        num_gpus = base_cfg.get("num_gpus", 1)
-        
-        cmd = f"torchrun --standalone --nproc_per_node={num_gpus} examples/image/train.py "
-        cmd += f"--dataset {exp_cfg.get('dataset', base_cfg.get('dataset'))} "
-        cmd += f"--data_path {base_cfg['data_path']} "
-        cmd += f"--epochs {base_cfg['epochs']} "
-        cmd += f"--batch_size {base_cfg['batch_size']} "
-        cmd += f"--output_dir {out_dir} "
-        
-        if exp_cfg.get("use_ema", base_cfg.get("use_ema", False)):
-            cmd += "--use_ema "
-        if exp_cfg.get("use_ft_eqm", False):
-            cmd += "--use_ft_eqm "
-            cmd += f"--alpha {exp_cfg['alpha']} "
-            if "lambda_scale" in exp_cfg and exp_cfg["lambda_scale"] is not None:
-                cmd += f"--lambda_scale {exp_cfg['lambda_scale']} "
-        
-        return cmd
+    def _base_flags(self, spec: Dict, output_dir: Path) -> List[str]:
+        flags = [
+            f"--dataset {spec['dataset']}",
+            f"--data_path {spec['data_path']}",
+            f"--batch_size {spec['batch_size']}",
+            f"--output_dir {output_dir}",
+        ]
+        if spec.get("use_ema", False):
+            flags.append("--use_ema")
+        if spec.get("discrete_flow_matching", False):
+            flags.append("--discrete_flow_matching")
+        else:
+            flags.extend(
+                [
+                    f"--path_family {spec.get('path_family', 'linear')}",
+                    f"--clock_family {spec.get('clock_family', 'uniform')}",
+                    f"--sampling_solver {spec.get('sampling_solver', 'heun2')}",
+                ]
+            )
+            if spec.get("clock_beta") is not None:
+                flags.append(f"--clock_beta {spec['clock_beta']}")
+        if spec.get("metrics"):
+            flags.append("--metrics " + " ".join(spec["metrics"]))
+        if spec.get("precision_recall_neighbors") is not None:
+            flags.append(
+                f"--precision_recall_neighbors {spec['precision_recall_neighbors']}"
+            )
+        if spec.get("precision_recall_max_samples") is not None:
+            flags.append(
+                f"--precision_recall_max_samples {spec['precision_recall_max_samples']}"
+            )
+        if spec.get("cfg_scale") is not None:
+            flags.append(f"--cfg_scale {spec['cfg_scale']}")
+        if spec.get("class_drop_prob") is not None:
+            flags.append(f"--class_drop_prob {spec['class_drop_prob']}")
+        if spec.get("fid_samples") is not None:
+            flags.append(f"--fid_samples {spec['fid_samples']}")
+        return flags
 
-    def build_eval_cmd(self, exp_cfg, out_dir, ckpt_path, nfe):
-        base_cfg = self.config["base_config"]
-        num_gpus = base_cfg.get("num_gpus", 1)
-        
-        # 假设 midpoint (2 NFE per step)
-        steps = nfe // 2 if nfe >= 2 else 1
-        step_size = 1.0 / steps
-        ode_options = f"'{{\"step_size\": {step_size}}}'"
+    def build_train_cmd(self, spec: Dict, output_dir: Path) -> str:
+        flags = self._base_flags(spec, output_dir)
+        flags.extend(
+            [
+                f"--epochs {spec['epochs']}",
+                f"--lr {spec.get('lr', 0.0001)}",
+                f"--seed {spec.get('seed', 0)}",
+            ]
+        )
+        if spec.get("eval_frequency") is not None:
+            flags.append(f"--eval_frequency {spec['eval_frequency']}")
+        if spec.get("decay_lr", False):
+            flags.append("--decay_lr")
+        return f"{self._launcher(spec.get('num_gpus', 1))} examples/image/train.py " + " ".join(flags)
 
-        cmd = f"torchrun --standalone --nproc_per_node={num_gpus} examples/image/train.py "
-        cmd += f"--dataset {exp_cfg.get('dataset', base_cfg.get('dataset'))} "
-        cmd += f"--data_path {base_cfg['data_path']} "
-        cmd += f"--batch_size 64 "
-        cmd += f"--eval_only --compute_fid "
-        cmd += f"--resume {ckpt_path} "
-        cmd += f"--output_dir {out_dir} "
-        cmd += f"--ode_options {ode_options} "
+    def build_eval_cmd(self, spec: Dict, output_dir: Path, checkpoint: Path, nfe: int) -> str:
+        flags = self._base_flags(spec, output_dir)
+        flags.extend(
+            [
+                "--eval_only",
+                f"--resume {checkpoint}",
+                f"--eval_nfe {nfe}",
+                f"--seed {spec.get('seed', 0)}",
+            ]
+        )
+        if "fid" in spec.get("metrics", ["fid"]):
+            flags.append("--compute_fid")
+        return f"{self._launcher(spec.get('num_gpus', 1))} examples/image/train.py " + " ".join(flags)
 
-        if exp_cfg.get("use_ema", self.config["base_config"].get("use_ema", False)):
-            cmd += "--use_ema "
-            
-        if exp_cfg.get("use_ft_eqm", False):
-            cmd += "--use_ft_eqm "
-            cmd += f"--alpha {exp_cfg['alpha']} "
-            if "lambda_scale" in exp_cfg and exp_cfg["lambda_scale"] is not None:
-                cmd += f"--lambda_scale {exp_cfg['lambda_scale']} "
-        
-        return cmd
+    def _result_rows(self, spec: Dict, epoch: int, nfe: int, stats: Dict[str, float]) -> List[Dict[str, object]]:
+        rows = []
+        clock_param_name, clock_param_value = infer_clock_param(spec)
+        for metric_name, value in stats.items():
+            if metric_name in {"nfe", "step_count"}:
+                continue
+            rows.append(
+                {
+                    "run_id": f"{spec['name']}:ep{epoch}:nfe{nfe}:{metric_name}",
+                    "exp_name": spec["name"],
+                    "dataset": spec["dataset"],
+                    "seed": spec.get("seed", 0),
+                    "stage": "eval",
+                    "checkpoint_epoch": epoch,
+                    "path_family": spec.get("path_family", "linear"),
+                    "clock_family": spec.get("clock_family", "uniform"),
+                    "clock_param_name": clock_param_name,
+                    "clock_param_value": clock_param_value,
+                    "solver": spec.get("sampling_solver", "heun2"),
+                    "nfe": int(stats.get("nfe", nfe)),
+                    "step_count": int(stats.get("step_count", 0)),
+                    "metric": metric_name,
+                    "value": float(value),
+                    "status": "completed",
+                    "artifact_group": spec.get("artifact_group", self.exp_group_name),
+                }
+            )
+        return rows
 
-    def run_all(self):
+    def run_all(self) -> None:
+        base_config = self.config.get("base_config", {})
         experiments = self.config.get("experiments", [])
-        
-        for exp in experiments:
-            exp_name = exp["name"]
-            dataset = exp.get("dataset", "cifar10")
-            alpha = exp.get("alpha", 0.5)
-            lamb = exp.get("lambda_scale", "auto")
-            
-            logger.info(f"========== Processing: {exp_name} (Alpha={alpha}) ==========")
-            exp_dir = self.base_dir / dataset / exp_name
+        for experiment in experiments:
+            spec = merge_dicts(base_config, experiment)
+            spec.setdefault("dataset", base_config.get("dataset", "cifar10"))
+            spec.setdefault("data_path", base_config.get("data_path", "./data/cifar10"))
+            spec.setdefault("epochs", base_config.get("epochs", 500))
+            spec.setdefault("batch_size", base_config.get("batch_size", 128))
+            spec.setdefault("num_gpus", base_config.get("num_gpus", 1))
+            spec.setdefault("path_family", base_config.get("path_family", "linear"))
+            spec.setdefault("sampling_solver", base_config.get("sampling_solver", "heun2"))
+            spec.setdefault("metrics", base_config.get("metrics", ["fid"]))
+            spec.setdefault("eval_epochs", [spec["epochs"] - 1])
+            spec.setdefault("eval_nfes", [base_config.get("eval_nfe", 50)])
+            spec.setdefault("artifact_group", self.exp_group_name)
+
+            exp_dir = self.base_dir / spec["dataset"] / spec["name"]
             exp_dir.mkdir(parents=True, exist_ok=True)
-            
-            # --- 1. Training ---
-            train_log = self.logs_dir / f"{exp_name}_train.log"
-            # 训练只看最终 checkpoint 是否存在来决定是否跳过
-            final_ckpt = exp_dir / "checkpoint.pth"
-            state_key = f"{exp_name}_train"
-            
-            if self.state.get(state_key) == "completed" and final_ckpt.exists():
-                logger.info(f"Training already completed.")
-            else:
-                self.state[state_key] = "running"
+            train_log = self.logs_dir / f"{spec['name']}_train.log"
+            train_key = f"{spec['name']}:train"
+            checkpoint = exp_dir / "checkpoint.pth"
+
+            if self.state.get(train_key) != "completed" or not checkpoint.exists():
+                self.state[train_key] = "running"
                 self._save_state()
-                success = run_command(self.build_train_cmd(exp, exp_dir), log_file=train_log, retries=1)
-                if success:
-                    self.state[state_key] = "completed"
-                else:
-                    self.state[state_key] = "failed"
-                    self._save_state()
-                    continue 
-
-            # --- 2. Evaluation Loop (Epoch -> NFE) ---
-            # 获取需要评估的 epochs 列表，默认只评估最终 epoch
-            target_epochs = exp.get("eval_epochs", [self.config["base_config"]["epochs"]])
-            eval_nfes = exp.get("eval_nfes", [100])
-
-            for epoch in target_epochs:
-                # 寻找该 epoch 的权重文件
-                ckpt_path = find_checkpoint(exp_dir, epoch)
-                
-                if ckpt_path is None:
-                    logger.warning(f"Checkpoint for epoch {epoch} not found in {exp_dir}. Skipping.")
+                success = run_command(self.build_train_cmd(spec, exp_dir), train_log, retries=1)
+                self.state[train_key] = "completed" if success else "failed"
+                self._save_state()
+                if not success:
                     continue
 
-                for nfe in eval_nfes:
-                    eval_task_name = f"{exp_name}_ep{epoch}_nfe{nfe}"
-                    eval_out_dir = exp_dir / f"eval_ep{epoch}_nfe{nfe}"
-                    eval_out_dir.mkdir(parents=True, exist_ok=True)
-                    eval_log = self.logs_dir / f"{eval_task_name}.log"
-
-                    if self.state.get(eval_task_name) == "completed":
+            for epoch in spec["eval_epochs"]:
+                checkpoint = find_checkpoint(exp_dir, epoch)
+                if checkpoint is None:
+                    logger.warning("Checkpoint for epoch %s not found in %s", epoch, exp_dir)
+                    continue
+                for nfe in spec["eval_nfes"]:
+                    eval_key = f"{spec['name']}:ep{epoch}:nfe{nfe}"
+                    if self.state.get(eval_key) == "completed":
                         continue
-
-                    logger.info(f"Evaluating: Alpha={alpha}, Epoch={epoch}, NFE={nfe}")
-                    self.state[eval_task_name] = "running"
+                    eval_dir = exp_dir / f"eval_ep{epoch}_nfe{nfe}"
+                    eval_dir.mkdir(parents=True, exist_ok=True)
+                    eval_log = self.logs_dir / f"{spec['name']}_ep{epoch}_nfe{nfe}.log"
+                    self.state[eval_key] = "running"
                     self._save_state()
-
                     success = run_command(
-                        self.build_eval_cmd(exp, eval_out_dir, ckpt_path, nfe), 
-                        log_file=eval_log, retries=0
+                        self.build_eval_cmd(spec, eval_dir, checkpoint, nfe),
+                        eval_log,
+                        retries=0,
                     )
-
-                    if success:
-                        fid = extract_fid_from_log(eval_out_dir / "log.txt")
-                        if fid is not None:
-                            self.state[eval_task_name] = "completed"
-                            self._record_result(exp_name, dataset, alpha, lamb, epoch, nfe, fid, "completed")
-                            logger.info(f"Result: FID={fid:.2f}")
-                        else:
-                            self.state[eval_task_name] = "failed_no_fid"
-                    else:
-                        self.state[eval_task_name] = "failed"
-                    
+                    if not success:
+                        self.state[eval_key] = "failed"
+                        self._save_state()
+                        continue
+                    stats = extract_eval_stats(eval_dir / "log.txt")
+                    if not stats:
+                        self.state[eval_key] = "failed_no_eval_stats"
+                        self._save_state()
+                        continue
+                    append_result_rows(self.results_csv, self._result_rows(spec, epoch, nfe, stats))
+                    self.state[eval_key] = "completed"
                     self._save_state()
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=str, required=True)
+    parser.add_argument("--config", type=Path, required=True)
     args = parser.parse_args()
     ExperimentManager(args.config).run_all()

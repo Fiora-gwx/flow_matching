@@ -1,16 +1,25 @@
-# Copyright (c) Meta Platforms, Inc. and affiliates.
-# All rights reserved.
-#
-# This source code is licensed under the CC-by-NC license found in the
-# LICENSE file in the root directory of this source tree.
 import argparse
-import json
 import logging
 
 from models.model_configs import MODEL_CONFIGS
-from torchdiffeq._impl.odeint import SOLVERS
+
+DATASET_CHOICES = [name for name in MODEL_CONFIGS if not name.endswith("_discrete")]
 
 logger = logging.getLogger(__name__)
+
+PATH_FAMILIES = ["linear", "trig_vp"]
+CLOCK_FAMILIES = [
+    "uniform",
+    "ft_linear_beta",
+    "ft_vp_beta",
+    "poly_a0.5",
+    "poly_a2.0",
+    "cosine",
+    "sigmoid_k8",
+    "exp_l3",
+]
+SAMPLING_SOLVERS = ["euler", "heun2"]
+SUPPORTED_METRICS = ["fid", "precision_recall"]
 
 
 def get_args_parser():
@@ -19,7 +28,7 @@ def get_args_parser():
         "--batch_size",
         default=32,
         type=int,
-        help="Batch size per GPU (effective batch size is batch_size * accum_iter * # gpus",
+        help="Batch size per GPU (effective batch size is batch_size * accum_iter * # gpus)",
     )
     parser.add_argument("--epochs", default=921, type=int)
     parser.add_argument(
@@ -29,19 +38,13 @@ def get_args_parser():
         help="Accumulate gradient iterations (for increasing the effective batch size under memory constraints)",
     )
 
-    # Optimizer parameters
-    parser.add_argument(
-        "--lr",
-        type=float,
-        default=0.0001,
-        help="learning rate (absolute lr)",
-    )
+    parser.add_argument("--lr", type=float, default=0.0001, help="Learning rate")
     parser.add_argument(
         "--optimizer_betas",
         nargs="+",
         type=float,
         default=[0.9, 0.95],
-        help="learning rate (absolute lr)",
+        help="Optimizer betas",
     )
     parser.add_argument(
         "--decay_lr",
@@ -55,53 +58,98 @@ def get_args_parser():
         help="Probability to drop conditioning during training",
     )
     parser.add_argument(
-        "--skewed_timesteps",
-        action="store_true",
-        help="Use skewed timestep sampling proposed in the EDM paper: https://arxiv.org/abs/2206.00364.",
-    )
-    parser.add_argument(
-        "--edm_schedule",
-        action="store_true",
-        help="Use the alternative time discretization during sampling proposed in the EDM paper: https://arxiv.org/abs/2206.00364.",
-    )
-    parser.add_argument(
         "--use_ema",
         action="store_true",
-        help="When evaluating, use the model Exponential Moving Average weights.",
+        help="When evaluating, use the model exponential moving average weights.",
     )
 
-    # Dataset parameters
     parser.add_argument(
         "--dataset",
-        default=list(MODEL_CONFIGS.keys())[0],
+        default="cifar10",
         type=str,
-        choices=list(MODEL_CONFIGS.keys()),
+        choices=DATASET_CHOICES,
         help="Dataset to use.",
     )
     parser.add_argument(
         "--data_path",
         default="./data/image_generation",
         type=str,
-        help="imagenet root folder with train, val and test subfolders",
+        help="Dataset root path.",
     )
-
     parser.add_argument(
         "--output_dir",
         default="./output_dir",
-        help="path where to save, empty for no saving",
+        help="Path where to save checkpoints and logs.",
+    )
+
+    parser.add_argument(
+        "--path_family",
+        default="linear",
+        choices=PATH_FAMILIES,
+        help="Base probability path used for continuous flow matching.",
     )
     parser.add_argument(
-        "--ode_method",
-        default="midpoint",
-        choices=list(SOLVERS.keys()) + ["edm_heun"],
-        help="ODE solver used to generate samples.",
+        "--clock_family",
+        default="uniform",
+        choices=CLOCK_FAMILIES,
+        help="Clock family used to reparameterize the base path.",
     )
     parser.add_argument(
-        "--ode_options",
-        default='{"step_size": 0.01}',
-        type=json.loads,
-        help="ODE solver options. Eg. the midpoint solver requires step-size, dopri5 has no options to set.",
+        "--clock_beta",
+        type=float,
+        default=None,
+        help="Beta parameter used by FT-clock families.",
     )
+    parser.add_argument(
+        "--sampling_solver",
+        default="heun2",
+        choices=SAMPLING_SOLVERS,
+        help="Fixed-step solver used during continuous sampling.",
+    )
+    parser.add_argument(
+        "--eval_nfe",
+        default=50,
+        type=int,
+        help="Evaluation NFE budget counted as real network forward calls.",
+    )
+    parser.add_argument(
+        "--metrics",
+        nargs="+",
+        default=["fid"],
+        choices=SUPPORTED_METRICS,
+        help="Metrics to compute during evaluation.",
+    )
+    parser.add_argument(
+        "--precision_recall_neighbors",
+        default=3,
+        type=int,
+        help="Neighborhood size used by the precision/recall manifold metric.",
+    )
+    parser.add_argument(
+        "--precision_recall_max_samples",
+        default=10000,
+        type=int,
+        help="Maximum number of real and fake samples used for precision/recall.",
+    )
+    parser.add_argument(
+        "--analysis_num_bins",
+        default=20,
+        type=int,
+        help="Number of time bins used by analysis scripts.",
+    )
+    parser.add_argument(
+        "--analysis_num_batches",
+        default=8,
+        type=int,
+        help="Number of data batches consumed by analysis scripts.",
+    )
+    parser.add_argument(
+        "--analysis_num_samples",
+        default=512,
+        type=int,
+        help="Number of synthetic samples used by analysis scripts.",
+    )
+
     parser.add_argument(
         "--sym",
         default=0.0,
@@ -135,20 +183,18 @@ def get_args_parser():
         "--fid_samples",
         default=50000,
         type=int,
-        help="number of synthetic samples for FID evaluations",
+        help="Number of synthetic samples for evaluation.",
     )
-    parser.add_argument(
-        "--device", default="cuda", help="device to use for training / testing"
-    )
+    parser.add_argument("--device", default="cuda", help="Device to use")
     parser.add_argument("--seed", default=0, type=int)
-    parser.add_argument("--resume", default="", help="resume from checkpoint")
+    parser.add_argument("--resume", default="", help="Resume from checkpoint")
 
     parser.add_argument(
         "--start_epoch",
         default=0,
         type=int,
         metavar="N",
-        help="start epoch (used when resumed from checkpoint)",
+        help="Start epoch (used when resumed from checkpoint)",
     )
     parser.add_argument(
         "--eval_only", action="store_true", help="No training, only run evaluation"
@@ -157,12 +203,12 @@ def get_args_parser():
         "--eval_frequency",
         default=50,
         type=int,
-        help="Frequency (in number of epochs) for running FID evaluation. -1 to never run evaluation.",
+        help="Frequency (in number of epochs) for running evaluation. -1 to never run evaluation.",
     )
     parser.add_argument(
         "--compute_fid",
         action="store_true",
-        help="Whether to compute FID in the evaluation loop. When disabled, the evaluation loop still runs and saves snapshots, but skips the FID computation.",
+        help="Backward-compatible flag that forces FID computation during evaluation.",
     )
     parser.add_argument(
         "--save_fid_samples",
@@ -173,18 +219,18 @@ def get_args_parser():
     parser.add_argument(
         "--pin_mem",
         action="store_true",
-        help="Pin CPU memory in DataLoader for more efficient (sometimes) transfer to GPU.",
+        help="Pin CPU memory in DataLoader for more efficient transfer.",
     )
     parser.add_argument("--no_pin_mem", action="store_false", dest="pin_mem")
     parser.set_defaults(pin_mem=True)
-    # distributed training parameters
+
     parser.add_argument(
-        "--world_size", default=1, type=int, help="number of distributed processes"
+        "--world_size", default=1, type=int, help="Number of distributed processes"
     )
     parser.add_argument("--local_rank", default=-1, type=int)
     parser.add_argument("--dist_on_itp", action="store_true")
     parser.add_argument(
-        "--dist_url", default="env://", help="url used to set up distributed training"
+        "--dist_url", default="env://", help="URL used to set up distributed training"
     )
     parser.add_argument(
         "--test_run",
@@ -201,49 +247,5 @@ def get_args_parser():
         default=1024,
         type=int,
         help="Number of sampling steps for discrete FM.",
-    )
-
-    # FT-EqM Parameters
-    parser.add_argument(
-        "--use_ft_eqm",
-        action="store_true",
-        help="Enable Finite-Time Equilibrium Matching (FT-EqM) training.",
-    )
-    parser.add_argument(
-        "--use_nt_ft_fm",
-        action="store_true",
-        help="Enable Non-Tangential Finite-Time Flow Matching (NT-FT-FM).",
-    )
-    parser.add_argument(
-        "--kappa",
-        type=float,
-        default=1.0,
-        help="Finite-time stability coefficient used in NT-FT-FM radial correction.",
-    )
-    parser.add_argument(
-        "--nt_solver",
-        type=str,
-        default="midpoint",
-        choices=["midpoint", "rk45"],
-        help="NT-FT-FM sampler solver: fixed-step midpoint or adaptive RK45.",
-    )
-    parser.add_argument(
-        "--ft_eqm_solver",
-        type=str,
-        default="midpoint",
-        choices=["midpoint", "rk45"],
-        help="FT-EqM sampler solver: fixed-step midpoint or adaptive RK45.",
-    )
-    parser.add_argument(
-        "--alpha",
-        type=float,
-        default=0.7,
-        help="Alpha parameter for FT-EqM, must be in (0.5, 1). Controls the convergence rate.",
-    )
-    parser.add_argument(
-        "--lambda_scale",
-        type=float,
-        default=None,
-        help="Global scaling constant lambda for c(gamma). If None, defaults to 2*alpha to normalize the integral to 1.",
     )
     return parser

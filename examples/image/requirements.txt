@@ -1,3 +1,5 @@
 submitit
 torchmetrics[image]
 torchvision
+
+pyyaml

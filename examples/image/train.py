@@ -30,6 +30,26 @@ from training.train_loop import train_one_epoch
 logger = logging.getLogger(__name__)
 
 
+def build_dataset(args, transform_train):
+    if args.dataset == "imagenet":
+        return datasets.ImageFolder(args.data_path, transform=transform_train)
+    if args.dataset == "cifar10":
+        return datasets.CIFAR10(
+            root=args.data_path,
+            train=True,
+            download=True,
+            transform=transform_train,
+        )
+    if args.dataset == "cifar100":
+        return datasets.CIFAR100(
+            root=args.data_path,
+            train=True,
+            download=True,
+            transform=transform_train,
+        )
+    raise NotImplementedError(f"Unsupported dataset {args.dataset}")
+
+
 def main(args):
     logging.basicConfig(
         level=logging.INFO,
@@ -45,11 +65,10 @@ def main(args):
         args_filepath = Path(args.output_dir) / "args.json"
         logger.info(f"Saving args to {args_filepath}")
         with open(args_filepath, "w") as f:
-            json.dump(vars(args), f)
+            json.dump(vars(args), f, indent=2)
 
     device = torch.device(args.device)
 
-    # fix the seed for reproducibility
     seed = args.seed + distributed_mode.get_rank()
     torch.manual_seed(seed)
     np.random.seed(seed)
@@ -58,21 +77,10 @@ def main(args):
 
     logger.info(f"Initializing Dataset: {args.dataset}")
     transform_train = get_train_transform()
-    if args.dataset == "imagenet":
-        dataset_train = datasets.ImageFolder(args.data_path, transform=transform_train)
-    elif args.dataset == "cifar10":
-        dataset_train = datasets.CIFAR10(
-            root=args.data_path,
-            train=True,
-            download=True,
-            transform=transform_train,
-        )
-    else:
-        raise NotImplementedError(f"Unsupported dataset {args.dataset}")
-
+    dataset_train = build_dataset(args=args, transform_train=transform_train)
     logger.info(dataset_train)
 
-    logger.info("Intializing DataLoader")
+    logger.info("Initializing DataLoader")
     num_tasks = distributed_mode.get_world_size()
     global_rank = distributed_mode.get_rank()
     sampler_train = torch.utils.data.DistributedSampler(
@@ -88,25 +96,20 @@ def main(args):
     )
     logger.info(str(sampler_train))
 
-    # define the model
     logger.info("Initializing Model")
     model = instantiate_model(
         architechture=args.dataset,
         is_discrete=args.discrete_flow_matching,
         use_ema=args.use_ema,
     )
-
     model.to(device)
-
     model_without_ddp = model
     logger.info(str(model_without_ddp))
 
     eff_batch_size = (
         args.batch_size * args.accum_iter * distributed_mode.get_world_size()
     )
-
     logger.info(f"Learning rate: {args.lr:.2e}")
-
     logger.info(f"Accumulate grad iterations: {args.accum_iter}")
     logger.info(f"Effective batch size: {eff_batch_size}")
 
@@ -135,7 +138,6 @@ def main(args):
     logger.info(f"Learning-Rate Schedule: {lr_schedule}")
 
     loss_scaler = NativeScaler()
-
     load_model(
         args=args,
         model_without_ddp=model_without_ddp,
@@ -149,6 +151,7 @@ def main(args):
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
             data_loader_train.sampler.set_epoch(epoch)
+
         if not args.eval_only:
             train_stats = train_one_epoch(
                 model=model,
@@ -165,15 +168,12 @@ def main(args):
                 "epoch": epoch,
             }
         else:
-            log_stats = {
-                "epoch": epoch,
-            }
+            log_stats = {"epoch": epoch}
 
-        if args.output_dir and (
-            (args.eval_frequency > 0 and (epoch + 1) % args.eval_frequency == 0)
-            or args.eval_only
-            or args.test_run
-        ):
+        should_eval = (
+            args.eval_frequency > 0 and (epoch + 1) % args.eval_frequency == 0
+        ) or args.eval_only or args.test_run
+        if args.output_dir and should_eval:
             if not args.eval_only:
                 save_model(
                     args=args,

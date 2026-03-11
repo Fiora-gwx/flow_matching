@@ -11,7 +11,7 @@
 - Owner: agent
 - Reviewer: pending
 - Created At: 2026-03-10 23:10
-- Updated At: 2026-03-10 23:18
+- Updated At: 2026-03-11 13:55
 - Branch: codex/refactor/t001-ft-clock-experiment-platform
 - Worktree: ../wt-t001-ft-clock-experiment-platform
 - Related Issues: N/A
@@ -157,6 +157,9 @@
 
 - 2026-03-10 23:10 — Task planned with status: pending.
 - 2026-03-10 23:18 — Execute stage started on `main`; parent task created directly as `in_progress`; child task creation and worktree bootstrap initiated.
+- 2026-03-11 12:41 — Subtask slice 002 completed in parent branch: replaced the continuous training/evaluation path with generic path+clock runtime, added fixed-step Euler/Heun2 NFE accounting, added CIFAR-100 dataset support, and added initial runtime tests.
+- 2026-03-11 13:55 — Subtask slice 003 completed in parent branch: rewrote the experiments layer around YAML configs, tidy CSV results, reusable aggregation helpers, paper plot/table generation, and FT-clock experiment config templates.
+- 2026-03-11 13:55 — Subtask slice 004 completed in parent branch: added offline analysis utilities and analysis entrypoint for velocity/loss profiles and trajectory budget statistics, plus visualization regression tests.
 
 ---
 
@@ -167,6 +170,10 @@
 - 主结果 solver 固定为 `heun2`，敏感性对比使用 `euler`。
 - 真实 NFE 定义为网络实际前向调用次数。
 - 父任务仅负责总控与集成，核心运行时、结果管线、机制分析分别下沉到子任务。
+- `heun2` 在奇数 NFE 预算下采用 `heun2` 若干步加末尾 `euler` 一步的混合步法，以保持“真实网络调用次数”精确等于目标 NFE。
+- continuous 主线不再通过 `torchdiffeq` 导入 solver；主实验使用本地 fixed-step 实现。
+- 结果层统一采用 tidy CSV schema，并用 `experiments/result_utils.py` 作为 runner/plot/table 的共享聚合层。
+- 机制分析固定通过离线 checkpoint 脚本完成，不在常规训练或 eval 中长期记录中间轨迹。
 
 ---
 
@@ -175,8 +182,38 @@
 ### Files Touched
 
 - tasks/001-ft-clock-experiment-platform.md
+- examples/image/train.py
+- examples/image/train_arg_parser.py
+- examples/image/models/model_configs.py
+- examples/image/training/continuous_runtime.py
+- examples/image/training/fixed_step_solver.py
+- examples/image/training/metric_utils.py
+- examples/image/training/train_loop.py
+- examples/image/training/eval_loop.py
+- tests/test_continuous_runtime.py
+- tests/test_fixed_step_solver.py
+- examples/image/training/analysis_utils.py
+- experiments/result_utils.py
+- experiments/run_experiments.py
+- experiments/visualize_results.py
+- experiments/analyze_mechanisms.py
+- experiments/configs/ft_clock/linear_main.yaml
+- experiments/configs/ft_clock/cifar100_transfer.yaml
+- experiments/configs/ft_clock/schedule_family.yaml
+- experiments/configs/ft_clock/trig_vp.yaml
+- experiments/configs/ft_clock/cross_path.yaml
+- experiments/configs/ft_clock/mechanism_analysis.yaml
+- experiments/configs/ft_clock/solver_sensitivity.yaml
+- tests/test_result_utils.py
+- tests/test_visualize_results.py
+- environment.yml
+- examples/image/requirements.txt
 
 ### Notes
 
 - 当前 examples/image 路径受 `torchdiffeq` 硬依赖影响，运行前必须解除入口级 import 阻塞或补装依赖。
 - 当前仓库没有正式 task 文件，需要先补齐 lifecycle 所需任务记录层。
+- `torchdiffeq` 对 examples/image 主线的入口级阻塞已解除，但 `flow_matching/solver/ode_solver.py` 仍保留原依赖，不再作为本任务主实验运行时。
+- 本地系统 Python 缺少 `torch`、`torchvision`、`torchmetrics`、`yaml`、`sklearn`；因此本轮只能完成语法级检查，无法在当前 shell 直接跑训练或单测。
+- 新增 `pyyaml` 依赖声明到 `environment.yml` 与 `examples/image/requirements.txt`，以支持 YAML-first runner。
+- 由于当前系统 Python 仍缺训练依赖，runner/analysis/visualization 只完成了语法校验，尚未在真实 checkpoint 上执行。
