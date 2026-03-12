@@ -187,7 +187,12 @@ class ExperimentManager:
             flags.append(f"--fid_samples {spec['fid_samples']}")
         return flags
 
-    def build_train_cmd(self, spec: Dict, output_dir: Path) -> str:
+    def build_train_cmd(
+        self,
+        spec: Dict,
+        output_dir: Path,
+        resume_checkpoint: Optional[Path] = None,
+    ) -> str:
         flags = self._base_flags(spec, output_dir)
         flags.extend(
             [
@@ -196,6 +201,8 @@ class ExperimentManager:
                 f"--seed {spec.get('seed', 0)}",
             ]
         )
+        if resume_checkpoint is not None:
+            flags.append(f"--resume {resume_checkpoint}")
         if spec.get("eval_frequency") is not None:
             flags.append(f"--eval_frequency {spec['eval_frequency']}")
         if spec.get("decay_lr", False):
@@ -279,7 +286,12 @@ class ExperimentManager:
             if self.state.get(train_key) != "completed" or not checkpoint.exists():
                 self.state[train_key] = "running"
                 self._save_state()
-                success = run_command(self.build_train_cmd(spec, exp_dir), train_log, retries=1)
+                resume_checkpoint = checkpoint if checkpoint.exists() else None
+                success = run_command(
+                    self.build_train_cmd(spec, exp_dir, resume_checkpoint=resume_checkpoint),
+                    train_log,
+                    retries=1,
+                )
                 self.state[train_key] = "completed" if success else "failed"
                 self._save_state()
                 if not success:

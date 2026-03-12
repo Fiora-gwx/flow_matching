@@ -11,7 +11,7 @@
 - Owner: agent
 - Reviewer: pending
 - Created At: 2026-03-10 23:10
-- Updated At: 2026-03-11 21:32
+- Updated At: 2026-03-12 10:34
 - Branch: codex/refactor/t001-ft-clock-experiment-platform
 - Worktree: ../wt-t001-ft-clock-experiment-platform
 - Related Issues: N/A
@@ -166,6 +166,8 @@
 - 2026-03-11 21:04 — Second remediation pass completed: E2/E3/E5 now resolve FT-best beta automatically from source experiment results, result aggregation now uses seed mean/std before best-beta selection, eval records actual sample counts, analysis supports checkpoint_epoch/checkpoint_path, README was migrated to the YAML-first workflow, and lightweight smoke tests passed without requiring runtime ML dependencies.
 - 2026-03-11 21:25 — Third remediation pass completed: fixed double-aggregation in visualization/main-table export, added results.csv schema validation with fail-fast errors for legacy headers, added a conservative legacy-results migration script, and verified the fixes with regression tests plus a migration smoke run.
 - 2026-03-11 21:32 — Fourth remediation pass completed: fixed the empty-results.csv edge case by forcing header creation for 0-byte files, added regression tests covering empty-file append/read flows, and re-ran the result-utils test suite.
+- 2026-03-12 10:32 — Fifth remediation pass started: addressing precision/recall dtype compatibility for Inception features, adding regression tests for float-to-uint8 coercion and eval precision/recall path, and enabling automatic train resume when a checkpoint already exists.
+- 2026-03-12 10:34 — Fifth remediation pass completed: Inception-feature extraction now coerces float images to `uint8` before calling the backend, runner retrains with `--resume <checkpoint>` when a prior checkpoint exists, and regression tests now cover the dtype contract plus auto-resume behavior.
 
 ---
 
@@ -190,6 +192,8 @@
 - `results.csv` 现在强制校验表头是否等于当前 schema；遇到旧 `alpha_sweep` 结果文件会直接报错，而不是继续向错误表头追加新列。
 - 提供 `experiments/migrate_legacy_results.py`，可把旧 `alpha`-schema 结果迁移到新 CSV 结构；迁移后的非 baseline 行统一标记为 `clock_family=legacy_alpha`，避免被误当作 FT-clock 主结果。
 - `ensure_results_file` 现在同时覆盖“文件不存在”和“文件存在但 0 字节”两种初始化场景，避免第一条结果被写成伪表头。
+- `extract_inception_features` 现在统一将浮点图像归一化并量化为 `uint8` 后再送入 Inception backend，避免 precision/recall 在 `float32` 输入下崩溃。
+- 实验管理器在训练状态未完成但目录里已存在 `checkpoint.pth` 时，会自动追加 `--resume <checkpoint>` 进行断点续训。
 
 ---
 
@@ -231,6 +235,7 @@
 - tests/test_checkpoint_utils.py
 - tests/test_eval_utils.py
 - tests/test_run_experiments.py
+- tests/test_metric_utils.py
 - environment.yml
 - examples/image/requirements.txt
 - README.md
@@ -251,3 +256,5 @@
 - 第二轮验证补充：`python3 -m unittest tests/test_result_utils.py tests/test_checkpoint_utils.py tests/test_eval_utils.py tests/test_run_experiments.py tests/test_visualize_results.py` 全部通过；这些测试通过 stub 避开了本机缺失的 `torch` 和 `matplotlib`，但仍不能替代真实训练/eval smoke run。
 - 第三轮验证补充：`python3 -m unittest tests/test_result_utils.py tests/test_visualize_results.py` 通过，覆盖了“已聚合输入不再二次聚合”和“legacy schema fail-fast”；`python3 experiments/migrate_legacy_results.py --src experiments/results/alpha_sweep/results.csv --out <tmp>` smoke run 成功。
 - 第四轮验证补充：`python3 -m unittest tests/test_result_utils.py` 通过，新增覆盖“空文件补表头”和“空文件后 append 仍可读”。
+- 第五轮验证待补充：新增 `tests/test_metric_utils.py` 覆盖 Inception 输入 dtype 契约和 `eval_model` 的 precision/recall 分支；当前机器若仍缺 `torch`，这些测试会按设计跳过，但在完整环境中应作为必跑项。
+- 第五轮验证补充：`python3 -m py_compile examples/image/training/metric_utils.py experiments/run_experiments.py tests/test_metric_utils.py tests/test_run_experiments.py` 通过；`python3 -m unittest tests/test_run_experiments.py tests/test_metric_utils.py` 通过，其中 `tests/test_metric_utils.py` 在当前机器因缺少 `torch` 共跳过 3 个用例。

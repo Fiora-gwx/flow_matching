@@ -15,10 +15,18 @@ def requested_metrics(args) -> Tuple[str, ...]:
     return tuple(sorted(metrics))
 
 
+def prepare_inception_input(images: Tensor) -> Tensor:
+    if images.dtype == torch.uint8:
+        return images
+    if images.is_floating_point():
+        return images.clamp(0.0, 1.0).mul(255.0).round().to(torch.uint8)
+    return images.to(torch.uint8)
+
+
 def extract_inception_features(fid_metric, images: Tensor) -> Tensor:
     if not hasattr(fid_metric, "inception"):
         raise RuntimeError("FrechetInceptionDistance backend does not expose inception features.")
-    features = fid_metric.inception(images)
+    features = fid_metric.inception(prepare_inception_input(images))
     if features.ndim > 2:
         features = features.reshape(features.shape[0], -1)
     return features.detach().to(torch.float32)

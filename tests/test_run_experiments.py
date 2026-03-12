@@ -144,3 +144,90 @@ class RunExperimentsTest(unittest.TestCase):
             self.assertEqual(rows[0]['clock_param_value'], 0.5)
             self.assertEqual(rows[0]['real_samples'], 50000)
             self.assertEqual(rows[0]['synthetic_samples'], 50000)
+
+    def test_build_train_cmd_adds_resume_for_existing_checkpoint(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            config_path = workspace / 'config.json'
+            config_path.write_text(json.dumps({
+                'experiment_name': 'demo_group',
+                'base_config': {},
+                'experiments': [],
+            }), encoding='utf-8')
+            manager = ExperimentManager(config_path)
+            checkpoint = workspace / 'checkpoint.pth'
+            cmd = manager.build_train_cmd(
+                {
+                    'dataset': 'cifar10',
+                    'data_path': './data/cifar10',
+                    'batch_size': 8,
+                    'epochs': 2,
+                    'seed': 0,
+                    'num_gpus': 1,
+                    'path_family': 'linear',
+                    'clock_family': 'uniform',
+                    'sampling_solver': 'heun2',
+                },
+                workspace / 'out',
+                resume_checkpoint=checkpoint,
+            )
+            self.assertIn(f'--resume {checkpoint}', cmd)
+
+    def test_experiment_manager_resumes_training_when_checkpoint_exists(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            config_path = workspace / 'config.json'
+            config_path.write_text(json.dumps({
+                'experiment_name': 'demo_group',
+                'base_config': {
+                    'dataset': 'cifar10',
+                    'data_path': './data/cifar10',
+                    'epochs': 2,
+                    'batch_size': 8,
+                    'num_gpus': 1,
+                    'path_family': 'linear',
+                    'sampling_solver': 'heun2',
+                    'metrics': ['fid'],
+                    'eval_epochs': [1],
+                    'eval_nfes': [10],
+                },
+                'experiments': [
+                    {
+                        'name': 'demo_ft',
+                        'clock_family': 'uniform',
+                    }
+                ],
+            }), encoding='utf-8')
+
+            cwd = os.getcwd()
+            os.chdir(workspace)
+            try:
+                manager = ExperimentManager(config_path)
+                checkpoint = manager.base_dir / 'cifar10' / 'demo_ft' / 'checkpoint.pth'
+                checkpoint.parent.mkdir(parents=True, exist_ok=True)
+                checkpoint.touch()
+                manager.state['demo_ft:train'] = 'failed'
+                manager._save_state()
+                seen_resume = {'value': False}
+
+                def fake_run_command(cmd, log_file, retries=0):
+                    tokens = shlex.split(cmd)
+                    if '--eval_only' not in tokens:
+                        self.assertIn('--resume', tokens)
+                        self.assertEqual(tokens[tokens.index('--resume') + 1], str(checkpoint))
+                        seen_resume['value'] = True
+                    return True
+
+                with mock.patch('experiments.run_experiments.run_command', side_effect=fake_run_command):
+                    with mock.patch('experiments.run_experiments.extract_eval_stats', return_value={
+                        'nfe': 10.0,
+                        'step_count': 5.0,
+                        'real_samples': 50000.0,
+                        'synthetic_samples': 50000.0,
+                        'fid': 9.5,
+                    }):
+                        manager.run_all()
+            finally:
+                os.chdir(cwd)
+
+            self.assertTrue(seen_resume['value'])
