@@ -10,7 +10,7 @@ base_config:
   sampling_solver: heun2
   cfg_scale: 0.0
   class_drop_prob: 1.0
-  metrics: [fid, precision_recall]
+  metrics: [fid, precision_recall, inception_score]
   eval_epochs: [499]
   eval_nfes: [10, 20, 50]
 experiments:

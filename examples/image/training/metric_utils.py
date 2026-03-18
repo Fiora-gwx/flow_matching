@@ -4,6 +4,11 @@ import torch
 from torch import Tensor
 
 EPS = 1e-8
+METRIC_OUTPUTS = {
+    "fid": ("fid",),
+    "precision_recall": ("precision", "recall"),
+    "inception_score": ("is_mean", "is_std"),
+}
 
 
 def requested_metrics(args) -> Tuple[str, ...]:
@@ -13,6 +18,10 @@ def requested_metrics(args) -> Tuple[str, ...]:
     if not metrics:
         metrics.add("fid")
     return tuple(sorted(metrics))
+
+
+def metric_output_names(metric_name: str) -> Tuple[str, ...]:
+    return METRIC_OUTPUTS.get(metric_name, (metric_name,))
 
 
 def prepare_inception_input(images: Tensor) -> Tensor:

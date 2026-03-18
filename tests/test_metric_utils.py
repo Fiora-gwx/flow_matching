@@ -137,3 +137,68 @@ class EvalLoopPrecisionRecallTest(unittest.TestCase):
         self.assertEqual(results["precision"], 0.7)
         self.assertEqual(results["recall"], 0.6)
         self.assertEqual(results["synthetic_samples"], 2.0)
+
+
+@unittest.skipUnless(HAS_TORCH, "torch is required for eval inception score tests")
+class EvalLoopInceptionScoreTest(unittest.TestCase):
+    def test_eval_model_inception_score_accepts_float_images(self):
+        from training import eval_loop
+
+        class FakeInceptionScoreBackend:
+            def __init__(self):
+                self.input_dtypes = []
+
+            def update(self, images):
+                self.input_dtypes.append(images.dtype)
+
+            def compute(self):
+                return torch.tensor(3.2), torch.tensor(0.4)
+
+        fake_backend = FakeInceptionScoreBackend()
+        sample = torch.rand(2, 3, 32, 32, dtype=torch.float32)
+        labels = torch.zeros(2, dtype=torch.long)
+        data_loader = [(sample, labels)]
+        args = types.SimpleNamespace(
+            metrics=["inception_score"],
+            compute_fid=False,
+            discrete_flow_matching=False,
+            output_dir=None,
+            test_run=True,
+            save_fid_samples=False,
+            sampling_solver="heun2",
+            eval_nfe=10,
+            cfg_scale=0.0,
+            precision_recall_neighbors=3,
+            precision_recall_max_samples=16,
+            inception_score_splits=2,
+        )
+
+        class DummyModel(torch.nn.Module):
+            def forward(self, x, t, extra=None):
+                return x
+
+        fake_sampling = types.SimpleNamespace(
+            sample=torch.rand(2, 3, 32, 32, dtype=torch.float32),
+            nfe=10,
+            step_count=5,
+        )
+
+        with mock.patch.object(
+            eval_loop,
+            "_build_inception_score_metric",
+            return_value=fake_backend,
+        ):
+            with mock.patch.object(eval_loop, "solve_fixed_budget", return_value=fake_sampling):
+                results = eval_loop.eval_model(
+                    model=DummyModel(),
+                    data_loader=data_loader,
+                    device=torch.device("cpu"),
+                    epoch=0,
+                    fid_samples=2,
+                    args=args,
+                )
+
+        self.assertEqual(fake_backend.input_dtypes, [torch.uint8])
+        self.assertAlmostEqual(results["is_mean"], 3.2, places=6)
+        self.assertAlmostEqual(results["is_std"], 0.4, places=6)
+        self.assertEqual(results["synthetic_samples"], 2.0)

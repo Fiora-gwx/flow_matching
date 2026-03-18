@@ -37,6 +37,8 @@ cd ../..
 
 当前实验和测试依赖至少包括：`pytorch`、`torchvision`、`torchmetrics[image]`、`matplotlib`、`pyyaml`、`scikit-learn`。
 
+当前支持的评估指标包括：`fid`、`precision_recall`、`inception_score`。
+
 ## 标准实验命令
 
 ### E1 Linear Main
@@ -48,6 +50,8 @@ python3 experiments/visualize_results.py \
   --out experiments/results/ft_clock_linear_main/plots \
   --artifact_group ft_clock_linear_main
 ```
+
+如果历史结果里只有 `fid` / `precision_recall`，现在想补 `inception_score`，直接重跑同一个 YAML 即可。`experiments/run_experiments.py` 会跳过已完成训练，只对缺失指标执行 `eval_only` 回填。
 
 只生成 E6 热力图：
 

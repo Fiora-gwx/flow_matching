@@ -28,6 +28,7 @@ from training.fixed_step_solver import solve_fixed_budget
 from training.metric_utils import (
     compute_precision_recall,
     extract_inception_features,
+    prepare_inception_input,
     requested_metrics,
 )
 from training.train_loop import MASK_TOKEN
@@ -36,6 +37,11 @@ try:
     from torchmetrics.image.fid import FrechetInceptionDistance
 except ImportError:  # pragma: no cover - depends on runtime environment.
     FrechetInceptionDistance = None
+
+try:
+    from torchmetrics.image.inception import InceptionScore
+except ImportError:  # pragma: no cover - depends on runtime environment.
+    InceptionScore = None
 
 logger = logging.getLogger(__name__)
 PRINT_FREQUENCY = 50
@@ -91,6 +97,16 @@ def _build_fid_metric(device: torch.device):
     return FrechetInceptionDistance(normalize=True).to(device=device, non_blocking=True)
 
 
+def _build_inception_score_metric(device: torch.device, splits: int):
+    if InceptionScore is None:
+        raise RuntimeError(
+            "torchmetrics[image] is required for evaluation metrics. Install project dependencies before running eval."
+        )
+    return InceptionScore(splits=max(1, splits), normalize=False).to(
+        device=device, non_blocking=True
+    )
+
+
 @torch.no_grad()
 def eval_model(
     model: DistributedDataParallel,
@@ -123,6 +139,13 @@ def eval_model(
     metric_backend = None
     if "fid" in active_metrics or "precision_recall" in active_metrics:
         metric_backend = _build_fid_metric(device=device)
+    inception_score_metric = None
+    if "inception_score" in active_metrics:
+        requested_splits = int(getattr(args, "inception_score_splits", 10))
+        inception_score_metric = _build_inception_score_metric(
+            device=device,
+            splits=min(max(1, fid_samples), requested_splits),
+        )
 
     real_features = []
     fake_features = []
@@ -202,6 +225,8 @@ def eval_model(
             fake_features.append(
                 extract_inception_features(metric_backend, synthetic_samples).cpu()
             )
+        if inception_score_metric is not None:
+            inception_score_metric.update(prepare_inception_input(synthetic_samples))
         num_synthetic += synthetic_samples.shape[0]
 
         if not snapshots_saved and args.output_dir:
@@ -252,4 +277,8 @@ def eval_model(
             max_samples=args.precision_recall_max_samples,
         )
         results.update(pr_metrics)
+    if inception_score_metric is not None:
+        is_mean, is_std = inception_score_metric.compute()
+        results["is_mean"] = float(is_mean.detach().cpu())
+        results["is_std"] = float(is_std.detach().cpu())
     return results

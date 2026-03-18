@@ -39,6 +39,11 @@ NUMERIC_FIELDS = {
 OPTIONAL_NUMERIC_FIELDS = {
     "clock_param_value": float,
 }
+METRIC_OUTPUTS = {
+    "fid": ("fid",),
+    "precision_recall": ("precision", "recall"),
+    "inception_score": ("is_mean", "is_std"),
+}
 
 
 def _write_results_header(csv_path: Path) -> None:
@@ -85,6 +90,10 @@ def append_result_rows(csv_path: Path, rows: Iterable[Dict[str, object]]) -> Non
         writer = csv.DictWriter(handle, fieldnames=RESULT_FIELDS)
         for row in rows:
             writer.writerow({field: row.get(field, "") for field in RESULT_FIELDS})
+
+
+def metric_output_names(metric_name: str) -> Tuple[str, ...]:
+    return METRIC_OUTPUTS.get(metric_name, (metric_name,))
 
 
 def _coerce_row(row: Dict[str, str]) -> Dict[str, object]:

@@ -19,6 +19,8 @@ from experiments.result_utils import (
     append_result_rows,
     ensure_results_file,
     infer_clock_parameter,
+    load_result_rows,
+    metric_output_names,
     resolve_best_beta_reference,
 )
 
@@ -179,6 +181,10 @@ class ExperimentManager:
             flags.append(
                 f"--precision_recall_max_samples {spec['precision_recall_max_samples']}"
             )
+        if spec.get("inception_score_splits") is not None:
+            flags.append(
+                f"--inception_score_splits {spec['inception_score_splits']}"
+            )
         if spec.get("cfg_scale") is not None:
             flags.append(f"--cfg_scale {spec['cfg_scale']}")
         if spec.get("class_drop_prob") is not None:
@@ -209,8 +215,18 @@ class ExperimentManager:
             flags.append("--decay_lr")
         return f"{self._launcher(spec.get('num_gpus', 1))} examples/image/train.py " + " ".join(flags)
 
-    def build_eval_cmd(self, spec: Dict, output_dir: Path, checkpoint: Path, nfe: int) -> str:
-        flags = self._base_flags(spec, output_dir)
+    def build_eval_cmd(
+        self,
+        spec: Dict,
+        output_dir: Path,
+        checkpoint: Path,
+        nfe: int,
+        metrics_override: Optional[List[str]] = None,
+    ) -> str:
+        eval_spec = dict(spec)
+        if metrics_override is not None:
+            eval_spec["metrics"] = metrics_override
+        flags = self._base_flags(eval_spec, output_dir)
         flags.extend(
             [
                 "--eval_only",
@@ -219,7 +235,7 @@ class ExperimentManager:
                 f"--seed {spec.get('seed', 0)}",
             ]
         )
-        if "fid" in spec.get("metrics", ["fid"]):
+        if "fid" in eval_spec.get("metrics", ["fid"]):
             flags.append("--compute_fid")
         return f"{self._launcher(spec.get('num_gpus', 1))} examples/image/train.py " + " ".join(flags)
 
@@ -257,10 +273,56 @@ class ExperimentManager:
             )
         return rows
 
+    def _existing_metric_outputs(
+        self,
+        rows: List[Dict[str, object]],
+        spec: Dict,
+        epoch: int,
+        nfe: int,
+    ) -> List[str]:
+        clock_param_name, clock_param_value = infer_clock_parameter(
+            spec.get("clock_family", "uniform"),
+            spec.get("clock_beta"),
+        )
+        matching_rows = [
+            row
+            for row in rows
+            if row.get("exp_name") == spec["name"]
+            and row.get("dataset") == spec["dataset"]
+            and row.get("seed") == spec.get("seed", 0)
+            and row.get("stage") == "eval"
+            and row.get("checkpoint_epoch") == epoch
+            and row.get("path_family") == spec.get("path_family", "linear")
+            and row.get("clock_family") == spec.get("clock_family", "uniform")
+            and row.get("clock_param_name") == clock_param_name
+            and row.get("clock_param_value") == clock_param_value
+            and row.get("solver") == spec.get("sampling_solver", "heun2")
+            and row.get("nfe") == nfe
+            and row.get("status") == "completed"
+            and row.get("artifact_group") == spec.get("artifact_group", self.exp_group_name)
+        ]
+        return sorted({str(row["metric"]) for row in matching_rows})
+
+    def _missing_eval_metrics(
+        self,
+        rows: List[Dict[str, object]],
+        spec: Dict,
+        epoch: int,
+        nfe: int,
+    ) -> List[str]:
+        existing_outputs = set(self._existing_metric_outputs(rows, spec, epoch, nfe))
+        missing_metrics = []
+        for metric_name in spec.get("metrics", ["fid"]):
+            required_outputs = metric_output_names(str(metric_name))
+            if any(output_name not in existing_outputs for output_name in required_outputs):
+                missing_metrics.append(str(metric_name))
+        return missing_metrics
+
     def run_all(self) -> None:
         base_config = self.config.get("base_config", {})
         assert_no_legacy_keys(base_config)
         experiments = self.config.get("experiments", [])
+        existing_rows = load_result_rows(self.results_csv)
         for experiment in experiments:
             spec = merge_dicts(base_config, experiment)
             assert_no_legacy_keys(spec)
@@ -304,7 +366,16 @@ class ExperimentManager:
                     continue
                 for nfe in spec["eval_nfes"]:
                     eval_key = f"{spec['name']}:ep{epoch}:nfe{nfe}"
-                    if self.state.get(eval_key) == "completed":
+                    missing_metrics = self._missing_eval_metrics(
+                        existing_rows,
+                        spec,
+                        epoch,
+                        nfe,
+                    )
+                    if not missing_metrics:
+                        if self.state.get(eval_key) != "completed":
+                            self.state[eval_key] = "completed"
+                            self._save_state()
                         continue
                     eval_dir = exp_dir / f"eval_ep{epoch}_nfe{nfe}"
                     eval_dir.mkdir(parents=True, exist_ok=True)
@@ -312,7 +383,13 @@ class ExperimentManager:
                     self.state[eval_key] = "running"
                     self._save_state()
                     success = run_command(
-                        self.build_eval_cmd(spec, eval_dir, checkpoint, nfe),
+                        self.build_eval_cmd(
+                            spec,
+                            eval_dir,
+                            checkpoint,
+                            nfe,
+                            metrics_override=missing_metrics,
+                        ),
                         eval_log,
                         retries=0,
                     )
@@ -325,7 +402,9 @@ class ExperimentManager:
                         self.state[eval_key] = "failed_no_eval_stats"
                         self._save_state()
                         continue
-                    append_result_rows(self.results_csv, self._result_rows(spec, epoch, nfe, stats))
+                    new_rows = self._result_rows(spec, epoch, nfe, stats)
+                    append_result_rows(self.results_csv, new_rows)
+                    existing_rows.extend(new_rows)
                     self.state[eval_key] = "completed"
                     self._save_state()
 

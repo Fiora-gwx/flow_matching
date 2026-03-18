@@ -19,7 +19,7 @@ CLOCK_FAMILIES = [
     "exp_l3",
 ]
 SAMPLING_SOLVERS = ["euler", "heun2"]
-SUPPORTED_METRICS = ["fid", "precision_recall"]
+SUPPORTED_METRICS = ["fid", "precision_recall", "inception_score"]
 
 
 def get_args_parser():
@@ -130,6 +130,12 @@ def get_args_parser():
         default=10000,
         type=int,
         help="Maximum number of real and fake samples used for precision/recall.",
+    )
+    parser.add_argument(
+        "--inception_score_splits",
+        default=10,
+        type=int,
+        help="Number of splits used when computing inception score.",
     )
     parser.add_argument(
         "--analysis_num_bins",

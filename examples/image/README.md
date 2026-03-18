@@ -55,6 +55,8 @@ python3 experiments/run_experiments.py --config experiments/configs/ft_clock/tri
 python3 experiments/run_experiments.py --config experiments/configs/ft_clock/solver_sensitivity.yaml
 ```
 
+如果某个实验组已经训练完成，后续只是在 YAML 的 `metrics` 中新增了 `inception_score`，重新执行同一个 `run_experiments.py --config ...` 即可；runner 会复用现有 checkpoint，只回填缺失评估，不会重新训练。
+
 其中：
 
 - E2 / E3 / E5 会自动从 E1 / E4 结果解析 best beta
