@@ -1,0 +1,117 @@
+\section{\ifinternalcn FT-Clock 构造\else FT-Clock Construction\fi}
+
+\ifinternalcn
+\paragraph{样本级 FT-Clock。}
+给定样本对 $(x,\epsilon)$，我们要求终端误差在新时间 $r$ 下满足归一化有限时间收缩律
+\begin{equation}
+  \frac{\dd}{\dd r}V(z_r(x,\epsilon),x)
+  =
+  -\frac{V_0(x,\epsilon)^{1-\beta}}{1-\beta}V(z_r(x,\epsilon),x)^\beta,
+  \qquad \beta \in (0,1).
+  \label{eq:sample-ft-law}
+\end{equation}
+其中 $\beta$ 控制终端附近的时间分配方式。式 \eqref{eq:sample-ft-law} 的归一化系数确保不同样本对都在 $r=1$ 时精确达到零终端误差；因此 FT-Clock 不是任意的单调重参数化，而是由指定误差收缩律唯一诱导出来的时钟族。
+
+\begin{theorem}[样本级 FT-Clock 的存在性与唯一性]
+在可接入条件路径假设下，若固定样本对 $(x,\epsilon)$ 的终端误差曲线 $V_s(x,\epsilon)$ 严格单调递减，则对任意 $\beta \in (0,1)$，存在唯一严格单调递增映射 $\psi_{x,\epsilon}:[0,1]\to[0,1]$，使得 $\psi_{x,\epsilon}(0)=0,\psi_{x,\epsilon}(1)=1$，且对应轨迹满足式 \eqref{eq:sample-ft-law}。该映射可写为
+\begin{equation}
+  \psi_{x,\epsilon}(r)
+  =
+  V_{\cdot}^{-1}(x,\epsilon)
+  \left(
+    V_0(x,\epsilon)(1-r)^{\frac{1}{1-\beta}}
+  \right).
+\end{equation}
+\end{theorem}
+
+\paragraph{全局 FT-Clock。}
+样本级时钟依赖具体样本对，不适合在整个训练过程中共享。为此，我们定义数据集平均终端误差
+\begin{equation}
+  \bar{V}_s := \E_{x,\epsilon}\left[V_s(x,\epsilon)\right]
+\end{equation}
+并以它构造全局共享时钟 $\bar{\psi}_{\beta}$。若 $\bar{V}_s$ 在 $[0,1]$ 上严格递减，则对任意 $\beta \in (0,1)$，存在唯一全局时钟满足
+\begin{equation}
+  \bar{V}_{\bar{\psi}_{\beta}(r)}
+  =
+  \bar{V}_0(1-r)^{\frac{1}{1-\beta}}.
+  \label{eq:global-ft-clock}
+\end{equation}
+该公式说明，共享时钟本质上是由平均误差曲线诱导出的单调时间变换。接下来我们把这一点写成适用于一般路径的显式定义、隐式存在性结论、闭式条件和数值构造。
+
+\paragraph{\ifinternalcn 时间重参数化：闭式与数值解\else Time Reparameterization: Closed-form and Numerical Solutions\fi.}
+\textbf{\ifinternalcn 定义。\else Definition.\fi}
+定义单调变换
+\begin{equation}
+  F_{\beta}(s)
+  :=
+  1-\left(\frac{\bar{V}_s}{\bar{V}_0}\right)^{1-\beta},
+  \qquad s \in [0,1].
+  \label{eq:clock-transform}
+\end{equation}
+则全局 FT-Clock 满足
+\begin{equation}
+  r = F_{\beta}(s),
+  \qquad
+  \bar{\psi}_{\beta}(r) = F_{\beta}^{-1}(r).
+  \label{eq:clock-inverse}
+\end{equation}
+对式 \eqref{eq:clock-inverse} 两边求导，可得等价的微分形式
+\begin{equation}
+  \frac{\dd s}{\dd r}
+  =
+  -\frac{\bar{V}_0^{1-\beta}}{1-\beta}
+  \frac{\bar{V}_s^{\beta}}{\bar{V}_s'},
+  \qquad s(0)=0,
+  \label{eq:clock-ode}
+\end{equation}
+并由变量替换得到积分表示
+\begin{equation}
+  r
+  =
+  \int_0^s
+  -\frac{(1-\beta)\bar{V}_u'}{\bar{V}_0^{1-\beta}\bar{V}_u^{\beta}}
+  \,\dd u
+  =
+  F_{\beta}(s).
+  \label{eq:clock-integral}
+\end{equation}
+
+\begin{proposition}[隐式时钟的存在性]
+若 $\bar{V}_s$ 在 $[0,1]$ 上连续、严格递减，且满足 $\bar{V}_0>0,\bar{V}_1=0$，则对任意 $\beta \in (0,1)$，映射 $F_{\beta}(s)$ 在 $[0,1]$ 上连续、严格递增，并满足 $F_{\beta}(0)=0$、$F_{\beta}(1)=1$。因此，全局时钟 $\bar{\psi}_{\beta}=F_{\beta}^{-1}$ 存在且唯一，即使没有闭式表达式也可以隐式定义。
+\end{proposition}
+
+\begin{theorem}[闭式可解条件]
+全局时钟 $\bar{\psi}_{\beta}(r)$ 具有闭式表达式，当且仅当式 \eqref{eq:clock-transform} 所定义的单调变换 $F_{\beta}(s)$ 具有显式可写的反函数。仅有 $\bar{V}_s$ 的解析性并不足以保证闭式可解：即使 $\bar{V}_s$ 是解析函数，$F_{\beta}(s)$ 的反函数也可能不属于初等函数，或无法写成可操作的显式形式。
+\end{theorem}
+
+\paragraph{\ifinternalcn 数值构造。\else Numerical Method.\fi}
+当闭式解不存在时，我们在一维网格 $\{s_i\}_{i=0}^N$ 上评估 $\bar{V}_{s_i}$，并计算
+\begin{equation}
+  r_i
+  =
+  F_{\beta}(s_i)
+  =
+  1-\left(\frac{\bar{V}_{s_i}}{\bar{V}_0}\right)^{1-\beta}.
+\end{equation}
+由于 $\{r_i\}$ 严格递增，便可通过单调插值构造逆映射
+\begin{equation}
+  \hat{\psi}_{\beta,h}(r)
+  :=
+  \operatorname{Interp}\bigl(\{(r_i,s_i)\}_{i=0}^N,r\bigr),
+\end{equation}
+并在均匀的 $r$-grid 上得到对应的原时间节点 $s_k=\hat{\psi}_{\beta,h}(r_k)$。若 $F_{\beta}$ 连续可微且其导数在 $[0,1]$ 上有正下界，则上述单调插值逆映射满足
+\begin{equation}
+  \|\hat{\psi}_{\beta,h}-\bar{\psi}_{\beta}\|_{\infty} \to 0
+  \qquad \text{as } h:=\max_i |s_{i+1}-s_i| \to 0.
+\end{equation}
+因此，即使没有闭式时钟，数值构造得到的重参数化轨迹也会随网格细化而一致收敛到连续时间 FT-Clock。
+
+\begin{remark}
+上述结果澄清了闭式时钟与可用时钟之间的关系。FT-Clock 的一般框架并不依赖闭式解；闭式只是一类特殊路径族上的便利形式。对一般路径而言，只要平均误差曲线单调，时钟就可以通过一维单调变换的数值反演稳定构造，其额外开销相对于模型前向求值可以忽略。
+\end{remark}
+
+\paragraph{不是启发式损失重加权。}
+FT-Clock 改变的是桥上的时间坐标，而不是在原始时间上重新定义损失权重。给定同一条条件路径，时钟 $\psi$ 同时改变条件样本的访问位置、条件速度的缩放以及离散采样时各阶段所承受的误差预算。因此，它与在固定时间坐标下施加经验性 loss weighting 在语义上不同：前者对应一条新的重参数化桥，后者通常只改变回归误差的加权方式。
+\else
+This section defines FT-Clock at the sample level and at the dataset-averaged level. For the shared clock, the right distinction is between implicit existence, explicit closed-form invertibility, and numerical construction. A monotone transform induced by the averaged terminal-error curve always defines the clock implicitly; closed form requires an explicit inverse of that transform; otherwise a one-dimensional monotone interpolation recovers the clock numerically with consistent refinement.
+\fi

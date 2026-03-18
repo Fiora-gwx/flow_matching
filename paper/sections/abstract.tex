@@ -1,0 +1,7 @@
+\begin{abstract}
+\ifinternalcn
+少步生成的瓶颈不仅来自路径几何，也来自计算预算沿路径的分配方式。现有生成模型通常固定内部时间坐标，而较少把时间重参数化本身作为独立设计对象。本文提出 \emph{FT-Clock}，即由有限时间收缩律诱导的传输时钟。给定一条满足端点条件、时间可微且终端误差单调衰减的条件概率路径，我们通过终端误差的 Lyapunov 型收缩规律构造新的生成时间坐标，从而在不改变路径几何的前提下重分配传输过程中的时间预算。该构造在一般路径类上可由逆映射或一维数值求解定义；对于仿射高斯桥，则可进一步化为平均终端误差驱动的全局共享时钟。在线性桥与三角 VP 风格路径上，我们得到闭式时钟，并由此刻画终端聚焦与数值刚性之间的折中。进一步地，我们证明基于 FT-Clock 的训练目标与条件流匹配保持一致，其最优解仍是重参数化桥的边缘向量场，因此 FT-Clock 改变的是桥上的时间坐标，而不是对回归损失施加经验性重加权。实验部分围绕线性路径上的少步收益、与经验调度族的差异、对 VP 风格路径的泛化，以及 $\beta$--NFE 规律和求解器敏感性所揭示的机制展开。
+\else
+Few-step generative modeling is constrained not only by path geometry, but also by how computation is allocated along a transport path. We propose \emph{FT-Clock}, a time reparameterization induced by a finite-time contraction law on terminal error. For admissible conditional probability paths, FT-Clock can be defined through inverse error curves or one-dimensional numerical solves; for affine Gaussian bridges, it further yields shared global clocks, with closed forms for linear and VP-style paths. We also show that the reparameterized objective remains consistent with conditional flow matching, so the optimal predictor is still the marginal vector field of the reparameterized bridge. The resulting view treats internal time allocation as a principled design variable for few-step generation.
+\fi
+\end{abstract}

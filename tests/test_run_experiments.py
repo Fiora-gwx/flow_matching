@@ -172,6 +172,7 @@ class RunExperimentsTest(unittest.TestCase):
                 resume_checkpoint=checkpoint,
             )
             self.assertIn(f'--resume {checkpoint}', cmd)
+            self.assertIn('--eval_frequency -1', cmd)
 
     def test_experiment_manager_resumes_training_when_checkpoint_exists(self):
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -53,6 +53,8 @@ python3 experiments/visualize_results.py \
 
 如果历史结果里只有 `fid` / `precision_recall`，现在想补 `inception_score`，直接重跑同一个 YAML 即可。`experiments/run_experiments.py` 会跳过已完成训练，只对缺失指标执行 `eval_only` 回填。
 
+YAML runner 的训练阶段默认会传 `--eval_frequency -1`，避免每 50 个 epoch 做一次中途 FID/IS；最终 checkpoint 仍会保存，真正的多 NFE 评估由 runner 在训练完成后统一执行。
+
 只生成 E6 热力图：
 
 ```bash

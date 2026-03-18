@@ -1,0 +1,63 @@
+\section{\ifinternalcn 实验\else Experiments\fi}
+
+\ifinternalcn
+\paragraph{实验设置。}
+我们在 CIFAR-10 上评估 FT-Clock 的少步生成表现，并在 CIFAR-100 上考察附录中的跨数据集行为 \citep{krizhevsky2009learning}。所有主实验共享同一骨干网络、训练预算、优化器、EMA 机制和真实 NFE 计数口径，以隔离时间重参数化本身的影响。本文主文比较两类路径：线性桥与三角 VP 风格路径；主结果使用 Heun2 求解器，求解器敏感性分析比较 Euler 与 Heun2。在生成设置上，本文采用无条件配置，$\texttt{cfg\_scale}=0.0$ 且 $\texttt{class\_drop\_prob}=1.0$。
+
+除主文中的核心比较外，附录补充跨路径比较、CIFAR-100 迁移、速度范数与损失密度曲线、轨迹几何统计以及更完整的求解器敏感性矩阵。为避免把复现实验协议与主线叙事混写，FID 的样本数、统计量来源、checkpoint 选择、seed 聚合、超参数搜索空间和共享 step grid 等细节统一在附录中说明。
+
+\subsection{\ifinternalcn 线性路径主结果\else Main Results on Linear Paths\fi}
+我们首先考察在线性路径上，FT-Clock 是否能在少步和中低 NFE 区间稳定优于均匀时钟。比较对象为 uniform baseline 与一组代表性的 FT-Clock 参数，评价指标以 FID 为主 \citep{heusel2017fid}。
+% 占位图对应主文线性路径主结果；最终替换为 FID-vs-NFE 曲线，至少包含 uniform 与若干代表性 ft_linear_beta。
+\placeholderfigure{linear-main}{
+线性路径上的主结果图：横轴为真实 NFE，纵轴为 FID，比较 uniform 时钟与若干代表性 FT-Clock 参数。该图用于展示在固定路径几何下，时间重参数化本身能否改善少步生成质量。}
+
+\subsection{\ifinternalcn 与经验调度族的比较\else Comparison with Heuristic Schedules\fi}
+仅比较 FT-Clock 与 uniform 还不足以说明收益来自有限时间收缩原则本身，因为任意非均匀 schedule 都可能偶然地把更多预算推向目标端。为此，我们在线性路径上比较多项式、余弦、sigmoid、指数等常见经验调度与 FT-Clock，并保持路径、训练配置、求解器与 NFE 口径一致。
+% 占位图对应 schedule family 对比；最终替换为 grouped bar 或 line plot，固定 NFE 比较 uniform、polynomial、cosine、sigmoid、exponential、FT-Clock。
+\placeholderfigure{schedule-family}{
+调度族比较图：在线性路径上比较 uniform、多项式、余弦、sigmoid、指数与 FT-Clock 在相同 NFE 下的 FID。该图用于检验改进是否来自 FT-Clock 所诱导的时间结构，而不是任意经验性非均匀调度。}
+
+\subsection{\ifinternalcn VP 风格路径泛化\else Generalization to VP-style Paths\fi}
+为了检验 FT-Clock 是否局限于线性桥，我们进一步在三角 VP 风格路径上重复核心比较。这里的重点不是重新讨论路径几何，而是考察同一时间设计原则是否能迁移到非线性路径族。
+% 占位表对应 VP 主结果；最终替换为精简表，比较 uniform 与若干代表性 ft_vp_beta 在多个 NFE 下的 FID。
+\placeholdertable{vp-main}{
+VP 风格路径上的主结果表：比较 uniform 时钟与若干代表性 FT-Clock 参数在多个 NFE 下的 FID。该表用于检验 FT-Clock 的收益是否能推广到非线性条件路径。}
+
+\subsection{\ifinternalcn 机制分析：$\beta$--NFE 与求解器敏感性\else Mechanism: \texorpdfstring{$\beta$--NFE}{beta-NFE} and Solver Sensitivity\fi}
+闭式特例表明，$\beta$ 会系统性地改变目标端附近的时间预算分配，从而在终端聚焦收益与数值刚性代价之间形成折中。我们用两类结果检验这一机制：第一类结果展示最佳 $\beta$ 如何随 NFE 变化；第二类结果比较不同求解器下该折中的位置是否发生系统偏移。
+\begin{itemize}[leftmargin=1.5em]
+  \item 当较小的 $\beta$ 把更多预算推向目标端时，少步误差可能下降，但局部刚性也会上升；
+  \item 当较大的 $\beta$ 使推进更平缓时，数值稳定性更好，但终端误差聚焦可能减弱。
+\end{itemize}
+% 占位图对应 beta-NFE 热力图；最终替换为纵轴 beta、横轴 NFE、颜色为 FID 的热力图。
+\placeholderfigure{beta-heatmap}{
+$\beta$--NFE 热力图：横轴为 NFE，纵轴为 $\beta$，颜色表示 FID。该图用于展示最佳时间结构如何随采样预算变化。}
+
+% 占位图对应 solver sensitivity；最终替换为 Euler/Heun2 在不同 beta 和 NFE 下的对比图。
+\placeholderfigure{solver-sensitivity}{
+求解器敏感性图：比较 Euler 与 Heun2 在不同 $\beta$ 和 NFE 下的性能差异。该图用于刻画终端聚焦收益与数值刚性之间的折中如何随求解器改变。}
+
+\paragraph{复现实验协议。}
+附录以论文式协议给出以下信息：FID 的估计方式及统计量来源；checkpoint 选择规则；随机种子与均值/方差聚合策略；各调度族与 FT-Clock 的搜索空间和公平比较口径；以及求解器实验是否共享训练模型与 step grid。这些细节直接决定主文比较是否具有可复现性与可解释性。
+\else
+We evaluate FT-Clock on CIFAR-10 under shared training and inference settings, with supplemental transfer experiments on CIFAR-100. The main paper focuses on four questions: whether FT-Clock improves linear-path generation at low and medium NFEs, whether the gain survives comparison against heuristic schedules, whether it extends to VP-style paths, and how it interacts with $\beta$ and solver choice.
+
+\subsection{\ifinternalcn 线性路径主结果\else Main Results on Linear Paths\fi}
+The first comparison studies FT-Clock against a uniform clock on linear paths under the same backbone, solver, and true-NFE accounting.
+
+\subsection{\ifinternalcn 与经验调度族的比较\else Comparison with Heuristic Schedules\fi}
+The second comparison tests whether the improvement is specific to FT-Clock or can be reproduced by generic non-uniform schedules such as polynomial, cosine, sigmoid, and exponential schedules.
+
+\subsection{\ifinternalcn VP 风格路径泛化\else Generalization to VP-style Paths\fi}
+The third comparison repeats the core analysis on VP-style paths to separate time-structure effects from a purely linear-bridge phenomenon.
+
+\subsection{\ifinternalcn 机制分析：$\beta$--NFE 与求解器敏感性\else Mechanism: \texorpdfstring{$\beta$--NFE}{beta-NFE} and Solver Sensitivity\fi}
+Finally, a $\beta$--NFE map and a solver-sensitivity study test the predicted tradeoff between terminal focusing and numerical stiffness.
+\begin{itemize}[leftmargin=1.5em]
+  \item CIFAR-10 / CIFAR-100 benchmarks;
+  \item linear and VP-style paths;
+  \item Heun2 as the main solver and Euler for sensitivity analysis;
+  \item true-NFE accounting for all comparisons.
+\end{itemize}
+\fi

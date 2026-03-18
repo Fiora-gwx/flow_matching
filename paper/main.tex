@@ -1,0 +1,152 @@
+\documentclass[11pt]{article}
+
+\PassOptionsToPackage{numbers,compress}{natbib}
+
+\newif\ifinternalcn
+\ifdefined\submissionmode
+  \internalcnfalse
+\else
+  \internalcntrue
+\fi
+
+\newif\ifhasneuripsstyle
+\IfFileExists{neurips_2025.sty}{\hasneuripsstyletrue}{\hasneuripsstylefalse}
+
+\ifhasneuripsstyle
+  \usepackage{neurips_2025}
+\else
+  \usepackage[margin=1in]{geometry}
+  \usepackage{natbib}
+\fi
+
+\usepackage{fontspec}
+\usepackage{xeCJK}
+\usepackage{microtype}
+\usepackage{amsmath,amssymb,amsthm,mathtools,bm}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{array}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{url}
+\usepackage{enumitem}
+
+\ifinternalcn
+  \IfFontExistsTF{Noto Serif CJK SC}{
+    \setmainfont{TeX Gyre Termes}
+    \setsansfont{TeX Gyre Heros}
+    \setmonofont{Latin Modern Mono}
+    \setCJKmainfont[AutoFakeSlant=0.2]{Noto Serif CJK SC}
+    \setCJKsansfont{Noto Sans CJK SC}
+    \IfFontExistsTF{Noto Sans Mono CJK SC}{
+      \setCJKmonofont{Noto Sans Mono CJK SC}
+    }{
+      \setCJKmonofont{Noto Sans CJK SC}
+    }
+  }{
+    \IfFontExistsTF{Source Han Serif SC}{
+      \setmainfont{TeX Gyre Termes}
+      \setsansfont{TeX Gyre Heros}
+      \setmonofont{Latin Modern Mono}
+      \setCJKmainfont[AutoFakeSlant=0.2]{Source Han Serif SC}
+      \setCJKsansfont{Source Han Sans SC}
+      \setCJKmonofont{Source Han Sans SC}
+    }{
+      \IfFontExistsTF{Songti SC}{
+        \setmainfont{Times New Roman}
+        \setsansfont{Arial}
+        \setmonofont{Courier New}
+        \setCJKmainfont[AutoFakeSlant=0.2]{Songti SC}
+        \setCJKsansfont{PingFang SC}
+        \setCJKmonofont{PingFang SC}
+      }{
+        \setmainfont{Latin Modern Roman}
+        \setsansfont{Latin Modern Sans}
+        \setmonofont{Latin Modern Mono}
+      }
+    }
+  }
+\else
+  \IfFontExistsTF{Times New Roman}{
+    \setmainfont{Times New Roman}
+    \setsansfont{Arial}
+    \setmonofont{Courier New}
+  }{
+    \IfFontExistsTF{TeX Gyre Termes}{
+      \setmainfont{TeX Gyre Termes}
+      \setsansfont{TeX Gyre Heros}
+      \setmonofont{Latin Modern Mono}
+    }{
+      \setmainfont{Latin Modern Roman}
+      \setsansfont{Latin Modern Sans}
+      \setmonofont{Latin Modern Mono}
+    }
+  }
+\fi
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue!60!black,
+  citecolor=blue!60!black,
+  urlcolor=blue!60!black,
+  pdftitle={FT-Clock: Finite-Time Transport Clocks for Few-Step Generative Modeling},
+  pdfauthor={Anonymous}
+}
+
+\newtheorem{theorem}{\ifinternalcn 定理\else Theorem\fi}
+\newtheorem{proposition}{\ifinternalcn 命题\else Proposition\fi}
+\newtheorem{assumption}{\ifinternalcn 假设\else Assumption\fi}
+\newtheorem{remark}{\ifinternalcn 说明\else Remark\fi}
+
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\V}{\mathcal{V}}
+\newcommand{\dd}{\mathrm{d}}
+\newcommand{\placeholderfigure}[2]{%
+  \begin{figure}[t]
+    \centering
+    \fbox{\parbox{0.82\linewidth}{\centering\vspace{2.2cm}【占位图】#1\vspace{2.2cm}}}
+    \caption{#2}
+    \label{fig:#1}
+  \end{figure}%
+}
+\newcommand{\placeholdertable}[2]{%
+  \begin{table}[t]
+    \centering
+    \fbox{\parbox{0.82\linewidth}{\centering\vspace{1.4cm}【占位表】#1\vspace{1.4cm}}}
+    \caption{#2}
+    \label{tab:#1}
+  \end{table}%
+}
+\providecommand{\answerTODO}{\textbf{TODO}}
+
+\title{FT-Clock: Finite-Time Transport Clocks for Few-Step Generative Modeling}
+
+\author{Anonymous Authors\\Affiliations withheld for review}
+
+\date{}
+
+\begin{document}
+
+\maketitle
+
+\input{sections/abstract}
+\input{sections/introduction}
+\input{sections/related_work}
+\input{sections/problem_setup}
+\input{sections/ft_clock_construction}
+\input{sections/consistency_analysis}
+\input{sections/closed_form_special_cases}
+\input{sections/experiments}
+\input{sections/limitations_discussion}
+\input{sections/conclusion}
+
+\bibliographystyle{plainnat}
+\bibliography{references}
+
+\appendix
+\input{sections/appendix}
+\input{sections/checklist}
+
+\end{document}

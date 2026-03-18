@@ -1,0 +1,57 @@
+\section{\ifinternalcn 与条件流匹配的一致性\else Consistency with Conditional Flow Matching\fi}
+
+\ifinternalcn
+\paragraph{重参数化后的训练目标。}
+给定基路径与全局 FT-Clock $\bar{\psi}_{\beta}(r)$，重参数化后的条件样本为
+\begin{equation}
+  z_r = \alpha(\bar{\psi}_{\beta}(r))x + \sigma(\bar{\psi}_{\beta}(r))\epsilon,
+\end{equation}
+其条件速度为
+\begin{equation}
+  \tilde{b}_r
+  =
+  \bar{\psi}_{\beta}'(r)
+  \left[
+    \alpha'(\bar{\psi}_{\beta}(r))x
+    +
+    \sigma'(\bar{\psi}_{\beta}(r))\epsilon
+  \right].
+\end{equation}
+训练时，我们回归该重参数化条件速度：
+\begin{equation}
+  \mathcal{L}(\theta)
+  =
+  \E_{x,\epsilon,r}
+  \left[
+    \left\|v_{\theta}(r,z_r)-\tilde{b}_r\right\|^2
+  \right].
+\end{equation}
+当 $\bar{\psi}_{\beta}(r)=r$ 时，这一目标退化回标准条件流匹配；因此 FT-Clock 可以被理解为对同一条件路径的时间结构重设计，而不是替换掉 flow matching 本身。
+
+\begin{theorem}[最优解为重参数化桥的边缘向量场]
+设 $Z_r=\Phi_{\bar{\psi}_{\beta}(r)}(x,\epsilon)$、$\widetilde{b}_r=\partial_r Z_r$。在所有平方可积可测函数 $v(r,z)$ 中，损失
+\begin{equation}
+  \mathcal{L}(v) = \E\left[\|v(r,Z_r)-\widetilde{b}_r\|^2\right]
+\end{equation}
+的唯一最优解为
+\begin{equation}
+  u_r^\star(z)=\E[\widetilde{b}_r \mid Z_r=z].
+\end{equation}
+\end{theorem}
+
+\paragraph{证明思路。}
+这一本质上是条件期望的投影定理：将任意候选 $v(r,Z_r)-\widetilde{b}_r$ 分解为
+\(
+  (v(r,Z_r)-u_r^\star(Z_r)) + (u_r^\star(Z_r)-\widetilde{b}_r)
+\)
+后，交叉项在条件期望下为零，因此最优解就是条件速度关于边缘状态的最小二乘投影。该结果说明 FT-Clock 不会破坏条件流匹配的统计正确性。
+
+\paragraph{结果的含义。}
+该投影结论明确区分了时间重参数化与经验性重加权。若仅在原始桥上改变损失权重，最优对象未必对应某条新的生成桥；而 FT-Clock 直接定义了一条重参数化后的条件路径，其训练目标仍然以该桥的边缘向量场为最优解。因此，FT-Clock 保留的是 transport semantics，而非单纯的 optimization heuristic。
+
+\begin{remark}
+本文不会把控制论中的 finite-time stability 与离散采样中的 few-step performance 混为一谈。前者仅作为时间结构设计原则；后者仍是有限 NFE 下的数值近似问题，需要通过统一路径、统一训练配置和统一求解器设置下的实验来检验。
+\end{remark}
+\else
+The FT-Clock objective remains a conditional flow-matching objective on a reparameterized bridge. Its optimal predictor is the time-dependent marginal vector field $u_r^\star(z)$ of that bridge, which preserves transport semantics and distinguishes FT-Clock from heuristic loss reweighting.
+\fi

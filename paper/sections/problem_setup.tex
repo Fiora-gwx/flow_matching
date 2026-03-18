@@ -1,0 +1,67 @@
+\section{\ifinternalcn 一般路径设定与可接入条件\else General Path Setup and Admissible Conditions\fi}
+
+\ifinternalcn
+我们考虑一条从噪声分布 $p_0$ 到数据分布 $p_{\mathrm{data}}$ 的条件概率路径
+\begin{equation}
+  x_s = \Phi_s(x,\epsilon), \qquad s \in [0,1],
+\end{equation}
+其中 $x \sim p_{\mathrm{data}}$，$\epsilon \sim p_0$，并满足端点条件
+\begin{equation}
+  \Phi_0(x,\epsilon)=\epsilon, \qquad \Phi_1(x,\epsilon)=x.
+\end{equation}
+标准条件流匹配在均匀时间 $s \sim \mathrm{Unif}[0,1]$ 下回归条件速度。本文不改变这一训练范式的基本语义，而是引入一个新的生成时间 $r \in [0,1]$ 以及严格单调递增的重参数化
+\begin{equation}
+  s = \psi(r), \qquad \psi(0)=0,\quad \psi(1)=1,
+\end{equation}
+从而得到重参数化后的轨迹
+\begin{equation}
+  z_r = \Phi_{\psi(r)}(x,\epsilon).
+\end{equation}
+若 $\psi(r)=r$，则退化回均匀时钟；若 $\psi$ 在终端附近拉伸或压缩时间，则会改变路径不同阶段的目标速度与数值误差分布。
+
+\paragraph{符号约定。}
+本文中 $s$ 始终表示“基路径上的原始时间”，$r$ 表示“重参数化后的生成时间”。二者共享相同区间 $[0,1]$，但承担不同角色：$s$ 决定路径几何上的位置，$\psi(r)$ 决定在新时间坐标下应访问哪一个原始路径位置。后续出现的“时钟”均指映射 $\psi:[0,1]\to[0,1]$，而非离散求解器的 step schedule。
+
+为了从原理上设计 $\psi$，我们以终端误差
+\begin{equation}
+  V(z,x)=\|z-x\|^2
+\end{equation}
+作为 Lyapunov 候选函数，并记
+\begin{equation}
+  V_s(x,\epsilon) := V(\Phi_s(x,\epsilon),x).
+\end{equation}
+控制理论中的有限时间稳定结论说明：若存在常数 $c>0$ 和 $\gamma \in (0,1)$ 使得
+\begin{equation}
+  \dot{V}(x) + c V(x)^\gamma \le 0,
+\end{equation}
+则系统在适当条件下会在有限时间内到达平衡点 \citep{bhat2000finite}. 本文借用这一思想设计终端误差随生成时间的收缩律，但强调这里的作用对象是概率路径上的误差曲线，而不是把“采样步数有限”重新命名为有限时间稳定。
+
+\begin{assumption}[可接入条件路径]
+称条件路径 $\Phi_s$ 对 FT-Clock 是可接入的，若它满足以下条件：
+\begin{enumerate}[leftmargin=1.5em,label=(\roman*)]
+  \item 端点正确：$\Phi_0(x,\epsilon)=\epsilon$ 且 $\Phi_1(x,\epsilon)=x$；
+  \item 时间可微：对几乎处处的 $(x,\epsilon)$，映射 $s \mapsto \Phi_s(x,\epsilon)$ 连续可微；
+  \item 终端误差单调：样本级终端误差 $V_s(x,\epsilon)$ 或平均终端误差
+  \(
+    \bar{V}_s := \E_{x,\epsilon}[V_s(x,\epsilon)]
+  \)
+  在 $[0,1]$ 上严格单调递减；
+  \item 重参数化速度存在：对任意允许的单调时钟 $\psi$，条件速度
+  \(
+    \partial_r \Phi_{\psi(r)}(x,\epsilon)
+  \)
+  良好定义并平方可积。
+\end{enumerate}
+\end{assumption}
+
+该假设将本文的普适性具体化为一类可描述的路径集合，而不是笼统地诉诸“任意端点正确的路径”。一旦样本级或平均误差曲线严格单调，误差关于原始时间的逆映射就存在，从而可以把“希望误差如何随新时间收缩”转化为“应该如何构造时钟 $\psi$”。当只有平均误差具备单调性时，仍可构造全局共享时钟，但闭式解不再保证存在。
+
+\paragraph{仿射高斯桥作为重要子类。}
+本文后续会特别讨论仿射高斯桥
+\begin{equation}
+  x_s = \alpha(s)x + \sigma(s)\epsilon,
+\end{equation}
+其中 $\alpha(0)=0,\sigma(0)=1,\alpha(1)=1,\sigma(1)=0$。这类路径覆盖线性桥以及常见的 VP 风格参数化，并允许把平均终端误差写成一维显式函数，因此是分析共享时钟与闭式特例的自然载体。但需要强调的是，仿射高斯桥只是一类工程上重要的 special case，而不是 FT-Clock 一般理论的前提。
+\else
+We consider a conditional probability path $x_s=\Phi_s(x,\epsilon)$ from noise to data and a monotone reparameterization $s=\psi(r)$. An admissible path for FT-Clock is endpoint-correct, differentiable in time, equipped with a monotone sample-level or averaged terminal-error curve, and admits a well-defined reparameterized conditional velocity. These conditions specify which flow-matching style bridges can directly adopt FT-Clock and separate general applicability from closed-form solvability.
+\fi

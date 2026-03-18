@@ -1,0 +1,63 @@
+\section{\ifinternalcn 闭式特例\else Closed-form Special Cases\fi}
+
+\ifinternalcn
+\paragraph{仿射高斯桥。}
+考虑仿射高斯桥
+\begin{equation}
+  x_s = \alpha(s)x + \sigma(s)\epsilon,
+\end{equation}
+其中 $x \sim p_{\mathrm{data}}$、$\epsilon \sim p_0$，并满足 $\alpha(0)=0$、$\sigma(0)=1$、$\alpha(1)=1$、$\sigma(1)=0$。若进一步采用零均值、各向同性归一化这一工程上常见的简化假设，即
+\(
+  \E[x]=0
+\)
+且
+\(
+ \E[\|x\|^2]=d\rho^2
+\)，则平均终端误差可以写成
+\begin{equation}
+  \bar{V}_s = d \left[\rho^2(1-\alpha(s))^2 + \sigma(s)^2\right].
+  \label{eq:affine-bridge-mean-error}
+\end{equation}
+该式只用于把一般共享时钟中的单调变换 $F_{\beta}(s)$ 落到一维显式函数上；它不是一般 FT-Clock 理论的前提。线性桥和 VP 风格路径之所以能给出闭式时钟，本质上都是因为它们诱导的 $F_{\beta}(s)$ 具有显式反函数。
+
+\paragraph{线性桥。}
+在线性路径 $\alpha(s)=s$、$\sigma(s)=1-s$ 上，式 \eqref{eq:affine-bridge-mean-error} 化为
+\begin{equation}
+  \bar{V}^{\mathrm{lin}}_s = d(\rho^2+1)(1-s)^2.
+\end{equation}
+代入全局收缩关系 \eqref{eq:global-ft-clock} 可得
+\begin{equation}
+  \bar{\psi}^{\mathrm{lin}}_{\beta}(r)
+  =
+  1-(1-r)^{\frac{1}{2(1-\beta)}}.
+  \label{eq:linear-clock}
+\end{equation}
+其导数为
+\begin{equation}
+  (\bar{\psi}^{\mathrm{lin}}_{\beta})'(r)
+  =
+  \frac{1}{2(1-\beta)}
+  (1-r)^{\frac{2\beta-1}{2-2\beta}}.
+\end{equation}
+这一公式说明 $\beta=\tfrac{1}{2}$ 时均匀时钟恰好落在 FT 家族内部；当 $\beta<\tfrac{1}{2}$ 时，终端附近的推进更集中；当 $\beta>\tfrac{1}{2}$ 时，终端推进更平缓。
+
+\paragraph{三角 VP 风格路径。}
+对 $\alpha(s)=\sin(\pi s/2)$、$\sigma(s)=\cos(\pi s/2)$ 且 $\rho=1$ 的常见 VP 风格参数化，有
+\begin{equation}
+  \bar{V}^{\mathrm{vp}}_s = 2d\left(1-\sin\left(\frac{\pi s}{2}\right)\right),
+\end{equation}
+从而得到闭式共享时钟
+\begin{equation}
+ \bar{\psi}^{\mathrm{vp}}_{\beta}(r)
+  =
+  \frac{2}{\pi}
+  \arcsin\left(1-(1-r)^{\frac{1}{1-\beta}}\right).
+  \label{eq:vp-clock}
+\end{equation}
+这说明 FT-Clock 的闭式实例并不限于线性桥；关键不在于 ``$\bar{V}_s$ 是解析的''，而在于由它诱导的单调变换是否可以显式反演。非线性路径同样可能满足这一条件。
+
+\paragraph{与 few-step 误差分配的关系。}
+闭式特例还揭示了一个直接可检验的机制。以线性桥为例，$(\bar{\psi}^{\mathrm{lin}}_{\beta})'(r)$ 直接控制重参数化后条件速度的局部缩放：较小的 $\beta$ 会把更多时间预算推向目标端，减少终端误差，但也可能提高局部刚性；较大的 $\beta$ 则更平滑，却可能减弱对终端误差的聚焦。后文实验将据此考察 $\beta$ 与 NFE、求解器之间的系统关系。
+\else
+For affine Gaussian bridges, the averaged terminal error becomes a one-dimensional explicit function, which turns the global FT-Clock construction into an inverse scalar map. Linear bridges and VP-style paths are two practically important cases where this inverse can be written in closed form. These formulas serve as corollaries of the general construction rather than as its defining assumptions.
+\fi

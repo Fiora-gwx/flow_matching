@@ -1,0 +1,17 @@
+\section{\ifinternalcn 相关工作\else Related Work\fi}
+
+\ifinternalcn
+\paragraph{扩散模型与基于分数的生成建模。}
+扩散模型通过从数据到噪声的逐步破坏和反向生成过程实现高质量采样，代表性工作包括 DDPM、DDIM 和 score-based SDE \citep{ho2020ddpm,song2021ddim,song2021score}. 这些方法已经证明，合适的时间参数化和噪声日程会显著影响训练稳定性与采样效率。本文并不重新设计扩散噪声日程，而是从更一般的条件概率路径出发，把“内部时间分配”抽象为一层独立的生成时钟设计。
+
+\paragraph{Flow matching 与路径几何。}
+Flow matching 为连续归一化流和生成 ODE 提供了无需数值求解器回传的训练范式 \citep{lipman2023flowmatching}. 其核心是指定一族条件概率路径，并回归相应的条件速度。随后，rectified flow 进一步强调路径几何对少步采样的关键作用：更直的轨迹往往意味着更小的离散化误差 \citep{liu2022rectified}. 本文与这些工作互补。我们不改变路径几何本身，而是研究在固定几何下如何通过时间重参数化重分配计算预算；因此 FT-Clock 可以被视为构建在既有 path design 之上的时间结构层。
+
+\paragraph{少步生成与高效采样。}
+少步生成还常通过蒸馏、隐式模型或高阶求解器近似完整采样轨迹。本文不直接提出新的蒸馏框架或 solver，而是在统一 backbone、训练预算和真实 NFE 计数下，分析时间结构变化如何影响有限步离散误差。换言之，我们关心的是 ``在固定模型和固定 solver 家族下，时钟本身还能做什么''。
+
+\paragraph{控制论与有限时间收缩。}
+有限时间稳定理论关注系统状态是否能在有限时间内精确到达平衡点，而不是仅仅渐近收敛 \citep{bhat2000finite}. 本文借用这一理论语言来设计终端误差的收缩规律，但不把其与 few-step sampling 混为一谈：控制论中的有限时间收缩作用于连续时间轨迹的误差演化，而少步生成则是有限 NFE 下的数值近似问题。我们的核心主张是，若用前者来设计时钟，就能以可解释的方式改变后者的误差形态。
+\else
+We position FT-Clock relative to diffusion models, score-based generative modeling, flow matching, and rectified flow. The main distinction is that we keep the path geometry fixed and redesign only the internal transport clock. This makes FT-Clock complementary to path-design methods and compatible with existing flow-matching training semantics.
+\fi

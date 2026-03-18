@@ -1,0 +1,26 @@
+\section{\ifinternalcn 引言\else Introduction\fi}
+
+\ifinternalcn
+扩散模型与流匹配模型已经成为高保真生成建模的主流路线，但高质量采样往往依赖较多的数值函数评估次数（number of function evaluations, NFE）\citep{ho2020ddpm,song2021score,lipman2023flowmatching}。当采样预算压缩到十几步甚至更少时，离散化误差、速度场刚性和目标端附近的误差放大会迅速主导最终质量。围绕这一问题，现有工作主要从三条路线推进：重新设计概率路径几何，使轨迹更适合粗步积分；通过蒸馏或隐式映射压缩多步过程；以及设计更高效的采样器或求解器。相比之下，路径上的内部时间坐标通常被默认为均匀，或仅被当作实现细节处理。
+
+本文关注一个更基础的问题：\emph{在固定路径几何的前提下，如何从原理上设计沿路径推进的时间分配方式，以改善有限步采样质量？} 这一问题并不等价于重新选择路径。即使两种方法共享相同的条件概率路径，不同的时间重参数化仍会改变训练目标中的条件速度、路径不同阶段的误差暴露，以及推理阶段离散误差的分布。因此，few-step generation 的性能不仅取决于路径是否“平直”，也取决于计算预算如何沿路径重新分配。
+
+我们据此提出 \emph{FT-Clock}，即由有限时间收缩律诱导的传输时钟。本文中的 ``finite-time'' 沿用控制论中关于终端误差收缩的意义，而不是把 few-step sampling 重新命名为有限时间稳定 \citep{bhat2000finite}。具体地，给定一条从噪声到数据的条件概率路径，我们以终端误差作为 Lyapunov 型设计对象，要求它在新的生成时间下满足归一化的有限时间收缩规律。该要求导出一类单调重参数化时钟：它不改变路径几何，只改变路径上各阶段所分配到的时间预算。
+
+这一视角允许我们先在一般路径类上刻画 FT-Clock 的适用条件，再将其落到工程上常见的路径族。对任意满足端点条件、时间可微且终端误差单调衰减的条件路径，FT-Clock 都可以通过误差曲线的逆映射或一维数值求解定义。对于仿射高斯桥，这一构造进一步化为由平均终端误差驱动的全局共享时钟；在线性桥与三角 VP 风格路径上，时钟还可写成闭式形式。由此，本文的重点不是提出另一种启发式 schedule，而是把生成桥上的时间结构提升为一个可分析、可构造的设计变量。
+
+除可构造性之外，时间重参数化还必须与现有训练语义兼容。我们证明，在理想函数逼近条件下，基于 FT-Clock 的训练目标仍与条件流匹配保持一致：最优预测器依旧是重参数化桥的边缘向量场。换言之，FT-Clock 改变的是桥上的时间坐标，而不是对回归损失施加经验性的样本或时间权重。
+
+\paragraph{本文贡献。}
+本文的主要贡献如下：
+\begin{itemize}[leftmargin=1.5em]
+  \item 提出 FT-Clock，将有限时间收缩律转化为生成桥内部时间设计原则，并给出一类可接入的 admissible conditional path 条件。
+  \item 在一般路径类上给出样本级与全局 FT-Clock 的构造，明确区分可定义性、数值可求性与闭式可解性三层结论。
+  \item 证明 FT-Clock 与条件流匹配兼容，其最优解仍为重参数化桥的边缘向量场，因此保持正确的传输语义。
+  \item 在线性路径、经验调度族对比和 VP 风格路径上评估 FT-Clock，并结合 $\beta$--NFE 规律与求解器敏感性分析终端聚焦与数值刚性之间的折中。
+\end{itemize}
+\else
+Few-step generation depends not only on path geometry, but also on how computation is distributed along a path. We study this second factor directly and propose FT-Clock, a transport clock induced by a finite-time contraction law on terminal error. The resulting view treats time reparameterization as a principled design axis on top of a fixed conditional probability path.
+
+Our starting point is a general class of admissible paths: endpoint-correct, time-differentiable conditional bridges with monotone terminal-error curves and well-defined reparameterized conditional velocities. On this class, FT-Clock can be defined through inverse error curves or one-dimensional numerical solves. For affine Gaussian bridges, the construction yields shared global clocks, and for linear and VP-style paths it further reduces to closed form. We also show that the reparameterized training objective remains consistent with conditional flow matching, so the optimal predictor is still the marginal vector field of the reparameterized bridge.
+\fi

@@ -1,0 +1,9 @@
+\section{\ifinternalcn 结论\else Conclusion\fi}
+
+\ifinternalcn
+本文提出 FT-Clock，将有限时间收缩律转化为生成桥上的时间结构设计原则。给定一条满足可接入条件的条件概率路径，我们通过终端误差的收缩规律构造样本级与全局时钟，并明确区分一般可定义性、数值可求性与闭式可解性三层结论。在线性桥与 VP 风格路径上，该构造进一步导出闭式时间重参数化。
+
+更重要的是，本文表明时间重参数化并不是附属于路径几何的实现细节，而是 few-step generative transport 中一个独立且可分析的设计变量。FT-Clock 保持与条件流匹配的一致性，同时为理解终端误差、采样预算分配与数值刚性之间的关系提供了统一视角。
+\else
+FT-Clock turns internal time allocation into a principled design axis for few-step generative transport. It applies to a general admissible class of conditional paths, preserves consistency with conditional flow matching, and yields explicit clocks for practically important bridge families such as linear and VP-style paths.
+\fi

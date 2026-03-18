@@ -209,8 +209,7 @@ class ExperimentManager:
         )
         if resume_checkpoint is not None:
             flags.append(f"--resume {resume_checkpoint}")
-        if spec.get("eval_frequency") is not None:
-            flags.append(f"--eval_frequency {spec['eval_frequency']}")
+        flags.append(f"--eval_frequency {spec.get('eval_frequency', -1)}")
         if spec.get("decay_lr", False):
             flags.append("--decay_lr")
         return f"{self._launcher(spec.get('num_gpus', 1))} examples/image/train.py " + " ".join(flags)

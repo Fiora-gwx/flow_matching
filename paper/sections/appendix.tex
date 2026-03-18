@@ -1,0 +1,139 @@
+\section{\ifinternalcn 附录\else Appendix\fi}
+
+\ifinternalcn
+\subsection{\ifinternalcn 证明提纲\else Proof Sketches\fi}
+
+\paragraph{样本级 FT-Clock 定理。}
+核心是利用 $V_s(x,\epsilon)$ 的严格单调性和可逆性，把希望满足的误差收缩曲线
+\(
+  V_0(x,\epsilon)(1-r)^{1/(1-\beta)}
+\)
+映射回原时间坐标。更具体地，若定义
+\begin{equation}
+  \psi_{x,\epsilon}(r)
+  =
+  V_{\cdot}^{-1}(x,\epsilon)
+  \left(
+    V_0(x,\epsilon)(1-r)^{\frac{1}{1-\beta}}
+  \right),
+\end{equation}
+则由逆映射定义直接得到
+\begin{equation}
+  V_{\psi_{x,\epsilon}(r)}(x,\epsilon)
+  =
+  V_0(x,\epsilon)(1-r)^{\frac{1}{1-\beta}}.
+\end{equation}
+对 $r$ 求导后可得
+\begin{equation}
+  \frac{\dd}{\dd r}V_{\psi_{x,\epsilon}(r)}(x,\epsilon)
+  =
+  -\frac{V_0(x,\epsilon)}{1-\beta}(1-r)^{\frac{\beta}{1-\beta}}
+  =
+  -\frac{V_0(x,\epsilon)^{1-\beta}}{1-\beta}
+  V_{\psi_{x,\epsilon}(r)}(x,\epsilon)^\beta,
+\end{equation}
+从而满足主文中的归一化有限时间收缩律。唯一性则来自 $V_s(x,\epsilon)$ 的严格单调性：若两条时钟在所有 $r$ 上诱导相同误差值，则由可逆性它们必然相同。
+
+\paragraph{全局 FT-Clock 定理。}
+将样本级误差换成数据集平均误差 $\bar{V}_s$ 后，上述证明逐字成立。关键额外工作是验证 $\bar{V}_s$ 的单调性，本文在线性路径和 VP 风格路径上都给出了解析表达式。在线性路径中，
+\begin{equation}
+  \bar{V}^{\mathrm{lin}}_s = d(\rho^2+1)(1-s)^2
+\end{equation}
+显然严格递减；在 VP 风格路径中，
+\begin{equation}
+  \bar{V}^{\mathrm{vp}}_s
+  =
+  d\left[\rho^2(1-\sin\theta(s))^2+\cos^2\theta(s)\right],
+\end{equation}
+若 $\theta'(s)>0$，则其导数在 $[0,1)$ 上保持负值，因此同样满足单调性要求。于是全局 FT-Clock 可以统一写成
+\begin{equation}
+  \bar{\psi}_{\beta}(r)
+  =
+  F_{\beta}^{-1}(r),
+  \qquad
+  F_{\beta}(s)
+  :=
+  1-\left(\frac{\bar{V}_s}{\bar{V}_0}\right)^{1-\beta}.
+\end{equation}
+由于 $\bar{V}_s$ 严格递减，$F_{\beta}(s)$ 在 $[0,1]$ 上严格递增，因此逆映射存在且唯一。这里需要强调，$\bar{V}_s$ 的解析性本身并不足以推出 $\bar{\psi}_{\beta}$ 具有闭式表达式；真正需要的是 $F_{\beta}(s)$ 具有显式可写的反函数。
+
+\paragraph{数值时钟构造。}
+若 $F_{\beta}^{-1}$ 无法写成闭式，则在一维网格 $\{s_i\}_{i=0}^N$ 上计算
+\begin{equation}
+  r_i = F_{\beta}(s_i),
+\end{equation}
+再通过单调插值构造逆映射
+\begin{equation}
+  \hat{\psi}_{\beta,h}(r)
+  =
+  \operatorname{Interp}\bigl(\{(r_i,s_i)\}_{i=0}^N,r\bigr).
+\end{equation}
+在 $F_{\beta}$ 连续可微且导数有正下界时，标准逆函数稳定性与单调插值误差界共同给出
+\begin{equation}
+  \|\hat{\psi}_{\beta,h}-\bar{\psi}_{\beta}\|_{\infty} \to 0
+  \qquad \text{as } h \to 0.
+\end{equation}
+因此，共享时钟在一般路径上即使没有闭式，也仍然具有稳定且一致的数值实现。
+
+\paragraph{边缘向量场最优性。}
+证明建立在条件期望的正交投影性质上。对任意平方可积候选场 $v$，把
+\(
+  v(r,Z_r)-\widetilde{b}_r
+\)
+分解成关于最优场 $u_r(Z_r)$ 的偏差项与残差项：
+\begin{equation}
+  v(r,Z_r)-\widetilde{b}_r
+  =
+  \bigl(v(r,Z_r)-u_r^\star(Z_r)\bigr)
+  +
+  \bigl(u_r^\star(Z_r)-\widetilde{b}_r\bigr).
+\end{equation}
+其中
+\begin{equation}
+  u_r^\star(z)=\E[\widetilde{b}_r \mid Z_r=z].
+\end{equation}
+由于 $\E[\widetilde{b}_r-u_r^\star(Z_r)\mid Z_r]=0$，交叉项期望为零，因此
+\begin{equation}
+  \E\|v(r,Z_r)-\widetilde{b}_r\|^2
+  =
+  \E\|u_r^\star(Z_r)-\widetilde{b}_r\|^2
+  +
+  \E\|v(r,Z_r)-u_r^\star(Z_r)\|^2.
+\end{equation}
+右侧第二项非负，故 $u_r^\star$ 为唯一最优解。这说明 FT-Clock 改变的是路径上的时间坐标，而不是条件流匹配“回归边缘向量场”的统计语义。
+
+\subsection{\ifinternalcn 复现实验协议\else Reproducibility Protocol\fi}
+
+\paragraph{评估口径。}
+所有主文比较共享统一的真实 NFE 计数口径、统一的主干网络与训练预算，以及一致的求解器设置。FID 计算所使用的样本数、统计量来源和预处理流程在结果表中统一汇报，以保证不同路径、时钟和求解器之间的比较可解释。
+
+\paragraph{模型选择与聚合。}
+若主文报告 ``FT-best'' 配置，则应基于一致的搜索空间、固定的 NFE 集以及跨 seed 的聚合统计来选择，而不是依据单次最优运行。checkpoint 选择方式、均值与方差的聚合策略、以及超参数搜索边界都会影响主文结论，应与主结果一起完整披露。
+
+\paragraph{补充分析。}
+附录补充三类主文未完全展开的证据：跨数据集和跨路径的泛化结果、训练与采样过程中时间预算重新分配的机制统计，以及更完整的求解器敏感性矩阵。这些补充结果用于帮助读者判断 FT-Clock 的适用范围，而不是替代主文中的核心比较。
+
+\subsection{\ifinternalcn 补充实验占位\else Supplemental Experiment Placeholders\fi}
+
+% 占位表：CIFAR-100 迁移结果，比较 uniform 与主任务上选择的 FT-Clock 配置。
+\placeholdertable{appendix-cifar100}{
+跨数据集迁移结果：在 CIFAR-100 上比较 uniform 时钟与按主任务协议选择的 FT-Clock 配置。}
+
+% 占位表：cross-path 对比，用于讨论路径几何与时间结构的相互作用。
+\placeholdertable{appendix-cross-path}{
+跨路径对比结果：比较不同路径几何与时间结构组合下的采样表现，用于分析路径设计与时间设计的相互作用。}
+
+% 占位图：速度范数与损失密度曲线，用于机制解释。
+\placeholderfigure{appendix-loss-velocity}{
+训练与采样过程中的速度范数和损失密度曲线，用于补充说明 FT-Clock 如何重分配时间预算。}
+
+% 占位图：轨迹几何统计，用于描述不同时钟下的预算分布和轨迹性质。
+\placeholderfigure{appendix-trajectory-geometry}{
+轨迹几何统计图，例如末端区间预算比例、平均步长、最终步长占比或离散曲率，用于补充说明不同时钟下的轨迹性质。}
+
+% 占位图：更完整的 solver sensitivity 矩阵。
+\placeholderfigure{appendix-solver-full}{
+扩展的求解器敏感性矩阵，展示更宽的 NFE 与 $\beta$ 范围下的系统性变化。}
+\else
+This appendix collects proof sketches, a reproducibility-oriented experimental protocol, and supplemental placeholders for transfer, cross-path, mechanism, and solver-sensitivity analyses.
+\fi

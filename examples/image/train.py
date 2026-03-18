@@ -50,6 +50,22 @@ def build_dataset(args, transform_train):
     raise NotImplementedError(f"Unsupported dataset {args.dataset}")
 
 
+def should_run_eval(args, epoch: int) -> bool:
+    return (
+        args.eval_frequency > 0 and (epoch + 1) % args.eval_frequency == 0
+    ) or args.eval_only or args.test_run
+
+
+def should_save_checkpoint(args, epoch: int) -> bool:
+    if not args.output_dir or args.eval_only:
+        return False
+    return (
+        args.test_run
+        or (epoch + 1) == args.epochs
+        or (args.eval_frequency > 0 and (epoch + 1) % args.eval_frequency == 0)
+    )
+
+
 def main(args):
     logging.basicConfig(
         level=logging.INFO,
@@ -181,20 +197,18 @@ def main(args):
         else:
             log_stats = {"epoch": epoch}
 
-        should_eval = (
-            args.eval_frequency > 0 and (epoch + 1) % args.eval_frequency == 0
-        ) or args.eval_only or args.test_run
-        if args.output_dir and should_eval:
-            if not args.eval_only:
-                save_model(
-                    args=args,
-                    model=model,
-                    model_without_ddp=model_without_ddp,
-                    optimizer=optimizer,
-                    lr_schedule=lr_schedule,
-                    loss_scaler=loss_scaler,
-                    epoch=epoch,
-                )
+        if should_save_checkpoint(args, epoch):
+            save_model(
+                args=args,
+                model=model,
+                model_without_ddp=model_without_ddp,
+                optimizer=optimizer,
+                lr_schedule=lr_schedule,
+                loss_scaler=loss_scaler,
+                epoch=epoch,
+            )
+
+        if args.output_dir and should_run_eval(args, epoch):
             if args.distributed:
                 data_loader_eval.sampler.set_epoch(0)
             if distributed_mode.is_main_process():

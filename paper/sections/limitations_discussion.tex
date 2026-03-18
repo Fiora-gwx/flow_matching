@@ -1,0 +1,11 @@
+\section{\ifinternalcn 局限性与讨论\else Limitations and Discussion\fi}
+
+\ifinternalcn
+本文的主要局限性有两点。第一，FT-Clock 的一般构造依赖终端误差曲线的单调性与可逆性。在线性桥和本文讨论的 VP 风格路径上，这些条件可以解析验证；对更一般的条件路径，共享时钟通常需要回到一维数值求解或经验近似。因此，FT-Clock 的普适性首先体现为一种设计原则，而不是“所有路径都天然具有闭式时钟”这一更强结论。
+
+第二，终端聚焦并不保证在所有 NFE 和所有求解器下都带来收益。若目标端附近的速度缩放过强，固定步长积分器可能因为局部刚性上升而变得敏感；若推进过于平缓，则又可能削弱对终端误差的聚焦能力。因此，FT-Clock 的经验表现应被理解为时间预算分配与数值稳定性之间的折中，而不是单调的“越集中越好”。
+
+更广泛地看，FT-Clock 提供的是路径几何之上的时间结构设计层，因此它与路径设计、蒸馏压缩和求解器改进都可能形成互补关系。值得进一步研究的问题包括：如何在更复杂的条件路径上自动求解共享时钟，如何将时间结构设计与蒸馏框架统一起来，以及是否能利用更细粒度的局部几何信息学习样本自适应时钟。
+\else
+The main limitations concern path-dependent monotonicity assumptions and the tradeoff between terminal focusing and numerical stiffness. FT-Clock is broadly definable as a design principle, but explicit closed forms are restricted to special path families, and aggressive terminal focusing can increase solver sensitivity.
+\fi
