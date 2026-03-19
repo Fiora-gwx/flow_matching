@@ -60,6 +60,7 @@ python3 experiments/run_experiments.py --config experiments/configs/ft_clock/sol
 其中：
 
 - E2 / E3 / E5 会自动从 E1 / E4 结果解析 best beta
+- E3 / E5 / E9 会在配置允许时直接复用 E1 / E4 已训练 checkpoint，避免重复训练
 - 可用 `experiments/resolve_best_betas.py` 输出一份显式 resolved YAML
 
 ## 评估与可视化
@@ -89,8 +90,18 @@ python3 experiments/analyze_mechanisms.py --config experiments/configs/ft_clock/
 
 `mechanism_analysis.yaml` 支持两种 checkpoint 选择方式：
 
+- `checkpoint_from`
 - `checkpoint_epoch`
 - `checkpoint_path`
+
+## 采样过程图与轨迹图
+
+默认直接读取前序实验结果：
+
+```bash
+python3 experiments/plot_sampling_progression.py
+python3 experiments/plot_particle_trajectory_comparison.py
+```
 
 ## 结果口径
 

@@ -1,0 +1,37 @@
+output_dir: experiments/results/particle_trajectory_compare
+seed: 0
+num_points_per_group: 6
+num_steps: 25
+
+baseline:
+  label: Traditional
+  pairing: random
+  dataset: cifar10
+  name: linear_uniform
+  path_family: linear
+  clock_family: uniform
+  checkpoint_from:
+    artifact_group: ft_clock_linear_main
+    source_exp_name: linear_uniform
+    checkpoint_epoch: 499
+
+proposed:
+  label: Ours
+  pairing: oracle
+  dataset: cifar10
+  name: linear_ft_best
+  path_family: linear
+  clock_family: ft_linear_beta
+  best_beta_from:
+    results_csv: experiments/results/ft_clock_linear_main/results.csv
+    artifact_group: ft_clock_linear_main
+    dataset: cifar10
+    path_family: linear
+    solver: heun2
+    metric: fid
+    selection_nfes: [10, 20, 50]
+    clock_family: ft_linear_beta
+  checkpoint_from:
+    artifact_group: ft_clock_linear_main
+    source_name_template: linear_ft_beta_{clock_beta_tag}
+    checkpoint_epoch: 499

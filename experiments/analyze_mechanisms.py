@@ -17,7 +17,8 @@ if str(ROOT) not in sys.path:
 
 import yaml
 
-from experiments.checkpoint_utils import resolve_checkpoint_path
+from experiments.checkpoint_utils import resolve_checkpoint_path, resolve_reused_checkpoint
+from experiments.result_utils import resolve_best_beta_reference
 IMAGE_ROOT = ROOT / 'examples' / 'image'
 if str(IMAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(IMAGE_ROOT))
@@ -32,6 +33,34 @@ def merge_dicts(base: Dict, override: Dict) -> Dict:
     merged = dict(base)
     merged.update(override)
     return merged
+
+
+def resolve_dynamic_spec_fields(spec: Dict) -> Dict:
+    resolved = dict(spec)
+    best_beta_from = resolved.get('best_beta_from')
+    if best_beta_from is not None:
+        resolved['clock_beta'] = resolve_best_beta_reference(
+            reference=best_beta_from,
+            workspace_root=ROOT,
+        )
+    return resolved
+
+
+def resolve_analysis_checkpoint(base_dir: Path, spec: Dict):
+    checkpoint_from = spec.get('checkpoint_from')
+    if checkpoint_from is not None:
+        reused_checkpoint = resolve_reused_checkpoint(
+            reference=checkpoint_from,
+            spec=spec,
+            workspace_root=ROOT,
+        )
+        if reused_checkpoint is not None:
+            return reused_checkpoint
+    return resolve_checkpoint_path(
+        base_dir=base_dir,
+        spec=spec,
+        workspace_root=ROOT,
+    )
 
 
 def build_dataset(spec: Dict):
@@ -106,12 +135,8 @@ def main(config_path: Path):
     device = torch.device(base_config.get('device', 'cuda'))
 
     for experiment in config.get('experiments', []):
-        spec = merge_dicts(base_config, experiment)
-        checkpoint_path = resolve_checkpoint_path(
-            base_dir=base_dir,
-            spec=spec,
-            workspace_root=ROOT,
-        )
+        spec = resolve_dynamic_spec_fields(merge_dicts(base_config, experiment))
+        checkpoint_path = resolve_analysis_checkpoint(base_dir=base_dir, spec=spec)
         if checkpoint_path is None:
             print(f'Skipping {spec["name"]}: missing checkpoint {checkpoint_path}')
             continue

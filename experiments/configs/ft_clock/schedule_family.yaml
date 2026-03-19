@@ -16,6 +16,10 @@ base_config:
 experiments:
   - name: linear_uniform
     clock_family: uniform
+    checkpoint_from:
+      artifact_group: ft_clock_linear_main
+      source_exp_name: linear_uniform
+      checkpoint_epoch: 499
   - name: linear_poly_a0_5
     clock_family: poly_a0.5
   - name: linear_poly_a2_0
@@ -37,3 +41,7 @@ experiments:
       metric: fid
       selection_nfes: [10, 20, 50]
       clock_family: ft_linear_beta
+    checkpoint_from:
+      artifact_group: ft_clock_linear_main
+      source_name_template: linear_ft_beta_{clock_beta_tag}
+      checkpoint_epoch: 499

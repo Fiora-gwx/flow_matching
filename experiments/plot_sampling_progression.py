@@ -14,6 +14,9 @@ import torch
 import yaml
 from torchvision.utils import make_grid
 
+from experiments.checkpoint_utils import resolve_checkpoint_path, resolve_reused_checkpoint
+from experiments.result_utils import resolve_best_beta_reference
+
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -22,10 +25,11 @@ IMAGE_ROOT = ROOT / "examples" / "image"
 if str(IMAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(IMAGE_ROOT))
 
-from experiments.checkpoint_utils import resolve_checkpoint_path
 from models.model_configs import instantiate_model
 from training.eval_loop import CFGScaledModel
 from training.fixed_step_solver import FixedStepSample, solve_fixed_budget
+
+DEFAULT_CONFIG = ROOT / "experiments" / "configs" / "ft_clock" / "sampling_progression.yaml"
 
 
 @dataclass
@@ -50,6 +54,30 @@ class MethodSpec:
 def load_config(config_path: Path) -> Dict[str, object]:
     with open(config_path, "r", encoding="utf-8") as handle:
         return yaml.safe_load(handle)
+
+
+def resolve_method_fields(method: Dict[str, object]) -> Dict[str, object]:
+    resolved = dict(method)
+    best_beta_from = resolved.pop("best_beta_from", None)
+    checkpoint_from = resolved.pop("checkpoint_from", None)
+    if best_beta_from is not None:
+        resolved["clock_beta"] = resolve_best_beta_reference(
+            reference=best_beta_from,
+            workspace_root=ROOT,
+        )
+    if checkpoint_from is not None:
+        checkpoint = resolve_reused_checkpoint(
+            reference=checkpoint_from,
+            spec=resolved,
+            workspace_root=ROOT,
+        )
+        if checkpoint is None:
+            raise FileNotFoundError(
+                f"Checkpoint not found for method={resolved.get('label', resolved.get('name', '<unnamed>'))} "
+                f"from reference {checkpoint_from}"
+            )
+        resolved["checkpoint_path"] = str(checkpoint)
+    return resolved
 
 
 def resolve_method_checkpoint(method: MethodSpec) -> Path:
@@ -111,11 +139,11 @@ def build_snapshot_indices(num_states: int, snapshot_ratios: Sequence[float]) ->
 
 def sample_method_trajectory(
     method: MethodSpec,
+    checkpoint_path: Path,
     x_init: torch.Tensor,
     labels: torch.Tensor,
     device: torch.device,
 ) -> FixedStepSample:
-    checkpoint_path = resolve_method_checkpoint(method)
     model = load_model_from_checkpoint(method, checkpoint_path, device)
     model_wrapper = CFGScaledModel(model)
     model_wrapper.train(False)
@@ -190,7 +218,7 @@ def build_method_specs(config: Dict[str, object]) -> List[MethodSpec]:
         raise ValueError("At least two methods are required for comparison.")
     specs = []
     for method in methods:
-        specs.append(MethodSpec(**method))
+        specs.append(MethodSpec(**resolve_method_fields(method)))
     return specs
 
 
@@ -215,13 +243,20 @@ def run(config_path: Path) -> Tuple[Path, Path]:
     metadata_rows = []
     column_labels = [f"r={float(ratio):.2f}" for ratio in snapshot_ratios]
     for method in method_specs:
+        checkpoint_path = resolve_method_checkpoint(method)
         labels = torch.full(
             (num_samples,),
             fill_value=int(method.fixed_label),
             dtype=torch.long,
             device=device,
         )
-        sample = sample_method_trajectory(method, x_init=x_init, labels=labels, device=device)
+        sample = sample_method_trajectory(
+            method,
+            checkpoint_path=checkpoint_path,
+            x_init=x_init,
+            labels=labels,
+            device=device,
+        )
         snapshot_indices = build_snapshot_indices(sample.trajectory.shape[0], snapshot_ratios)
         row_grids = []
         for ratio, state_index in zip(snapshot_ratios, snapshot_indices):
@@ -229,7 +264,7 @@ def run(config_path: Path) -> Tuple[Path, Path]:
             metadata_rows.append(
                 {
                     "method": method.label,
-                    "checkpoint": str(resolve_method_checkpoint(method)),
+                    "checkpoint": str(checkpoint_path),
                     "snapshot_ratio": float(ratio),
                     "state_index": int(state_index),
                     "time_value": float(sample.time_grid[state_index].item()),
@@ -258,7 +293,7 @@ def run(config_path: Path) -> Tuple[Path, Path]:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=Path, required=True)
+    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     args = parser.parse_args()
     run(args.config)
 

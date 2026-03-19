@@ -12,6 +12,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import torch
+import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -21,7 +22,11 @@ IMAGE_ROOT = ROOT / "examples" / "image"
 if str(IMAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(IMAGE_ROOT))
 
+from experiments.checkpoint_utils import resolve_checkpoint_path, resolve_reused_checkpoint
+from experiments.result_utils import resolve_best_beta_reference
 from training.continuous_runtime import build_continuous_batch
+
+DEFAULT_CONFIG = ROOT / "experiments" / "configs" / "ft_clock" / "particle_trajectory_comparison.yaml"
 
 
 @dataclass
@@ -31,10 +36,60 @@ class MethodSpec:
     path_family: str
     clock_family: str
     clock_beta: Optional[float]
+    dataset: str = "cifar10"
+    name: str = ""
+    artifact_group: Optional[str] = None
+    checkpoint_epoch: Optional[int] = None
+    checkpoint_path: Optional[str] = None
 
 
 PAIRING_CHOICES = ("oracle", "random", "reverse", "cyclic_shift")
 PALETTE = ("#1f77b4", "#2ca02c", "#d62728")
+
+
+def load_config(config_path: Path) -> Dict[str, object]:
+    with open(config_path, "r", encoding="utf-8") as handle:
+        return yaml.safe_load(handle)
+
+
+def resolve_method_fields(method: Dict[str, object]) -> Dict[str, object]:
+    resolved = dict(method)
+    best_beta_from = resolved.pop("best_beta_from", None)
+    checkpoint_from = resolved.pop("checkpoint_from", None)
+    if best_beta_from is not None:
+        resolved["clock_beta"] = resolve_best_beta_reference(
+            reference=best_beta_from,
+            workspace_root=ROOT,
+        )
+    checkpoint_path = None
+    if checkpoint_from is not None:
+        checkpoint_path = resolve_reused_checkpoint(
+            reference=checkpoint_from,
+            spec=resolved,
+            workspace_root=ROOT,
+        )
+        if checkpoint_path is None:
+            raise FileNotFoundError(
+                f"Checkpoint not found for method={resolved.get('label', resolved.get('name', '<unnamed>'))} "
+                f"from reference {checkpoint_from}"
+            )
+    elif resolved.get("name"):
+        base_dir = ROOT / "experiments" / "results"
+        artifact_group = resolved.get("artifact_group")
+        if artifact_group:
+            base_dir = base_dir / str(artifact_group)
+        checkpoint_path = resolve_checkpoint_path(
+            base_dir=base_dir,
+            spec=resolved,
+            workspace_root=ROOT,
+        )
+    if checkpoint_path is not None:
+        resolved["checkpoint_path"] = str(checkpoint_path)
+    return resolved
+
+
+def build_method_spec(method: Dict[str, object]) -> MethodSpec:
+    return MethodSpec(**resolve_method_fields(method))
 
 
 def make_demo_points(
@@ -125,7 +180,8 @@ def summarize_trajectory(
     label: str,
     trajectory: torch.Tensor,
     oracle_targets: torch.Tensor,
-) -> Dict[str, float]:
+    checkpoint_path: Optional[str] = None,
+) -> Dict[str, object]:
     deltas = trajectory[1:] - trajectory[:-1]
     path_length = deltas.norm(dim=2).sum(dim=0)
     mean_curvature = 0.0
@@ -135,13 +191,14 @@ def summarize_trajectory(
     endpoint_error = (trajectory[-1] - oracle_targets).norm(dim=1)
     return {
         "method": label,
+        "checkpoint": checkpoint_path or "",
         "mean_path_length": float(path_length.mean().item()),
         "mean_curvature": mean_curvature,
         "mean_oracle_endpoint_error": float(endpoint_error.mean().item()),
     }
 
 
-def write_summary_csv(output_path: Path, rows: List[Dict[str, float]]) -> None:
+def write_summary_csv(output_path: Path, rows: List[Dict[str, object]]) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fieldnames = list(rows[0].keys())
     with open(output_path, "w", newline="", encoding="utf-8") as handle:
@@ -315,17 +372,43 @@ def plot_comparison(
 
     summary_rows = [
         summarize_trajectory(perfect_spec.label, perfect_trajectory, oracle_targets),
-        summarize_trajectory(baseline_spec.label, baseline_trajectory, oracle_targets),
-        summarize_trajectory(proposed_spec.label, proposed_trajectory, oracle_targets),
+        summarize_trajectory(
+            baseline_spec.label,
+            baseline_trajectory,
+            oracle_targets,
+            checkpoint_path=baseline_spec.checkpoint_path,
+        ),
+        summarize_trajectory(
+            proposed_spec.label,
+            proposed_trajectory,
+            oracle_targets,
+            checkpoint_path=proposed_spec.checkpoint_path,
+        ),
     ]
     summary_path = output_dir / "particle_trajectory_summary.csv"
     write_summary_csv(summary_path, summary_rows)
     return figure_path, summary_path
 
 
+def run_from_config(config_path: Path) -> Tuple[Path, Path]:
+    config = load_config(config_path)
+    output_dir = Path(str(config.get("output_dir", "experiments/results/particle_trajectory_compare")))
+    if not output_dir.is_absolute():
+        output_dir = ROOT / output_dir
+    return plot_comparison(
+        output_dir=output_dir,
+        baseline_spec=build_method_spec(config["baseline"]),
+        proposed_spec=build_method_spec(config["proposed"]),
+        num_points_per_group=int(config.get("num_points_per_group", 6)),
+        num_steps=int(config.get("num_steps", 25)),
+        seed=int(config.get("seed", 0)),
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--config", type=Path, default=None)
+    parser.add_argument("--out", type=Path, default=None)
     parser.add_argument("--num_points_per_group", type=int, default=6)
     parser.add_argument("--num_steps", type=int, default=25)
     parser.add_argument("--seed", type=int, default=0)
@@ -366,6 +449,10 @@ def main() -> None:
     )
     parser.add_argument("--proposed_clock_beta", type=float, default=0.5)
     args = parser.parse_args()
+
+    if args.config is not None or args.out is None:
+        run_from_config(args.config or DEFAULT_CONFIG)
+        return
 
     baseline_spec = MethodSpec(
         label=args.baseline_label,

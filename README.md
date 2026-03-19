@@ -81,7 +81,11 @@ python3 experiments/run_experiments.py --config experiments/configs/ft_clock/sch
 python3 experiments/run_experiments.py --config experiments/configs/ft_clock/cross_path.yaml
 ```
 
-其中 `E5 cross_path` 现在会复用 `E1 linear_main` 和 `E4 trig_vp` 中对应方法的 checkpoint，只做交叉路径结果汇总与评估，不再重复训练相同模型。
+其中：
+
+- `E2 cifar100_transfer` 只复用 E1 的 best beta，不复用 checkpoint，因为数据集已经切到 CIFAR-100
+- `E3 schedule_family` 会复用 `E1 linear_main` 中的 `linear_uniform` 和 `linear FT-best` checkpoint，只训练新增 schedule
+- `E5 cross_path` 会复用 `E1 linear_main` 和 `E4 trig_vp` 中对应方法的 checkpoint，只做交叉路径结果汇总与评估，不再重复训练相同模型
 
 如需把解析后的 beta 固化成可归档 YAML：
 
@@ -106,18 +110,42 @@ python3 experiments/analyze_mechanisms.py --config experiments/configs/ft_clock/
 
 `mechanism_analysis.yaml` 支持：
 
+- `checkpoint_from`: 直接复用 E1 / E4 等前序实验 checkpoint
 - `checkpoint_epoch`: 解析指定 epoch checkpoint
 - `checkpoint_path`: 直接指定 checkpoint 文件
+
+其中 `E9 solver_sensitivity` 现在会复用 `E1 linear_main` 和 `E4 trig_vp` 中对应方法的 checkpoint，只更换采样 solver 做评估，不再重复训练相同模型。
+
+## 采样过程图与粒子轨迹图
+
+默认配置已经对接前序实验结果：
+
+```bash
+python3 experiments/plot_sampling_progression.py
+python3 experiments/plot_particle_trajectory_comparison.py
+```
+
+默认分别读取：
+
+- `experiments/configs/ft_clock/sampling_progression.yaml`
+- `experiments/configs/ft_clock/particle_trajectory_comparison.yaml`
+
+两者默认都基于 `E1 linear_main` 的已有结果。其中：
+
+- `plot_sampling_progression.py` 会加载真实 checkpoint，用同一初始噪声生成逐步采样图
+- `plot_particle_trajectory_comparison.py` 会读取前序实验解析出的 method / beta / checkpoint 路径，并输出理论轨迹对比图与 summary CSV
 
 ## 配置说明
 
 - `experiments/configs/ft_clock/linear_main.yaml`: E1 主 sweep，同时产出 E6 热力图数据
 - `experiments/configs/ft_clock/cifar100_transfer.yaml`: E2，使用 E1 自动解析出的 linear FT-best beta
-- `experiments/configs/ft_clock/schedule_family.yaml`: E3，使用 E1 自动解析出的 linear FT-best beta
+- `experiments/configs/ft_clock/schedule_family.yaml`: E3，使用 E1 自动解析出的 linear FT-best beta，并复用已有的 linear baseline / FT-best checkpoint
 - `experiments/configs/ft_clock/trig_vp.yaml`: E4
 - `experiments/configs/ft_clock/cross_path.yaml`: E5，linear FT-best 来自 E1，VP FT-best 来自 E4
-- `experiments/configs/ft_clock/mechanism_analysis.yaml`: E7/E8
-- `experiments/configs/ft_clock/solver_sensitivity.yaml`: E9
+- `experiments/configs/ft_clock/mechanism_analysis.yaml`: E7/E8，默认复用 E1 / E4 checkpoint
+- `experiments/configs/ft_clock/solver_sensitivity.yaml`: E9，默认复用 E1 / E4 checkpoint
+- `experiments/configs/ft_clock/sampling_progression.yaml`: 逐步采样可视化默认配置
+- `experiments/configs/ft_clock/particle_trajectory_comparison.yaml`: 粒子轨迹对比默认配置
 
 ## 说明
 
