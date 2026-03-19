@@ -1,6 +1,8 @@
 import importlib.util
+import json
 import os
 import sys
+import tempfile
 import types
 import unittest
 from unittest import mock
@@ -202,3 +204,79 @@ class EvalLoopInceptionScoreTest(unittest.TestCase):
         self.assertAlmostEqual(results["is_mean"], 3.2, places=6)
         self.assertAlmostEqual(results["is_std"], 0.4, places=6)
         self.assertEqual(results["synthetic_samples"], 2.0)
+
+
+@unittest.skipUnless(HAS_TORCH, "torch is required for eval sidecar tests")
+class EvalLoopSolverStatsSidecarTest(unittest.TestCase):
+    def test_eval_model_writes_solver_stats_sidecar(self):
+        from training import eval_loop
+
+        sample = torch.rand(2, 3, 32, 32, dtype=torch.float32)
+        labels = torch.zeros(2, dtype=torch.long)
+        data_loader = [(sample, labels)]
+
+        class DummyModel(torch.nn.Module):
+            def forward(self, x, t, extra=None):
+                return x
+
+        fake_sampling = types.SimpleNamespace(
+            sample=torch.rand(2, 3, 32, 32, dtype=torch.float32),
+            nfe=12,
+            step_count=4,
+            solver_stats={
+                "solver": "rk3",
+                "requested_nfe_budget": 12,
+                "actual_network_calls": 12,
+                "step_count": 4,
+                "virtual_stage_count": 0,
+                "used_tail_step": False,
+                "is_exact_budget": True,
+                "is_shared_budget": True,
+            },
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            args = types.SimpleNamespace(
+                metrics=["inception_score"],
+                compute_fid=False,
+                discrete_flow_matching=False,
+                output_dir=tmpdir,
+                test_run=True,
+                save_fid_samples=False,
+                sampling_solver="rk3",
+                eval_nfe=12,
+                cfg_scale=0.0,
+                precision_recall_neighbors=3,
+                precision_recall_max_samples=16,
+                inception_score_splits=2,
+            )
+
+            class FakeInceptionScoreBackend:
+                def update(self, images):
+                    return None
+
+                def compute(self):
+                    return torch.tensor(2.0), torch.tensor(0.1)
+
+            with mock.patch.object(
+                eval_loop,
+                "_build_inception_score_metric",
+                return_value=FakeInceptionScoreBackend(),
+            ):
+                with mock.patch.object(eval_loop, "solve_fixed_budget", return_value=fake_sampling):
+                    eval_loop.eval_model(
+                        model=DummyModel(),
+                        data_loader=data_loader,
+                        device=torch.device("cpu"),
+                        epoch=0,
+                        fid_samples=2,
+                        args=args,
+                    )
+
+            sidecar_path = os.path.join(tmpdir, "solver_stats.json")
+            self.assertTrue(os.path.exists(sidecar_path))
+            with open(sidecar_path, "r", encoding="utf-8") as handle:
+                sidecar = json.load(handle)
+            self.assertEqual(sidecar["solver"], "rk3")
+            self.assertEqual(sidecar["actual_network_calls"], 12)
+            self.assertTrue(sidecar["is_shared_budget"])

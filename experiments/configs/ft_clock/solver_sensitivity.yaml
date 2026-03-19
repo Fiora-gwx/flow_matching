@@ -7,9 +7,11 @@ base_config:
   num_gpus: 4
   cfg_scale: 0.0
   class_drop_prob: 1.0
-  metrics: [fid, inception_score]
+  metrics: [fid, precision_recall, inception_score]
+  precision_recall_neighbors: 3
+  precision_recall_max_samples: 10000
   eval_epochs: [499]
-  eval_nfes: [4, 10, 20, 50]
+  eval_nfes: [6, 12, 18, 24, 30, 48, 96]
 experiments:
   - name: linear_uniform_euler
     path_family: linear
@@ -27,6 +29,24 @@ experiments:
       artifact_group: ft_clock_linear_main
       source_exp_name: linear_uniform
       checkpoint_epoch: 499
+  - name: linear_uniform_rk3
+    path_family: linear
+    sampling_solver: rk3
+    clock_family: uniform
+    checkpoint_from:
+      artifact_group: ft_clock_linear_main
+      source_exp_name: linear_uniform
+      checkpoint_epoch: 499
+  - name: linear_uniform_stork4
+    path_family: linear
+    sampling_solver: stork4
+    clock_family: uniform
+    eval_nfes: [6, 8, 10, 12, 18, 20, 24, 30, 48, 50, 96]
+    checkpoint_from:
+      artifact_group: ft_clock_linear_main
+      source_exp_name: linear_uniform
+      checkpoint_epoch: 499
+
   - name: linear_ft_beta_0_3_euler
     path_family: linear
     sampling_solver: euler
@@ -45,6 +65,26 @@ experiments:
       artifact_group: ft_clock_linear_main
       source_name_template: linear_ft_beta_{clock_beta_tag}
       checkpoint_epoch: 499
+  - name: linear_ft_beta_0_3_rk3
+    path_family: linear
+    sampling_solver: rk3
+    clock_family: ft_linear_beta
+    clock_beta: 0.3
+    checkpoint_from:
+      artifact_group: ft_clock_linear_main
+      source_name_template: linear_ft_beta_{clock_beta_tag}
+      checkpoint_epoch: 499
+  - name: linear_ft_beta_0_3_stork4
+    path_family: linear
+    sampling_solver: stork4
+    clock_family: ft_linear_beta
+    clock_beta: 0.3
+    eval_nfes: [6, 8, 10, 12, 18, 20, 24, 30, 48, 50, 96]
+    checkpoint_from:
+      artifact_group: ft_clock_linear_main
+      source_name_template: linear_ft_beta_{clock_beta_tag}
+      checkpoint_epoch: 499
+
   - name: linear_ft_beta_0_5_euler
     path_family: linear
     sampling_solver: euler
@@ -63,6 +103,26 @@ experiments:
       artifact_group: ft_clock_linear_main
       source_name_template: linear_ft_beta_{clock_beta_tag}
       checkpoint_epoch: 499
+  - name: linear_ft_beta_0_5_rk3
+    path_family: linear
+    sampling_solver: rk3
+    clock_family: ft_linear_beta
+    clock_beta: 0.5
+    checkpoint_from:
+      artifact_group: ft_clock_linear_main
+      source_name_template: linear_ft_beta_{clock_beta_tag}
+      checkpoint_epoch: 499
+  - name: linear_ft_beta_0_5_stork4
+    path_family: linear
+    sampling_solver: stork4
+    clock_family: ft_linear_beta
+    clock_beta: 0.5
+    eval_nfes: [6, 8, 10, 12, 18, 20, 24, 30, 48, 50, 96]
+    checkpoint_from:
+      artifact_group: ft_clock_linear_main
+      source_name_template: linear_ft_beta_{clock_beta_tag}
+      checkpoint_epoch: 499
+
   - name: linear_ft_beta_0_7_euler
     path_family: linear
     sampling_solver: euler
@@ -81,6 +141,26 @@ experiments:
       artifact_group: ft_clock_linear_main
       source_name_template: linear_ft_beta_{clock_beta_tag}
       checkpoint_epoch: 499
+  - name: linear_ft_beta_0_7_rk3
+    path_family: linear
+    sampling_solver: rk3
+    clock_family: ft_linear_beta
+    clock_beta: 0.7
+    checkpoint_from:
+      artifact_group: ft_clock_linear_main
+      source_name_template: linear_ft_beta_{clock_beta_tag}
+      checkpoint_epoch: 499
+  - name: linear_ft_beta_0_7_stork4
+    path_family: linear
+    sampling_solver: stork4
+    clock_family: ft_linear_beta
+    clock_beta: 0.7
+    eval_nfes: [6, 8, 10, 12, 18, 20, 24, 30, 48, 50, 96]
+    checkpoint_from:
+      artifact_group: ft_clock_linear_main
+      source_name_template: linear_ft_beta_{clock_beta_tag}
+      checkpoint_epoch: 499
+
   - name: trig_vp_uniform_euler
     path_family: trig_vp
     sampling_solver: euler
@@ -97,6 +177,24 @@ experiments:
       artifact_group: ft_clock_trig_vp
       source_exp_name: trig_vp_uniform
       checkpoint_epoch: 499
+  - name: trig_vp_uniform_rk3
+    path_family: trig_vp
+    sampling_solver: rk3
+    clock_family: uniform
+    checkpoint_from:
+      artifact_group: ft_clock_trig_vp
+      source_exp_name: trig_vp_uniform
+      checkpoint_epoch: 499
+  - name: trig_vp_uniform_stork4
+    path_family: trig_vp
+    sampling_solver: stork4
+    clock_family: uniform
+    eval_nfes: [6, 8, 10, 12, 18, 20, 24, 30, 48, 50, 96]
+    checkpoint_from:
+      artifact_group: ft_clock_trig_vp
+      source_exp_name: trig_vp_uniform
+      checkpoint_epoch: 499
+
   - name: trig_vp_ft_beta_0_3_euler
     path_family: trig_vp
     sampling_solver: euler
@@ -115,6 +213,26 @@ experiments:
       artifact_group: ft_clock_trig_vp
       source_name_template: trig_vp_ft_beta_{clock_beta_tag}
       checkpoint_epoch: 499
+  - name: trig_vp_ft_beta_0_3_rk3
+    path_family: trig_vp
+    sampling_solver: rk3
+    clock_family: ft_vp_beta
+    clock_beta: 0.3
+    checkpoint_from:
+      artifact_group: ft_clock_trig_vp
+      source_name_template: trig_vp_ft_beta_{clock_beta_tag}
+      checkpoint_epoch: 499
+  - name: trig_vp_ft_beta_0_3_stork4
+    path_family: trig_vp
+    sampling_solver: stork4
+    clock_family: ft_vp_beta
+    clock_beta: 0.3
+    eval_nfes: [6, 8, 10, 12, 18, 20, 24, 30, 48, 50, 96]
+    checkpoint_from:
+      artifact_group: ft_clock_trig_vp
+      source_name_template: trig_vp_ft_beta_{clock_beta_tag}
+      checkpoint_epoch: 499
+
   - name: trig_vp_ft_beta_0_5_euler
     path_family: trig_vp
     sampling_solver: euler
@@ -133,6 +251,26 @@ experiments:
       artifact_group: ft_clock_trig_vp
       source_name_template: trig_vp_ft_beta_{clock_beta_tag}
       checkpoint_epoch: 499
+  - name: trig_vp_ft_beta_0_5_rk3
+    path_family: trig_vp
+    sampling_solver: rk3
+    clock_family: ft_vp_beta
+    clock_beta: 0.5
+    checkpoint_from:
+      artifact_group: ft_clock_trig_vp
+      source_name_template: trig_vp_ft_beta_{clock_beta_tag}
+      checkpoint_epoch: 499
+  - name: trig_vp_ft_beta_0_5_stork4
+    path_family: trig_vp
+    sampling_solver: stork4
+    clock_family: ft_vp_beta
+    clock_beta: 0.5
+    eval_nfes: [6, 8, 10, 12, 18, 20, 24, 30, 48, 50, 96]
+    checkpoint_from:
+      artifact_group: ft_clock_trig_vp
+      source_name_template: trig_vp_ft_beta_{clock_beta_tag}
+      checkpoint_epoch: 499
+
   - name: trig_vp_ft_beta_0_7_euler
     path_family: trig_vp
     sampling_solver: euler
@@ -147,6 +285,25 @@ experiments:
     sampling_solver: heun2
     clock_family: ft_vp_beta
     clock_beta: 0.7
+    checkpoint_from:
+      artifact_group: ft_clock_trig_vp
+      source_name_template: trig_vp_ft_beta_{clock_beta_tag}
+      checkpoint_epoch: 499
+  - name: trig_vp_ft_beta_0_7_rk3
+    path_family: trig_vp
+    sampling_solver: rk3
+    clock_family: ft_vp_beta
+    clock_beta: 0.7
+    checkpoint_from:
+      artifact_group: ft_clock_trig_vp
+      source_name_template: trig_vp_ft_beta_{clock_beta_tag}
+      checkpoint_epoch: 499
+  - name: trig_vp_ft_beta_0_7_stork4
+    path_family: trig_vp
+    sampling_solver: stork4
+    clock_family: ft_vp_beta
+    clock_beta: 0.7
+    eval_nfes: [6, 8, 10, 12, 18, 20, 24, 30, 48, 50, 96]
     checkpoint_from:
       artifact_group: ft_clock_trig_vp
       source_name_template: trig_vp_ft_beta_{clock_beta_tag}

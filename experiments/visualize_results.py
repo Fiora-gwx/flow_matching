@@ -21,6 +21,7 @@ from experiments.result_utils import (
     rows_to_matrix,
     write_table_csv,
 )
+from experiments.plot_style import selected_nfe_ticks, transform_focus_axis_values
 
 
 def _clock_label(row: Dict[str, object]) -> str:
@@ -38,22 +39,61 @@ def _plot_main_curve(rows: Sequence[Dict[str, object]], output_dir: Path) -> Non
     grouped: Dict[str, List[Dict[str, object]]] = {}
     for row in rows:
         grouped.setdefault(_clock_label(row), []).append(row)
+    all_nfes = sorted({int(row["nfe"]) for row in rows})
+    tick_values = selected_nfe_ticks(all_nfes)
     plt.figure(figsize=(10, 6))
+    ft_labels = [label for label in sorted(grouped.keys()) if label.startswith("ft_")]
+    ft_palette = ["#d62728", "#ff7f0e", "#c44e52", "#e377c2", "#8c564b", "#bcbd22"]
+    ft_colors = {label: ft_palette[index % len(ft_palette)] for index, label in enumerate(ft_labels)}
+    other_palette = ["#7f7f7f", "#17becf", "#9467bd", "#8c8c8c"]
+    other_labels = [
+        label
+        for label in sorted(grouped.keys())
+        if label != "uniform" and not label.startswith("ft_")
+    ]
+    other_colors = {
+        label: other_palette[index % len(other_palette)]
+        for index, label in enumerate(other_labels)
+    }
     for label, group_rows in sorted(grouped.items()):
         ordered = sorted(group_rows, key=lambda row: row["nfe"])
-        x = [row["nfe"] for row in ordered]
+        nfe_values = [int(row["nfe"]) for row in ordered]
+        x = transform_focus_axis_values(nfe_values)
         y = [row["value_mean"] for row in ordered]
-        linewidth = 3 if label == "uniform" else 2
-        plt.plot(x, y, marker="o", linewidth=linewidth, label=label)
+        if label == "uniform":
+            color = "#1f77b4"
+            linestyle = "--"
+            marker = "x"
+            linewidth = 2.2
+        elif label.startswith("ft_"):
+            color = ft_colors[label]
+            linestyle = "-"
+            marker = "x"
+            linewidth = 2.0
+        else:
+            color = other_colors.get(label, "#7f7f7f")
+            linestyle = "--"
+            marker = "o"
+            linewidth = 1.8
+        plt.plot(
+            x,
+            y,
+            marker=marker,
+            linestyle=linestyle,
+            color=color,
+            linewidth=linewidth,
+            markersize=5,
+            label=label,
+        )
         if any(float(row["value_std"]) > 0.0 for row in ordered):
             lower = [row["value_mean"] - row["value_std"] for row in ordered]
             upper = [row["value_mean"] + row["value_std"] for row in ordered]
-            plt.fill_between(x, lower, upper, alpha=0.15)
+            plt.fill_between(x, lower, upper, alpha=0.10, color=color)
     plt.xlabel("NFE")
     plt.ylabel("FID")
-    plt.xscale("log")
-    plt.grid(alpha=0.3)
-    plt.legend(loc="best", fontsize=9)
+    plt.xticks(transform_focus_axis_values(tick_values), [str(tick) for tick in tick_values])
+    plt.grid(alpha=0.22, linestyle="--", linewidth=0.8)
+    plt.legend(loc="upper right", fontsize=9, frameon=False)
     plt.tight_layout()
     plt.savefig(output_dir / "fid_vs_nfe.png", dpi=300)
     plt.close()

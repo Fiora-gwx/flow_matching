@@ -27,6 +27,7 @@ from models.model_configs import instantiate_model
 from training.analysis_utils import collect_loss_and_velocity_profile, collect_trajectory_profile
 from training.data_transform import get_train_transform
 from training.eval_loop import CFGScaledModel
+from experiments.plot_style import selected_nfe_ticks, transform_focus_axis_values
 
 
 def merge_dicts(base: Dict, override: Dict) -> Dict:
@@ -102,10 +103,10 @@ def plot_profile(rows, output_path: Path, y_field: str, ylabel: str):
     x = [0.5 * (row['r_left'] + row['r_right']) for row in rows]
     y = [row[y_field] for row in rows]
     plt.figure(figsize=(8, 4.5))
-    plt.plot(x, y, marker='o')
+    plt.plot(x, y, marker='o', color='#d62728', linewidth=2.1, markersize=4)
     plt.xlabel('r')
     plt.ylabel(ylabel)
-    plt.grid(alpha=0.3)
+    plt.grid(alpha=0.22, linestyle='--', linewidth=0.8)
     plt.tight_layout()
     plt.savefig(output_path, dpi=300)
     plt.close()
@@ -114,13 +115,16 @@ def plot_profile(rows, output_path: Path, y_field: str, ylabel: str):
 def plot_trajectory(rows, output_path: Path):
     if not rows:
         return
-    x = [row['nfe'] for row in rows]
+    original_x = [int(row['nfe']) for row in rows]
+    x = transform_focus_axis_values(original_x)
     y = [row['terminal_budget_ratio'] for row in rows]
+    tick_values = selected_nfe_ticks(original_x)
     plt.figure(figsize=(8, 4.5))
-    plt.plot(x, y, marker='o')
+    plt.plot(x, y, marker='o', color='#1f77b4', linestyle='--', linewidth=2.0, markersize=4)
     plt.xlabel('NFE')
     plt.ylabel('Terminal Budget Ratio')
-    plt.grid(alpha=0.3)
+    plt.xticks(transform_focus_axis_values(tick_values), [str(tick) for tick in tick_values])
+    plt.grid(alpha=0.22, linestyle='--', linewidth=0.8)
     plt.tight_layout()
     plt.savefig(output_path, dpi=300)
     plt.close()

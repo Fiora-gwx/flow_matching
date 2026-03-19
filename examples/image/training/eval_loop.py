@@ -4,6 +4,7 @@
 # This source code is licensed under the CC-by-NC license found in the
 # LICENSE file in the root directory of this source tree.
 import gc
+import json
 import logging
 import os
 from argparse import Namespace
@@ -157,6 +158,7 @@ def eval_model(
     snapshots_saved = False
     last_nfe = 0
     last_step_count = 0
+    last_solver_stats = None
 
     loader_length = len(data_loader) if hasattr(data_loader, "__len__") else "?"
     for data_iter_step, batch in iter_batches_until_target(
@@ -207,6 +209,7 @@ def eval_model(
             synthetic_samples = sampling.sample
             last_nfe = sampling.nfe
             last_step_count = sampling.step_count
+            last_solver_stats = getattr(sampling, "solver_stats", None)
             synthetic_samples = torch.clamp(
                 synthetic_samples * 0.5 + 0.5, min=0.0, max=1.0
             )
@@ -260,6 +263,11 @@ def eval_model(
             logger.info(
                 f"Evaluating [{data_iter_step}/{loader_length}] samples generated [{num_synthetic}/{fid_samples}] running fid {running_fid}"
             )
+
+    if args.output_dir and last_solver_stats is not None:
+        solver_stats_path = Path(args.output_dir) / "solver_stats.json"
+        with open(solver_stats_path, "w", encoding="utf-8") as handle:
+            json.dump(last_solver_stats, handle, indent=2, sort_keys=True)
 
     results = {
         "nfe": float(last_nfe),

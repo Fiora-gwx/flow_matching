@@ -18,7 +18,7 @@ CLOCK_FAMILIES = [
     "sigmoid_k8",
     "exp_l3",
 ]
-SAMPLING_SOLVERS = ["euler", "heun2"]
+SAMPLING_SOLVERS = ["euler", "heun2", "rk3", "stork4"]
 SUPPORTED_METRICS = ["fid", "precision_recall", "inception_score"]
 
 
