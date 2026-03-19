@@ -81,6 +81,8 @@ python3 experiments/run_experiments.py --config experiments/configs/ft_clock/sch
 python3 experiments/run_experiments.py --config experiments/configs/ft_clock/cross_path.yaml
 ```
 
+其中 `E5 cross_path` 现在会复用 `E1 linear_main` 和 `E4 trig_vp` 中对应方法的 checkpoint，只做交叉路径结果汇总与评估，不再重复训练相同模型。
+
 如需把解析后的 beta 固化成可归档 YAML：
 
 ```bash

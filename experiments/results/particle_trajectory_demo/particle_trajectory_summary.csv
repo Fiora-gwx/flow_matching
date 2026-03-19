@@ -1,0 +1,4 @@
+method,mean_path_length,mean_curvature,mean_oracle_endpoint_error
+Theoretical Perfect Pairing,2.6449313163757324,1.2917905678477837e-07,0.0
+Traditional Method,2.900913715362549,1.3336457982404681e-07,1.4765069484710693
+Our Method,2.6449313163757324,1.3855797931228153e-07,0.0

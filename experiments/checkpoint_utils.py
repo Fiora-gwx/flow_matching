@@ -50,3 +50,55 @@ def resolve_checkpoint_path(
         exp_dir=exp_dir,
         epoch=None if checkpoint_epoch is None else int(checkpoint_epoch),
     )
+
+
+def _format_template_value(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, float):
+        return format(value, "g").replace(".", "_")
+    return str(value).replace(".", "_")
+
+
+def _render_reference_template(template: str, spec: Dict[str, object]) -> str:
+    context = {key: value for key, value in spec.items()}
+    context["clock_beta_tag"] = _format_template_value(spec.get("clock_beta"))
+    rendered = template
+    for key, value in context.items():
+        rendered = rendered.replace("{" + key + "}", str(value))
+        rendered = rendered.replace("{" + key + "_tag}", _format_template_value(value))
+    return rendered
+
+
+def resolve_reused_checkpoint(
+    reference: Dict[str, object],
+    spec: Dict[str, object],
+    workspace_root: Optional[Path] = None,
+) -> Optional[Path]:
+    workspace_root = workspace_root or Path.cwd()
+    artifact_group = reference.get("artifact_group")
+    if artifact_group:
+        base_dir = workspace_root / "experiments" / "results" / str(artifact_group)
+    else:
+        base_dir = workspace_root / "experiments" / "results"
+
+    source_name = str(
+        reference.get("source_exp_name")
+        or reference.get("source_name_template")
+        or spec["name"]
+    )
+    source_name = _render_reference_template(source_name, spec)
+    source_dataset = str(reference.get("dataset", spec["dataset"]))
+    checkpoint_epoch = reference.get("checkpoint_epoch")
+    explicit_path = reference.get("checkpoint_path")
+
+    return resolve_checkpoint_path(
+        base_dir=base_dir,
+        spec={
+            "dataset": source_dataset,
+            "name": source_name,
+            "checkpoint_epoch": checkpoint_epoch,
+            "checkpoint_path": explicit_path,
+        },
+        workspace_root=workspace_root,
+    )

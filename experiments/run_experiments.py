@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from experiments.checkpoint_utils import find_checkpoint
+from experiments.checkpoint_utils import find_checkpoint, resolve_reused_checkpoint
 from experiments.result_utils import (
     append_result_rows,
     ensure_results_file,
@@ -342,12 +342,51 @@ class ExperimentManager:
             exp_dir.mkdir(parents=True, exist_ok=True)
             train_log = self.logs_dir / f"{spec['name']}_train.log"
             train_key = f"{spec['name']}:train"
-            checkpoint = exp_dir / "checkpoint.pth"
+            local_checkpoint = exp_dir / "checkpoint.pth"
+            reused_checkpoint = None
+            if spec.get("checkpoint_from") is not None:
+                reused_checkpoint = resolve_reused_checkpoint(
+                    reference=spec["checkpoint_from"],
+                    spec=spec,
+                    workspace_root=Path.cwd(),
+                )
+                if reused_checkpoint is not None:
+                    logger.info(
+                        "Reusing checkpoint for %s from %s",
+                        spec["name"],
+                        reused_checkpoint,
+                    )
+                else:
+                    logger.warning(
+                        "Configured checkpoint reuse for %s but no external checkpoint was found: %s",
+                        spec["name"],
+                        spec["checkpoint_from"],
+                    )
+            checkpoint = local_checkpoint
 
-            if self.state.get(train_key) != "completed" or not checkpoint.exists():
+            if local_checkpoint.exists() and self.state.get(train_key) == "completed":
+                checkpoint = local_checkpoint
+            elif local_checkpoint.exists():
                 self.state[train_key] = "running"
                 self._save_state()
-                resume_checkpoint = checkpoint if checkpoint.exists() else None
+                success = run_command(
+                    self.build_train_cmd(spec, exp_dir, resume_checkpoint=local_checkpoint),
+                    train_log,
+                    retries=1,
+                )
+                self.state[train_key] = "completed" if success else "failed"
+                self._save_state()
+                if not success:
+                    continue
+                checkpoint = local_checkpoint
+            elif reused_checkpoint is not None:
+                checkpoint = reused_checkpoint
+                self.state[train_key] = "completed"
+                self._save_state()
+            elif self.state.get(train_key) != "completed" or not local_checkpoint.exists():
+                self.state[train_key] = "running"
+                self._save_state()
+                resume_checkpoint = local_checkpoint if local_checkpoint.exists() else None
                 success = run_command(
                     self.build_train_cmd(spec, exp_dir, resume_checkpoint=resume_checkpoint),
                     train_log,
@@ -357,10 +396,13 @@ class ExperimentManager:
                 self._save_state()
                 if not success:
                     continue
+                checkpoint = local_checkpoint
 
             for epoch in spec["eval_epochs"]:
-                checkpoint = find_checkpoint(exp_dir, epoch)
-                if checkpoint is None:
+                checkpoint_for_eval = checkpoint
+                if checkpoint_for_eval == local_checkpoint:
+                    checkpoint_for_eval = find_checkpoint(exp_dir, epoch)
+                if checkpoint_for_eval is None:
                     logger.warning("Checkpoint for epoch %s not found in %s", epoch, exp_dir)
                     continue
                 for nfe in spec["eval_nfes"]:
@@ -385,7 +427,7 @@ class ExperimentManager:
                         self.build_eval_cmd(
                             spec,
                             eval_dir,
-                            checkpoint,
+                            checkpoint_for_eval,
                             nfe,
                             metrics_override=missing_metrics,
                         ),

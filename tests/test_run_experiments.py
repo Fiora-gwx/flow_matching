@@ -318,3 +318,79 @@ class RunExperimentsTest(unittest.TestCase):
             rows = load_result_rows(workspace / 'experiments' / 'results' / 'demo_group' / 'results.csv')
             metric_names = sorted(row['metric'] for row in rows)
             self.assertEqual(metric_names, ['fid', 'is_mean', 'is_std'])
+
+    def test_experiment_manager_reuses_external_checkpoint_without_training(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            config_path = workspace / 'config.json'
+            config_path.write_text(json.dumps({
+                'experiment_name': 'cross_path_group',
+                'base_config': {
+                    'dataset': 'cifar10',
+                    'data_path': './data/cifar10',
+                    'epochs': 500,
+                    'batch_size': 8,
+                    'num_gpus': 1,
+                    'path_family': 'linear',
+                    'sampling_solver': 'heun2',
+                    'metrics': ['fid'],
+                    'eval_epochs': [499],
+                    'eval_nfes': [10],
+                },
+                'experiments': [
+                    {
+                        'name': 'linear_ft_best',
+                        'path_family': 'linear',
+                        'clock_family': 'ft_linear_beta',
+                        'clock_beta': 0.5,
+                        'checkpoint_from': {
+                            'artifact_group': 'ft_clock_linear_main',
+                            'source_name_template': 'linear_ft_beta_{clock_beta_tag}',
+                            'checkpoint_epoch': 499,
+                        },
+                    }
+                ],
+            }), encoding='utf-8')
+
+            external_checkpoint = (
+                workspace
+                / 'experiments'
+                / 'results'
+                / 'ft_clock_linear_main'
+                / 'cifar10'
+                / 'linear_ft_beta_0_5'
+                / 'checkpoint-499.pth'
+            )
+            external_checkpoint.parent.mkdir(parents=True, exist_ok=True)
+            external_checkpoint.touch()
+
+            cwd = os.getcwd()
+            os.chdir(workspace)
+            try:
+                seen_commands = []
+
+                def fake_run_command(cmd, log_file, retries=0):
+                    seen_commands.append(cmd)
+                    tokens = shlex.split(cmd)
+                    self.assertIn('--eval_only', tokens)
+                    self.assertIn('--resume', tokens)
+                    self.assertEqual(
+                        Path(tokens[tokens.index('--resume') + 1]).resolve(),
+                        external_checkpoint.resolve(),
+                    )
+                    return True
+
+                with mock.patch('experiments.run_experiments.run_command', side_effect=fake_run_command):
+                    with mock.patch('experiments.run_experiments.extract_eval_stats', return_value={
+                        'nfe': 10.0,
+                        'step_count': 5.0,
+                        'real_samples': 50000.0,
+                        'synthetic_samples': 50000.0,
+                        'fid': 9.1,
+                    }):
+                        ExperimentManager(config_path).run_all()
+            finally:
+                os.chdir(cwd)
+
+            self.assertEqual(len(seen_commands), 1)
+            self.assertIn('--eval_only', seen_commands[0])

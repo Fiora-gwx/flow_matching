@@ -8,7 +8,11 @@ ROOT = os.path.dirname(os.path.dirname(__file__))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from experiments.checkpoint_utils import find_checkpoint, resolve_checkpoint_path
+from experiments.checkpoint_utils import (
+    find_checkpoint,
+    resolve_checkpoint_path,
+    resolve_reused_checkpoint,
+)
 
 
 class CheckpointUtilsTest(unittest.TestCase):
@@ -39,3 +43,25 @@ class CheckpointUtilsTest(unittest.TestCase):
                 resolve_checkpoint_path(base_dir, {'dataset': 'cifar10', 'name': 'demo', 'checkpoint_path': str(explicit_path)}, workspace_root=root),
                 explicit_path,
             )
+
+    def test_resolve_reused_checkpoint_supports_templates(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            base_dir = root / 'experiments' / 'results' / 'ft_clock_linear_main' / 'cifar10' / 'linear_ft_beta_0_5'
+            base_dir.mkdir(parents=True)
+            checkpoint = base_dir / 'checkpoint-499.pth'
+            checkpoint.touch()
+            resolved = resolve_reused_checkpoint(
+                reference={
+                    'artifact_group': 'ft_clock_linear_main',
+                    'source_name_template': 'linear_ft_beta_{clock_beta_tag}',
+                    'checkpoint_epoch': 499,
+                },
+                spec={
+                    'dataset': 'cifar10',
+                    'name': 'linear_ft_best',
+                    'clock_beta': 0.5,
+                },
+                workspace_root=root,
+            )
+            self.assertEqual(resolved, checkpoint)

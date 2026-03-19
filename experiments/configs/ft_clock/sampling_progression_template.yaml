@@ -1,0 +1,33 @@
+device: cuda
+seed: 0
+num_samples: 8
+grid_nrow: 4
+image_size: 32
+snapshot_ratios: [0.0, 0.1, 0.2, 0.4, 0.6, 0.8, 1.0]
+output_dir: experiments/results/sampling_progression_compare
+
+methods:
+  - label: Traditional
+    artifact_group: ft_clock_linear_main
+    dataset: cifar10
+    name: linear_uniform
+    checkpoint_epoch: 499
+    path_family: linear
+    clock_family: uniform
+    sampling_solver: heun2
+    eval_nfe: 50
+    cfg_scale: 0.0
+    fixed_label: 0
+
+  - label: Ours
+    artifact_group: ft_clock_linear_main
+    dataset: cifar10
+    name: linear_ft_beta_0_5
+    checkpoint_epoch: 499
+    path_family: linear
+    clock_family: ft_linear_beta
+    clock_beta: 0.5
+    sampling_solver: heun2
+    eval_nfe: 50
+    cfg_scale: 0.0
+    fixed_label: 0
