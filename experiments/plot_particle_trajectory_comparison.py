@@ -35,7 +35,7 @@ class MethodSpec:
     pairing: str
     path_family: str
     clock_family: str
-    clock_beta: Optional[float]
+    clock_beta: Optional[float] = None
     dataset: str = "cifar10"
     name: str = ""
     artifact_group: Optional[str] = None
@@ -54,6 +54,7 @@ def load_config(config_path: Path) -> Dict[str, object]:
 
 def resolve_method_fields(method: Dict[str, object]) -> Dict[str, object]:
     resolved = dict(method)
+    resolved.setdefault("clock_beta", None)
     best_beta_from = resolved.pop("best_beta_from", None)
     checkpoint_from = resolved.pop("checkpoint_from", None)
     if best_beta_from is not None:
@@ -157,6 +158,7 @@ def compute_trajectory(
     path_family: str,
     clock_family: str,
     clock_beta: Optional[float],
+    signal_scale_sq: float,
     num_steps: int,
 ) -> torch.Tensor:
     paired_targets = target_points.index_select(0, pair_indices)
@@ -171,6 +173,7 @@ def compute_trajectory(
             path_family=path_family,
             clock_family=clock_family,
             clock_beta=clock_beta,
+            signal_scale_sq=signal_scale_sq,
         )
         trajectory.append(batch.x_t)
     return torch.stack(trajectory, dim=0)
@@ -296,6 +299,7 @@ def plot_comparison(
         source_points.shape[0],
         seed=seed + 29,
     )
+    signal_scale_sq = float(oracle_targets.square().mean().item())
 
     perfect_spec = MethodSpec(
         label="Theoretical Perfect Pairing",
@@ -311,6 +315,7 @@ def plot_comparison(
         path_family=perfect_spec.path_family,
         clock_family=perfect_spec.clock_family,
         clock_beta=perfect_spec.clock_beta,
+        signal_scale_sq=signal_scale_sq,
         num_steps=num_steps,
     )
     baseline_trajectory = compute_trajectory(
@@ -320,6 +325,7 @@ def plot_comparison(
         path_family=baseline_spec.path_family,
         clock_family=baseline_spec.clock_family,
         clock_beta=baseline_spec.clock_beta,
+        signal_scale_sq=signal_scale_sq,
         num_steps=num_steps,
     )
     proposed_trajectory = compute_trajectory(
@@ -329,6 +335,7 @@ def plot_comparison(
         path_family=proposed_spec.path_family,
         clock_family=proposed_spec.clock_family,
         clock_beta=proposed_spec.clock_beta,
+        signal_scale_sq=signal_scale_sq,
         num_steps=num_steps,
     )
 
@@ -419,8 +426,7 @@ def main() -> None:
         "--baseline_clock_family",
         choices=(
             "uniform",
-            "ft_linear_beta",
-            "ft_vp_beta",
+            "ft_beta",
             "poly_a0.5",
             "poly_a2.0",
             "cosine",
@@ -437,15 +443,14 @@ def main() -> None:
         "--proposed_clock_family",
         choices=(
             "uniform",
-            "ft_linear_beta",
-            "ft_vp_beta",
+            "ft_beta",
             "poly_a0.5",
             "poly_a2.0",
             "cosine",
             "sigmoid_k8",
             "exp_l3",
         ),
-        default="ft_linear_beta",
+        default="ft_beta",
     )
     parser.add_argument("--proposed_clock_beta", type=float, default=0.5)
     args = parser.parse_args()

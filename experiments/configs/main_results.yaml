@@ -1,4 +1,4 @@
-experiment_name: main_results
+experiment_name: main_results_uparam
 # Legacy filename retained; content has been migrated to FT-clock naming.
 base_config:
   dataset: cifar10
@@ -17,6 +17,6 @@ experiments:
     clock_family: uniform
     eval_nfes: [4, 10, 20, 50, 100]
   - name: linear_ft_beta_0_5_main
-    clock_family: ft_linear_beta
+    clock_family: ft_beta
     clock_beta: 0.5
     eval_nfes: [4, 10, 20, 50, 100]

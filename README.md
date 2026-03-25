@@ -17,7 +17,7 @@
 当前有效参数是：
 
 - `--path_family {linear,trig_vp}`
-- `--clock_family {uniform,ft_linear_beta,ft_vp_beta,poly_a0.5,poly_a2.0,cosine,sigmoid_k8,exp_l3}`
+- `--clock_family {uniform,ft_beta,poly_a0.5,poly_a2.0,cosine,sigmoid_k8,exp_l3}`
 - `--clock_beta <beta>`
 - `--sampling_solver {euler,heun2}`
 - `--eval_nfe <real network forward calls>`
@@ -46,9 +46,9 @@ cd ../..
 ```bash
 python3 experiments/run_experiments.py --config experiments/configs/ft_clock/linear_main.yaml
 python3 experiments/visualize_results.py \
-  --csv experiments/results/ft_clock_linear_main/results.csv \
-  --out experiments/results/ft_clock_linear_main/plots \
-  --artifact_group ft_clock_linear_main
+  --csv experiments/results/ft_clock_linear_main_uparam/results.csv \
+  --out experiments/results/ft_clock_linear_main_uparam/plots \
+  --artifact_group ft_clock_linear_main_uparam
 ```
 
 如果历史结果里只有 `fid` / `precision_recall`，现在想补 `inception_score`，直接重跑同一个 YAML 即可。`experiments/run_experiments.py` 会跳过已完成训练，只对缺失指标执行 `eval_only` 回填。
@@ -59,9 +59,9 @@ YAML runner 的训练阶段默认会传 `--eval_frequency -1`，避免每 50 个
 
 ```bash
 python3 experiments/visualize_results.py \
-  --csv experiments/results/ft_clock_linear_main/results.csv \
-  --out experiments/results/ft_clock_linear_main/plots_heatmap \
-  --artifact_group ft_clock_linear_main \
+  --csv experiments/results/ft_clock_linear_main_uparam/results.csv \
+  --out experiments/results/ft_clock_linear_main_uparam/plots_heatmap \
+  --artifact_group ft_clock_linear_main_uparam \
   --plot_heatmap_only
 ```
 

@@ -1,6 +1,6 @@
-experiment_name: ft_clock_linear_main
+experiment_name: ft_clock_linear_main_uparam
 # E6 beta-NFE heatmap directly reuses this sweep.
-# Reproduce with: python3 experiments/visualize_results.py --csv experiments/results/ft_clock_linear_main/results.csv --out experiments/results/ft_clock_linear_main/plots --artifact_group ft_clock_linear_main --plot_heatmap_only
+# Reproduce with: python3 experiments/visualize_results.py --csv experiments/results/ft_clock_linear_main_uparam/results.csv --out experiments/results/ft_clock_linear_main_uparam/plots --artifact_group ft_clock_linear_main_uparam --plot_heatmap_only
 base_config:
   dataset: cifar10
   data_path: ./data/cifar10
@@ -20,23 +20,23 @@ experiments:
   - name: linear_uniform
     clock_family: uniform
   - name: linear_ft_beta_0_2
-    clock_family: ft_linear_beta
+    clock_family: ft_beta
     clock_beta: 0.2
   - name: linear_ft_beta_0_3
-    clock_family: ft_linear_beta
+    clock_family: ft_beta
     clock_beta: 0.3
   - name: linear_ft_beta_0_4
-    clock_family: ft_linear_beta
+    clock_family: ft_beta
     clock_beta: 0.4
   - name: linear_ft_beta_0_5
-    clock_family: ft_linear_beta
+    clock_family: ft_beta
     clock_beta: 0.5
   - name: linear_ft_beta_0_6
-    clock_family: ft_linear_beta
+    clock_family: ft_beta
     clock_beta: 0.6
   - name: linear_ft_beta_0_7
-    clock_family: ft_linear_beta
+    clock_family: ft_beta
     clock_beta: 0.7
   - name: linear_ft_beta_0_8
-    clock_family: ft_linear_beta
+    clock_family: ft_beta
     clock_beta: 0.8

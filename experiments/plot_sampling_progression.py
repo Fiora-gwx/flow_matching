@@ -6,6 +6,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 import matplotlib
 
 matplotlib.use("Agg")
@@ -14,12 +18,12 @@ import torch
 import yaml
 from torchvision.utils import make_grid
 
-from experiments.checkpoint_utils import resolve_checkpoint_path, resolve_reused_checkpoint
+from experiments.checkpoint_utils import (
+    load_checkpoint_args,
+    resolve_checkpoint_path,
+    resolve_reused_checkpoint,
+)
 from experiments.result_utils import resolve_best_beta_reference
-
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
 
 IMAGE_ROOT = ROOT / "examples" / "image"
 if str(IMAGE_ROOT) not in sys.path:
@@ -113,17 +117,23 @@ def load_model_from_checkpoint(
     method: MethodSpec,
     checkpoint_path: Path,
     device: torch.device,
-) -> torch.nn.Module:
+) -> Tuple[torch.nn.Module, Dict[str, object]]:
     model = instantiate_model(
         architechture=method.dataset,
         is_discrete=False,
         use_ema=method.use_ema,
     )
     checkpoint = torch.load(checkpoint_path, map_location="cpu")
+    checkpoint_args = load_checkpoint_args(checkpoint_path)
+    checkpoint_payload = checkpoint.get("args")
+    if not checkpoint_args and isinstance(checkpoint_payload, dict):
+        checkpoint_args = dict(checkpoint_payload)
+    elif not checkpoint_args and hasattr(checkpoint_payload, "__dict__"):
+        checkpoint_args = dict(vars(checkpoint_payload))
     model.load_state_dict(checkpoint["model"])
     model.to(device)
     model.eval()
-    return model
+    return model, checkpoint_args
 
 
 def build_snapshot_indices(num_states: int, snapshot_ratios: Sequence[float]) -> List[int]:
@@ -144,8 +154,18 @@ def sample_method_trajectory(
     labels: torch.Tensor,
     device: torch.device,
 ) -> FixedStepSample:
-    model = load_model_from_checkpoint(method, checkpoint_path, device)
-    model_wrapper = CFGScaledModel(model)
+    model, checkpoint_args = load_model_from_checkpoint(method, checkpoint_path, device)
+    checkpoint_clock_family = checkpoint_args.get("clock_family", method.clock_family)
+    if checkpoint_clock_family in {"ft_linear_beta", "ft_vp_beta"}:
+        checkpoint_clock_family = "ft_beta"
+    model_wrapper = CFGScaledModel(
+        model,
+        path_family=checkpoint_args.get("path_family", method.path_family),
+        clock_family=checkpoint_clock_family,
+        clock_beta=checkpoint_args.get("clock_beta", method.clock_beta),
+        signal_scale_sq=checkpoint_args.get("signal_scale_sq"),
+        model_output_type=str(checkpoint_args.get("model_output_type", "velocity")),
+    )
     model_wrapper.train(False)
     result = solve_fixed_budget(
         velocity_model=model_wrapper,

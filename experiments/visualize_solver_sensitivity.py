@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
 import argparse
+import sys
 from collections import defaultdict
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 import matplotlib
 
@@ -12,6 +17,7 @@ import matplotlib.pyplot as plt
 from experiments.result_utils import (
     aggregate_seed_rows,
     filter_rows,
+    is_ft_clock_family,
     load_result_rows,
     write_table_csv,
 )
@@ -203,7 +209,7 @@ def write_summary(rows: Sequence[Dict[str, object]], output_path: Path) -> None:
         key = (str(row["path_family"]), str(row["solver"]))
         if row["clock_family"] == "uniform":
             grouped[key]["baseline"].append(row)
-        elif str(row["clock_family"]).startswith("ft_"):
+        elif is_ft_clock_family(row["clock_family"]):
             grouped[key]["ft"].append(row)
 
     lines = ["# Solver Sensitivity Summary", ""]

@@ -1,4 +1,4 @@
-experiment_name: ft_clock_cifar100_transfer
+experiment_name: ft_clock_cifar100_transfer_uparam
 # The FT entry is resolved automatically from E1 aggregated CIFAR-10 linear results.
 base_config:
   dataset: cifar100
@@ -17,13 +17,13 @@ experiments:
   - name: cifar100_linear_uniform
     clock_family: uniform
   - name: cifar100_linear_ft_best
-    clock_family: ft_linear_beta
+    clock_family: ft_beta
     best_beta_from:
-      results_csv: experiments/results/ft_clock_linear_main/results.csv
-      artifact_group: ft_clock_linear_main
+      results_csv: experiments/results/ft_clock_linear_main_uparam/results.csv
+      artifact_group: ft_clock_linear_main_uparam
       dataset: cifar10
       path_family: linear
       solver: heun2
       metric: fid
       selection_nfes: [10, 20, 50]
-      clock_family: ft_linear_beta
+      clock_family: ft_beta

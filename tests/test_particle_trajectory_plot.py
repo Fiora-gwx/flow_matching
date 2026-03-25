@@ -39,7 +39,7 @@ def make_source_row(run_id, seed, beta, value, nfe):
         "stage": "eval",
         "checkpoint_epoch": 499,
         "path_family": "linear",
-        "clock_family": "ft_linear_beta",
+        "clock_family": "ft_beta",
         "clock_param_name": "beta",
         "clock_param_value": beta,
         "solver": "heun2",
@@ -72,7 +72,7 @@ class ParticleTrajectoryPlotTest(unittest.TestCase):
                     label="Ours",
                     pairing="oracle",
                     path_family="linear",
-                    clock_family="ft_linear_beta",
+                    clock_family="ft_beta",
                     clock_beta=0.5,
                 ),
                 num_points_per_group=4,
@@ -112,6 +112,12 @@ class ParticleTrajectoryPlotTest(unittest.TestCase):
             )
             checkpoint.parent.mkdir(parents=True, exist_ok=True)
             checkpoint.touch()
+            (checkpoint.parent / "args.json").write_text(
+                '{"path_family":"linear","clock_family":"ft_beta","clock_beta":0.5,'
+                '"clock_semantics_tag":"ft_global_v2_linear_closed_form",'
+                '"model_output_type":"base_velocity","time_sampling_strategy":"ds_dr_sq"}',
+                encoding="utf-8",
+            )
 
             with mock.patch.object(particle_trajectory, "ROOT", root):
                 spec = build_method_spec(
@@ -121,7 +127,7 @@ class ParticleTrajectoryPlotTest(unittest.TestCase):
                         "dataset": "cifar10",
                         "name": "linear_ft_best",
                         "path_family": "linear",
-                        "clock_family": "ft_linear_beta",
+                        "clock_family": "ft_beta",
                         "best_beta_from": {
                             "results_csv": "experiments/results/ft_clock_linear_main/results.csv",
                             "artifact_group": "ft_clock_linear_main",
@@ -130,7 +136,7 @@ class ParticleTrajectoryPlotTest(unittest.TestCase):
                             "solver": "heun2",
                             "metric": "fid",
                             "selection_nfes": [10, 20],
-                            "clock_family": "ft_linear_beta",
+                            "clock_family": "ft_beta",
                         },
                         "checkpoint_from": {
                             "artifact_group": "ft_clock_linear_main",
@@ -142,6 +148,19 @@ class ParticleTrajectoryPlotTest(unittest.TestCase):
 
             self.assertEqual(spec.clock_beta, 0.5)
             self.assertEqual(Path(spec.checkpoint_path), checkpoint)
+
+    def test_build_method_spec_defaults_missing_clock_beta_to_none(self):
+        spec = build_method_spec(
+            {
+                "label": "Baseline",
+                "pairing": "random",
+                "dataset": "cifar10",
+                "name": "linear_uniform",
+                "path_family": "linear",
+                "clock_family": "uniform",
+            }
+        )
+        self.assertIsNone(spec.clock_beta)
 
 
 if __name__ == "__main__":

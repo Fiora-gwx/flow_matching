@@ -42,7 +42,7 @@ def make_source_row(run_id, seed, beta, value, nfe):
         "stage": "eval",
         "checkpoint_epoch": 499,
         "path_family": "linear",
-        "clock_family": "ft_linear_beta",
+        "clock_family": "ft_beta",
         "clock_param_name": "beta",
         "clock_param_value": beta,
         "solver": "heun2",
@@ -105,6 +105,12 @@ class SamplingProgressionPlotTest(unittest.TestCase):
             )
             checkpoint.parent.mkdir(parents=True, exist_ok=True)
             checkpoint.touch()
+            (checkpoint.parent / "args.json").write_text(
+                '{"path_family":"linear","clock_family":"ft_beta","clock_beta":0.5,'
+                '"clock_semantics_tag":"ft_global_v2_linear_closed_form",'
+                '"model_output_type":"base_velocity","time_sampling_strategy":"ds_dr_sq"}',
+                encoding="utf-8",
+            )
 
             with mock.patch.object(sampling_progression, "ROOT", root):
                 resolved = resolve_method_fields(
@@ -113,7 +119,7 @@ class SamplingProgressionPlotTest(unittest.TestCase):
                         "dataset": "cifar10",
                         "name": "linear_ft_best",
                         "path_family": "linear",
-                        "clock_family": "ft_linear_beta",
+                        "clock_family": "ft_beta",
                         "sampling_solver": "heun2",
                         "eval_nfe": 50,
                         "best_beta_from": {
@@ -124,7 +130,7 @@ class SamplingProgressionPlotTest(unittest.TestCase):
                             "solver": "heun2",
                             "metric": "fid",
                             "selection_nfes": [10, 20],
-                            "clock_family": "ft_linear_beta",
+                            "clock_family": "ft_beta",
                         },
                         "checkpoint_from": {
                             "artifact_group": "ft_clock_linear_main",

@@ -1,8 +1,90 @@
+import json
 import logging
 from pathlib import Path
 from typing import Dict, Optional
 
 logger = logging.getLogger(__name__)
+
+
+def _load_checkpoint_args(checkpoint_path: Path) -> Optional[Dict[str, object]]:
+    args_path = checkpoint_path.parent / "args.json"
+    if not args_path.exists():
+        return None
+    try:
+        with open(args_path, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, json.JSONDecodeError) as error:
+        logger.warning("Failed to read checkpoint args from %s: %s", args_path, error)
+        return None
+    if not isinstance(payload, dict):
+        logger.warning("Checkpoint args at %s are not a JSON object.", args_path)
+        return None
+    return payload
+
+
+def load_checkpoint_args(checkpoint_path: Path) -> Dict[str, object]:
+    payload = _load_checkpoint_args(checkpoint_path)
+    return {} if payload is None else payload
+
+
+def _float_matches(expected: object, observed: object, tol: float = 1e-8) -> bool:
+    if expected is None:
+        return True
+    if observed is None:
+        return False
+    try:
+        return abs(float(expected) - float(observed)) <= tol
+    except (TypeError, ValueError):
+        return False
+
+
+def _uses_new_nonuniform_training_semantics(
+    checkpoint_args: Dict[str, object],
+) -> bool:
+    return (
+        checkpoint_args.get("model_output_type") == "base_velocity"
+        and checkpoint_args.get("time_sampling_strategy") == "ds_dr_sq"
+    )
+
+
+def _is_semantically_compatible(
+    expected_spec: Dict[str, object],
+    checkpoint_args: Optional[Dict[str, object]],
+) -> bool:
+    if checkpoint_args is None:
+        return False
+
+    expected_path = expected_spec.get("path_family")
+    expected_clock = expected_spec.get("clock_family")
+    expected_beta = expected_spec.get("clock_beta")
+    observed_path = checkpoint_args.get("path_family")
+    observed_clock = checkpoint_args.get("clock_family")
+    observed_beta = checkpoint_args.get("clock_beta")
+    observed_tag = str(checkpoint_args.get("clock_semantics_tag", ""))
+
+    if expected_path is not None and observed_path != expected_path:
+        return False
+
+    if expected_clock not in {None, "uniform"} and not _uses_new_nonuniform_training_semantics(
+        checkpoint_args
+    ):
+        return False
+
+    if expected_clock == "ft_beta":
+        if observed_clock != "ft_beta" or not _float_matches(expected_beta, observed_beta):
+            return False
+        if expected_path == "linear":
+            return observed_path == "linear" and observed_tag == "ft_global_v2_linear_closed_form"
+        if expected_path == "trig_vp":
+            return (
+                observed_path == "trig_vp"
+                and observed_tag.startswith("ft_global_v2_trig_vp_")
+            )
+        return observed_tag.startswith("ft_global_v2_")
+
+    if expected_clock is not None and observed_clock != expected_clock:
+        return False
+    return _float_matches(expected_beta, observed_beta)
 
 
 def find_checkpoint(
@@ -92,7 +174,7 @@ def resolve_reused_checkpoint(
     checkpoint_epoch = reference.get("checkpoint_epoch")
     explicit_path = reference.get("checkpoint_path")
 
-    return resolve_checkpoint_path(
+    checkpoint_path = resolve_checkpoint_path(
         base_dir=base_dir,
         spec={
             "dataset": source_dataset,
@@ -102,3 +184,15 @@ def resolve_reused_checkpoint(
         },
         workspace_root=workspace_root,
     )
+    if checkpoint_path is None:
+        return None
+
+    checkpoint_args = _load_checkpoint_args(checkpoint_path)
+    if not _is_semantically_compatible(spec, checkpoint_args):
+        logger.warning(
+            "Rejected reused checkpoint %s for %s because checkpoint semantics do not match the requested spec.",
+            checkpoint_path,
+            spec.get("name", "<unnamed>"),
+        )
+        return None
+    return checkpoint_path

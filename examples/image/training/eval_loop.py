@@ -24,6 +24,7 @@ from torch.nn.parallel import DistributedDataParallel
 from torchvision.utils import save_image
 
 from training import distributed_mode
+from training.continuous_runtime import evaluate_clock, model_output_to_velocity
 from training.eval_utils import iter_batches_until_target
 from training.fixed_step_solver import solve_fixed_budget
 from training.metric_utils import (
@@ -49,9 +50,22 @@ PRINT_FREQUENCY = 50
 
 
 class CFGScaledModel(ModelWrapper):
-    def __init__(self, model: Module):
+    def __init__(
+        self,
+        model: Module,
+        path_family: str = "linear",
+        clock_family: str = "uniform",
+        clock_beta: Optional[float] = None,
+        signal_scale_sq: Optional[float] = None,
+        model_output_type: str = "velocity",
+    ):
         super().__init__(model)
         self.nfe_counter = 0
+        self.path_family = path_family
+        self.clock_family = clock_family
+        self.clock_beta = clock_beta
+        self.signal_scale_sq = signal_scale_sq
+        self.model_output_type = model_output_type
 
     def forward(
         self, x: torch.Tensor, t: torch.Tensor, cfg_scale: float, label: torch.Tensor
@@ -73,15 +87,31 @@ class CFGScaledModel(ModelWrapper):
             with torch.cuda.amp.autocast(), torch.no_grad():
                 conditional = self.model(x, t, extra={"label": label})
                 condition_free = self.model(x, t, extra={})
-            result = (1.0 + cfg_scale) * conditional - cfg_scale * condition_free
+            raw_result = (1.0 + cfg_scale) * conditional - cfg_scale * condition_free
             self.nfe_counter += 2
         else:
             with torch.cuda.amp.autocast(), torch.no_grad():
-                result = self.model(x, t, extra={"label": label})
+                raw_result = self.model(x, t, extra={"label": label})
             self.nfe_counter += 1
         if is_discrete:
-            return torch.softmax(result.to(dtype=torch.float32), dim=-1)
-        return result.to(dtype=torch.float32)
+            return torch.softmax(raw_result.to(dtype=torch.float32), dim=-1)
+
+        result = raw_result.to(dtype=torch.float32)
+        if self.model_output_type == "velocity":
+            return result
+
+        clock = evaluate_clock(
+            r=t.to(dtype=torch.float32),
+            clock_family=self.clock_family,
+            clock_beta=self.clock_beta,
+            path_family=self.path_family,
+            signal_scale_sq=self.signal_scale_sq,
+        )
+        return model_output_to_velocity(
+            model_output=result,
+            ds_dr=clock.ds_dr,
+            model_output_type=self.model_output_type,
+        )
 
     def reset_nfe_counter(self) -> None:
         self.nfe_counter = 0
@@ -120,7 +150,14 @@ def eval_model(
     gc.collect()
     active_metrics = requested_metrics(args)
 
-    cfg_scaled_model = CFGScaledModel(model=model)
+    cfg_scaled_model = CFGScaledModel(
+        model=model,
+        path_family=args.path_family,
+        clock_family=args.clock_family,
+        clock_beta=args.clock_beta,
+        signal_scale_sq=getattr(args, "signal_scale_sq", None),
+        model_output_type=getattr(args, "model_output_type", "velocity"),
+    )
     cfg_scaled_model.train(False)
 
     if args.discrete_flow_matching:

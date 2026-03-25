@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 import tempfile
@@ -27,6 +28,15 @@ class AnalyzeMechanismsTest(unittest.TestCase):
             )
             checkpoint.parent.mkdir(parents=True, exist_ok=True)
             checkpoint.touch()
+            (checkpoint.parent / "args.json").write_text(
+                json.dumps(
+                    {
+                        "path_family": "linear",
+                        "clock_family": "uniform",
+                    }
+                ),
+                encoding="utf-8",
+            )
             spec = {
                 "dataset": "cifar10",
                 "name": "linear_uniform",

@@ -1,4 +1,4 @@
-experiment_name: ft_clock_trig_vp
+experiment_name: ft_clock_trig_vp_global_uparam
 base_config:
   dataset: cifar10
   data_path: ./data/cifar10
@@ -15,12 +15,16 @@ base_config:
 experiments:
   - name: trig_vp_uniform
     clock_family: uniform
+    checkpoint_from:
+      artifact_group: ft_clock_trig_vp
+      source_exp_name: trig_vp_uniform
+      checkpoint_epoch: 499
   - name: trig_vp_ft_beta_0_3
-    clock_family: ft_vp_beta
+    clock_family: ft_beta
     clock_beta: 0.3
   - name: trig_vp_ft_beta_0_5
-    clock_family: ft_vp_beta
+    clock_family: ft_beta
     clock_beta: 0.5
   - name: trig_vp_ft_beta_0_7
-    clock_family: ft_vp_beta
+    clock_family: ft_beta
     clock_beta: 0.7

@@ -1,22 +1,30 @@
 from dataclasses import dataclass
-from typing import Optional
+from typing import Dict, Optional, Tuple
 
 import torch
 from torch import Tensor
 
 EPS = 1e-8
 TIME_EPS = 1e-5
+FT_CLOCK_GRID_SIZE = 4097
+FT_TRIG_VP_UNIT_SCALE_TOL = 1e-6
 PATH_FAMILIES = ("linear", "trig_vp")
+FT_CLOCK_FAMILIES = ("ft_beta",)
+MODEL_OUTPUT_TYPES = ("velocity", "base_velocity")
 CLOCK_FAMILIES = (
     "uniform",
-    "ft_linear_beta",
-    "ft_vp_beta",
+    "ft_beta",
     "poly_a0.5",
     "poly_a2.0",
     "cosine",
     "sigmoid_k8",
     "exp_l3",
 )
+_FT_CLOCK_GRID_CACHE: Dict[Tuple[str, float, float, str, str], Tuple[Tensor, Tensor]] = {}
+_CLOCK_IMPORTANCE_CDF_CACHE: Dict[
+    Tuple[str, str, float, float, str, str],
+    Tuple[Tensor, Tensor],
+] = {}
 
 
 @dataclass
@@ -43,8 +51,12 @@ class ContinuousPathBatch:
     target_velocity: Tensor
 
 
+def is_ft_clock_family(clock_family: str) -> bool:
+    return clock_family in FT_CLOCK_FAMILIES
+
+
 def _validate_beta(clock_family: str, clock_beta: Optional[float]) -> float:
-    if clock_family in {"ft_linear_beta", "ft_vp_beta"}:
+    if is_ft_clock_family(clock_family):
         if clock_beta is None:
             raise ValueError(f"clock_family={clock_family} requires --clock_beta.")
         if not (0.0 < clock_beta < 1.0):
@@ -84,25 +96,202 @@ def _normalized_exponential(r: Tensor, lamb: float = 3.0) -> ClockOutput:
     return _with_exact_endpoints(r=r, s=s, ds_dr=ds_dr)
 
 
-def evaluate_clock(
-    r: Tensor, clock_family: str, clock_beta: Optional[float] = None
-) -> ClockOutput:
-    if clock_family not in CLOCK_FAMILIES:
-        raise ValueError(f"Unsupported clock_family={clock_family}.")
+def _signal_scale_tensor(signal_scale_sq: float, reference: Tensor) -> Tensor:
+    return torch.tensor(signal_scale_sq, dtype=reference.dtype, device=reference.device)
 
-    beta = _validate_beta(clock_family=clock_family, clock_beta=clock_beta)
+
+def evaluate_mean_terminal_error(path: PathOutput, signal_scale_sq: float) -> Tensor:
+    signal_scale = _signal_scale_tensor(signal_scale_sq=signal_scale_sq, reference=path.alpha)
+    return signal_scale * torch.pow(1.0 - path.alpha, 2.0) + torch.pow(path.sigma, 2.0)
+
+
+def evaluate_mean_terminal_error_derivative(
+    path: PathOutput,
+    signal_scale_sq: float,
+) -> Tensor:
+    signal_scale = _signal_scale_tensor(signal_scale_sq=signal_scale_sq, reference=path.alpha)
+    return (
+        -2.0 * signal_scale * (1.0 - path.alpha) * path.d_alpha
+        + 2.0 * path.sigma * path.d_sigma
+    )
+
+
+def resolve_clock_semantics_tag(
+    path_family: str,
+    clock_family: str,
+    signal_scale_sq: Optional[float] = None,
+) -> str:
+    if not is_ft_clock_family(clock_family):
+        return f"{path_family}:{clock_family}:v1"
+
+    if path_family == "linear":
+        return "ft_global_v2_linear_closed_form"
+
+    if path_family == "trig_vp":
+        if signal_scale_sq is not None and abs(float(signal_scale_sq) - 1.0) <= FT_TRIG_VP_UNIT_SCALE_TOL:
+            return "ft_global_v2_trig_vp_rho1_closed_form"
+        signal_scale_tag = "unknown" if signal_scale_sq is None else format(float(signal_scale_sq), ".6g")
+        return f"ft_global_v2_trig_vp_numeric_inverse_ssq_{signal_scale_tag}"
+
+    return f"ft_global_v2_{path_family}"
+
+
+def _ft_clock_cache_key(
+    path_family: str,
+    beta: float,
+    signal_scale_sq: float,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> Tuple[str, float, float, str, str]:
+    return (
+        path_family,
+        round(float(beta), 10),
+        round(float(signal_scale_sq), 10),
+        str(device),
+        str(dtype),
+    )
+
+
+def _build_ft_clock_grid(
+    path_family: str,
+    beta: float,
+    signal_scale_sq: float,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> Tuple[Tensor, Tensor]:
+    cache_key = _ft_clock_cache_key(
+        path_family=path_family,
+        beta=beta,
+        signal_scale_sq=signal_scale_sq,
+        device=device,
+        dtype=dtype,
+    )
+    cached = _FT_CLOCK_GRID_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    s_grid = torch.linspace(
+        0.0,
+        1.0,
+        FT_CLOCK_GRID_SIZE,
+        device=device,
+        dtype=dtype,
+    )
+    path = evaluate_path(s=s_grid, path_family=path_family)
+    mean_error = evaluate_mean_terminal_error(path=path, signal_scale_sq=signal_scale_sq)
+    mean_error = mean_error.clamp(min=0.0)
+    mean_error_0 = mean_error[0].clamp(min=EPS)
+    r_grid = 1.0 - torch.pow((mean_error / mean_error_0).clamp(min=0.0, max=1.0), 1.0 - beta)
+    r_grid = torch.cummax(r_grid, dim=0).values
+    r_grid[0] = 0.0
+    r_grid[-1] = 1.0
+
+    _FT_CLOCK_GRID_CACHE[cache_key] = (s_grid, r_grid)
+    return s_grid, r_grid
+
+
+def _interpolate_monotone_inverse(
+    r: Tensor,
+    s_grid: Tensor,
+    r_grid: Tensor,
+) -> Tensor:
+    flat_r = r.reshape(-1).clamp(0.0, 1.0)
+    right_indices = torch.searchsorted(r_grid, flat_r, right=True)
+    right_indices = right_indices.clamp(min=1, max=r_grid.numel() - 1)
+    left_indices = right_indices - 1
+
+    r_left = r_grid[left_indices]
+    r_right = r_grid[right_indices]
+    s_left = s_grid[left_indices]
+    s_right = s_grid[right_indices]
+
+    weight = (flat_r - r_left) / (r_right - r_left).clamp(min=EPS)
+    interpolated = s_left + weight * (s_right - s_left)
+    return interpolated.reshape_as(r)
+
+
+def _clock_importance_cache_key(
+    clock_family: str,
+    path_family: str,
+    clock_beta: Optional[float],
+    signal_scale_sq: Optional[float],
+    device: torch.device,
+    dtype: torch.dtype,
+) -> Tuple[str, str, float, float, str, str]:
+    return (
+        clock_family,
+        path_family,
+        -1.0 if clock_beta is None else round(float(clock_beta), 10),
+        -1.0 if signal_scale_sq is None else round(float(signal_scale_sq), 10),
+        str(device),
+        str(dtype),
+    )
+
+
+def _build_clock_importance_cdf(
+    clock_family: str,
+    path_family: str,
+    clock_beta: Optional[float],
+    signal_scale_sq: Optional[float],
+    device: torch.device,
+    dtype: torch.dtype,
+) -> Tuple[Tensor, Tensor]:
+    cache_key = _clock_importance_cache_key(
+        clock_family=clock_family,
+        path_family=path_family,
+        clock_beta=clock_beta,
+        signal_scale_sq=signal_scale_sq,
+        device=device,
+        dtype=dtype,
+    )
+    cached = _CLOCK_IMPORTANCE_CDF_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    r_grid = torch.linspace(
+        0.0,
+        1.0,
+        FT_CLOCK_GRID_SIZE,
+        device=device,
+        dtype=dtype,
+    )
+    clock = evaluate_clock(
+        r=r_grid,
+        clock_family=clock_family,
+        clock_beta=clock_beta,
+        path_family=path_family,
+        signal_scale_sq=signal_scale_sq,
+    )
+    density = clock.ds_dr.square().clamp(min=EPS)
+    increments = 0.5 * (density[1:] + density[:-1]) * (1.0 / (r_grid.numel() - 1))
+    cdf = torch.zeros_like(r_grid)
+    cdf[1:] = torch.cumsum(increments, dim=0)
+    cdf = cdf / cdf[-1].clamp(min=EPS)
+    cdf[-1] = 1.0
+
+    _CLOCK_IMPORTANCE_CDF_CACHE[cache_key] = (r_grid, cdf)
+    return r_grid, cdf
+
+
+def _evaluate_ft_clock_closed_form(
+    r: Tensor,
+    path_family: str,
+    beta: float,
+    signal_scale_sq: Optional[float],
+) -> Optional[ClockOutput]:
     one_minus_r = _safe_one_minus(r)
 
-    if clock_family == "uniform":
-        return ClockOutput(s=r, ds_dr=torch.ones_like(r))
-
-    if clock_family == "ft_linear_beta":
+    if path_family == "linear":
         exponent = 1.0 / (2.0 * (1.0 - beta))
         s = 1.0 - one_minus_r.pow(exponent)
         ds_dr = exponent * one_minus_r.pow(exponent - 1.0)
         return _with_exact_endpoints(r=r, s=s, ds_dr=ds_dr)
 
-    if clock_family == "ft_vp_beta":
+    if (
+        path_family == "trig_vp"
+        and signal_scale_sq is not None
+        and abs(float(signal_scale_sq) - 1.0) <= FT_TRIG_VP_UNIT_SCALE_TOL
+    ):
         exponent = 1.0 / (1.0 - beta)
         inner = 1.0 - one_minus_r.pow(exponent)
         inner = inner.clamp(min=-1.0 + EPS, max=1.0 - EPS)
@@ -110,6 +299,98 @@ def evaluate_clock(
         s = (2.0 / torch.pi) * torch.asin(inner)
         ds_dr = (2.0 / torch.pi) * d_inner / torch.sqrt((1.0 - inner * inner).clamp(min=EPS))
         return _with_exact_endpoints(r=r, s=s, ds_dr=ds_dr)
+
+    return None
+
+
+def _evaluate_ft_clock_numeric(
+    r: Tensor,
+    path_family: str,
+    beta: float,
+    signal_scale_sq: float,
+) -> ClockOutput:
+    s_grid, r_grid = _build_ft_clock_grid(
+        path_family=path_family,
+        beta=beta,
+        signal_scale_sq=signal_scale_sq,
+        device=r.device,
+        dtype=r.dtype,
+    )
+    s = _interpolate_monotone_inverse(r=r, s_grid=s_grid, r_grid=r_grid)
+    path = evaluate_path(s=s, path_family=path_family)
+    mean_error = evaluate_mean_terminal_error(path=path, signal_scale_sq=signal_scale_sq)
+    mean_error_0 = torch.tensor(signal_scale_sq + 1.0, dtype=r.dtype, device=r.device)
+    mean_error_prime = evaluate_mean_terminal_error_derivative(
+        path=path,
+        signal_scale_sq=signal_scale_sq,
+    )
+    ds_dr = (
+        -torch.pow(mean_error_0, 1.0 - beta)
+        * torch.pow(mean_error.clamp(min=EPS), beta)
+        / ((1.0 - beta) * mean_error_prime.clamp(max=-EPS))
+    )
+    return _with_exact_endpoints(r=r, s=s, ds_dr=ds_dr)
+
+
+def estimate_signal_scale_sq_from_dataset(
+    dataset,
+    max_samples: int = 4096,
+) -> float:
+    if max_samples <= 0:
+        raise ValueError(f"max_samples must be positive. Got {max_samples}.")
+
+    sample_count = min(len(dataset), max_samples)
+    total_squared = 0.0
+    total_entries = 0
+    for index in range(sample_count):
+        sample, _ = dataset[index]
+        sample = sample.to(torch.float32) * 2.0 - 1.0
+        total_squared += float(sample.square().sum().item())
+        total_entries += sample.numel()
+
+    if total_entries == 0:
+        raise ValueError("Unable to estimate signal_scale_sq from an empty dataset.")
+    return total_squared / total_entries
+
+
+def evaluate_clock(
+    r: Tensor,
+    clock_family: str,
+    clock_beta: Optional[float] = None,
+    path_family: Optional[str] = None,
+    signal_scale_sq: Optional[float] = None,
+) -> ClockOutput:
+    if clock_family not in CLOCK_FAMILIES:
+        raise ValueError(f"Unsupported clock_family={clock_family}.")
+
+    beta = _validate_beta(clock_family=clock_family, clock_beta=clock_beta)
+
+    if clock_family == "uniform":
+        return ClockOutput(s=r, ds_dr=torch.ones_like(r))
+
+    one_minus_r = _safe_one_minus(r)
+
+    if clock_family == "ft_beta":
+        if path_family is None:
+            raise ValueError("clock_family=ft_beta requires path_family.")
+        closed_form = _evaluate_ft_clock_closed_form(
+            r=r,
+            path_family=path_family,
+            beta=beta,
+            signal_scale_sq=signal_scale_sq,
+        )
+        if closed_form is not None:
+            return closed_form
+        if signal_scale_sq is None:
+            raise ValueError(
+                "clock_family=ft_beta requires signal_scale_sq when the closed form is unavailable."
+            )
+        return _evaluate_ft_clock_numeric(
+            r=r,
+            path_family=path_family,
+            beta=beta,
+            signal_scale_sq=signal_scale_sq,
+        )
 
     if clock_family == "poly_a0.5":
         exponent = 0.5
@@ -163,6 +444,38 @@ def expand_like(time_tensor: Tensor, reference: Tensor) -> Tensor:
     return time_tensor.view(view_shape)
 
 
+def normalize_model_output_type(model_output_type: Optional[str]) -> str:
+    resolved = "velocity" if model_output_type is None else str(model_output_type)
+    if resolved not in MODEL_OUTPUT_TYPES:
+        raise ValueError(
+            f"Unsupported model_output_type={model_output_type}. "
+            f"Expected one of {MODEL_OUTPUT_TYPES}."
+        )
+    return resolved
+
+
+def model_output_to_velocity(
+    model_output: Tensor,
+    ds_dr: Tensor,
+    model_output_type: Optional[str],
+) -> Tensor:
+    resolved = normalize_model_output_type(model_output_type)
+    if resolved == "velocity":
+        return model_output
+    return expand_like(ds_dr, model_output) * model_output
+
+
+def model_output_to_base_velocity(
+    model_output: Tensor,
+    ds_dr: Tensor,
+    model_output_type: Optional[str],
+) -> Tensor:
+    resolved = normalize_model_output_type(model_output_type)
+    if resolved == "base_velocity":
+        return model_output
+    return model_output / expand_like(ds_dr, model_output).clamp(min=EPS)
+
+
 def sample_strict_unit_interval(
     batch_size: int,
     device: torch.device,
@@ -172,6 +485,39 @@ def sample_strict_unit_interval(
     return r * (1.0 - 2.0 * TIME_EPS) + TIME_EPS
 
 
+def sample_importance_weighted_time(
+    batch_size: int,
+    device: torch.device,
+    path_family: str,
+    clock_family: str,
+    clock_beta: Optional[float],
+    signal_scale_sq: Optional[float],
+    dtype: torch.dtype = torch.float32,
+) -> Tensor:
+    if clock_family == "uniform":
+        return sample_strict_unit_interval(batch_size=batch_size, device=device, dtype=dtype)
+
+    r_grid, cdf = _build_clock_importance_cdf(
+        clock_family=clock_family,
+        path_family=path_family,
+        clock_beta=clock_beta,
+        signal_scale_sq=signal_scale_sq,
+        device=device,
+        dtype=dtype,
+    )
+    uniform_samples = sample_strict_unit_interval(
+        batch_size=batch_size,
+        device=device,
+        dtype=dtype,
+    )
+    sampled_r = _interpolate_monotone_inverse(
+        r=uniform_samples,
+        s_grid=r_grid,
+        r_grid=cdf,
+    )
+    return sampled_r.clamp(min=TIME_EPS, max=1.0 - TIME_EPS)
+
+
 def build_continuous_batch(
     x_1: Tensor,
     x_0: Tensor,
@@ -179,8 +525,15 @@ def build_continuous_batch(
     path_family: str,
     clock_family: str,
     clock_beta: Optional[float],
+    signal_scale_sq: Optional[float],
 ) -> ContinuousPathBatch:
-    clock = evaluate_clock(r=r, clock_family=clock_family, clock_beta=clock_beta)
+    clock = evaluate_clock(
+        r=r,
+        clock_family=clock_family,
+        clock_beta=clock_beta,
+        path_family=path_family,
+        signal_scale_sq=signal_scale_sq,
+    )
     path = evaluate_path(s=clock.s, path_family=path_family)
 
     alpha = expand_like(path.alpha, x_1)

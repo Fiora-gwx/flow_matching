@@ -49,10 +49,10 @@ class ResultUtilsTest(unittest.TestCase):
         self.rows = [
             make_row('a0', 0, 'uniform', None, 12.0),
             make_row('a1', 1, 'uniform', None, 10.0),
-            make_row('b0', 0, 'ft_linear_beta', 0.3, 11.0),
-            make_row('b1', 1, 'ft_linear_beta', 0.3, 9.0),
-            make_row('c0', 0, 'ft_linear_beta', 0.5, 10.0),
-            make_row('c1', 1, 'ft_linear_beta', 0.5, 8.0),
+            make_row('b0', 0, 'ft_beta', 0.3, 11.0),
+            make_row('b1', 1, 'ft_beta', 0.3, 9.0),
+            make_row('c0', 0, 'ft_beta', 0.5, 10.0),
+            make_row('c1', 1, 'ft_beta', 0.5, 8.0),
         ]
 
     def test_aggregate_seed_rows(self):
@@ -82,7 +82,7 @@ class ResultUtilsTest(unittest.TestCase):
 
     def test_infer_clock_parameter(self):
         self.assertEqual(infer_clock_parameter('uniform'), ('none', None))
-        self.assertEqual(infer_clock_parameter('ft_linear_beta', 0.4), ('beta', 0.4))
+        self.assertEqual(infer_clock_parameter('ft_beta', 0.4), ('beta', 0.4))
         self.assertEqual(infer_clock_parameter('sigmoid_k8'), ('k', 8.0))
 
     def test_resolve_best_beta_reference(self):
@@ -90,10 +90,10 @@ class ResultUtilsTest(unittest.TestCase):
             csv_path = Path(tmpdir) / 'results.csv'
             ensure_results_file(csv_path)
             append_result_rows(csv_path, self.rows + [
-                make_row('d0', 0, 'ft_linear_beta', 0.3, 15.0, nfe=20),
-                make_row('d1', 1, 'ft_linear_beta', 0.3, 13.0, nfe=20),
-                make_row('e0', 0, 'ft_linear_beta', 0.5, 9.0, nfe=20),
-                make_row('e1', 1, 'ft_linear_beta', 0.5, 11.0, nfe=20),
+                make_row('d0', 0, 'ft_beta', 0.3, 15.0, nfe=20),
+                make_row('d1', 1, 'ft_beta', 0.3, 13.0, nfe=20),
+                make_row('e0', 0, 'ft_beta', 0.5, 9.0, nfe=20),
+                make_row('e1', 1, 'ft_beta', 0.5, 11.0, nfe=20),
             ])
             beta = resolve_best_beta_reference(
                 {
@@ -103,7 +103,7 @@ class ResultUtilsTest(unittest.TestCase):
                     'solver': 'heun2',
                     'metric': 'fid',
                     'selection_nfes': [10, 20],
-                    'clock_family': 'ft_linear_beta',
+                    'clock_family': 'ft_beta',
                 }
             )
             self.assertEqual(beta, 0.5)

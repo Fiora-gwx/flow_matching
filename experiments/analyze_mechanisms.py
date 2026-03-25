@@ -17,7 +17,11 @@ if str(ROOT) not in sys.path:
 
 import yaml
 
-from experiments.checkpoint_utils import resolve_checkpoint_path, resolve_reused_checkpoint
+from experiments.checkpoint_utils import (
+    load_checkpoint_args,
+    resolve_checkpoint_path,
+    resolve_reused_checkpoint,
+)
 from experiments.result_utils import resolve_best_beta_reference
 IMAGE_ROOT = ROOT / 'examples' / 'image'
 if str(IMAGE_ROOT) not in sys.path:
@@ -25,6 +29,7 @@ if str(IMAGE_ROOT) not in sys.path:
 
 from models.model_configs import instantiate_model
 from training.analysis_utils import collect_loss_and_velocity_profile, collect_trajectory_profile
+from training.continuous_runtime import estimate_signal_scale_sq_from_dataset
 from training.data_transform import get_train_transform
 from training.eval_loop import CFGScaledModel
 from experiments.plot_style import selected_nfe_ticks, transform_focus_axis_values
@@ -83,7 +88,13 @@ def load_model_from_checkpoint(spec: Dict, checkpoint_path: Path, device: torch.
     model.load_state_dict(checkpoint['model'])
     model.to(device)
     model.eval()
-    return model
+    checkpoint_args = load_checkpoint_args(checkpoint_path)
+    checkpoint_payload = checkpoint.get('args')
+    if not checkpoint_args and isinstance(checkpoint_payload, dict):
+        checkpoint_args = dict(checkpoint_payload)
+    elif not checkpoint_args and hasattr(checkpoint_payload, '__dict__'):
+        checkpoint_args = dict(vars(checkpoint_payload))
+    return model, checkpoint_args
 
 
 def write_csv(path: Path, rows):
@@ -146,6 +157,7 @@ def main(config_path: Path):
             continue
 
         dataset = build_dataset(spec)
+        checkpoint_args = load_checkpoint_args(checkpoint_path)
         batch_size = int(spec.get('batch_size', 64))
         loader = torch.utils.data.DataLoader(
             dataset,
@@ -154,11 +166,24 @@ def main(config_path: Path):
             num_workers=spec.get('num_workers', 2),
             drop_last=True,
         )
-        model = load_model_from_checkpoint(spec, checkpoint_path, device)
+        model, loaded_checkpoint_args = load_model_from_checkpoint(spec, checkpoint_path, device)
+        if loaded_checkpoint_args:
+            checkpoint_args = loaded_checkpoint_args
+        signal_scale_sq = float(
+            checkpoint_args.get(
+                'signal_scale_sq',
+                estimate_signal_scale_sq_from_dataset(dataset),
+            )
+        )
+        checkpoint_clock_family = checkpoint_args.get('clock_family', spec.get('clock_family', 'uniform'))
+        if checkpoint_clock_family in {'ft_linear_beta', 'ft_vp_beta'}:
+            checkpoint_clock_family = 'ft_beta'
         args = SimpleNamespace(
-            path_family=spec.get('path_family', 'linear'),
-            clock_family=spec.get('clock_family', 'uniform'),
-            clock_beta=spec.get('clock_beta'),
+            path_family=checkpoint_args.get('path_family', spec.get('path_family', 'linear')),
+            clock_family=checkpoint_clock_family,
+            clock_beta=checkpoint_args.get('clock_beta', spec.get('clock_beta')),
+            signal_scale_sq=signal_scale_sq,
+            model_output_type=checkpoint_args.get('model_output_type', 'velocity'),
             analysis_num_bins=spec.get('analysis_num_bins', 20),
             analysis_num_batches=spec.get('analysis_num_batches', 8),
             analysis_num_samples=spec.get('analysis_num_samples', 512),
@@ -178,7 +203,14 @@ def main(config_path: Path):
         image_size = int(spec.get('image_size', 32))
         sample_shape = (args.analysis_num_samples, 3, image_size, image_size)
         trajectory_rows = collect_trajectory_profile(
-            CFGScaledModel(model),
+            CFGScaledModel(
+                model,
+                path_family=args.path_family,
+                clock_family=args.clock_family,
+                clock_beta=args.clock_beta,
+                signal_scale_sq=args.signal_scale_sq,
+                model_output_type=args.model_output_type,
+            ),
             device,
             args,
             sample_shape=sample_shape,

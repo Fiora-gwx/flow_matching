@@ -44,6 +44,11 @@ METRIC_OUTPUTS = {
     "precision_recall": ("precision", "recall"),
     "inception_score": ("is_mean", "is_std"),
 }
+FT_CLOCK_FAMILIES = frozenset({"ft_beta", "ft_linear_beta"})
+
+
+def is_ft_clock_family(clock_family: object) -> bool:
+    return str(clock_family) in FT_CLOCK_FAMILIES
 
 
 def _write_results_header(csv_path: Path) -> None:
@@ -157,7 +162,6 @@ def best_rows_by_key(
 def baseline_vs_best_beta(
     rows: Sequence[Dict[str, object]],
     baseline_clock: str = "uniform",
-    ft_clock_prefix: str = "ft_",
     already_aggregated: bool = False,
 ) -> List[Dict[str, object]]:
     aggregated_rows = list(rows) if already_aggregated else aggregate_seed_rows(rows)
@@ -172,7 +176,7 @@ def baseline_vs_best_beta(
         )
         if row["clock_family"] == baseline_clock:
             grouped[key]["baseline"] = row
-        elif str(row["clock_family"]).startswith(ft_clock_prefix):
+        elif is_ft_clock_family(row["clock_family"]):
             best_ft = grouped[key].get("best_ft")
             if best_ft is None or _row_value(row) < _row_value(best_ft):
                 grouped[key]["best_ft"] = row
@@ -233,7 +237,7 @@ def infer_clock_parameter(
     clock_family: str,
     clock_beta: Optional[float] = None,
 ) -> Tuple[str, Optional[float]]:
-    if clock_family in {"ft_linear_beta", "ft_vp_beta"}:
+    if is_ft_clock_family(clock_family):
         return "beta", clock_beta
     if clock_family == "poly_a0.5":
         return "a", 0.5
@@ -320,9 +324,12 @@ def resolve_best_beta_reference(
         rows = [row for row in rows if row.get("checkpoint_epoch") == checkpoint_epoch]
     clock_family = reference.get("clock_family")
     if clock_family is not None:
-        rows = [row for row in rows if row.get("clock_family") == clock_family]
+        if clock_family == "ft_beta" and reference.get("path_family") == "linear":
+            rows = [row for row in rows if str(row.get("clock_family")) in {"ft_beta", "ft_linear_beta"}]
+        else:
+            rows = [row for row in rows if row.get("clock_family") == clock_family]
     else:
-        rows = [row for row in rows if str(row.get("clock_family", "")).startswith("ft_")]
+        rows = [row for row in rows if is_ft_clock_family(row.get("clock_family", ""))]
     selection_nfes = reference.get("selection_nfes")
     if selection_nfes is not None:
         selection_nfes = {int(nfe) for nfe in selection_nfes}

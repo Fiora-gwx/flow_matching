@@ -10,8 +10,7 @@ logger = logging.getLogger(__name__)
 PATH_FAMILIES = ["linear", "trig_vp"]
 CLOCK_FAMILIES = [
     "uniform",
-    "ft_linear_beta",
-    "ft_vp_beta",
+    "ft_beta",
     "poly_a0.5",
     "poly_a2.0",
     "cosine",

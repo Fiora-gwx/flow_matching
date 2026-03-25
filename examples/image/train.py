@@ -21,6 +21,10 @@ from models.model_configs import instantiate_model
 from train_arg_parser import get_args_parser
 
 from training import distributed_mode
+from training.continuous_runtime import (
+    estimate_signal_scale_sq_from_dataset,
+    resolve_clock_semantics_tag,
+)
 from training.data_transform import get_train_transform
 from training.eval_loop import eval_model
 from training.grad_scaler import NativeScalerWithGradNormCount as NativeScaler
@@ -77,11 +81,6 @@ def main(args):
 
     logger.info("job dir: {}".format(os.path.dirname(os.path.realpath(__file__))))
     logger.info("{}".format(args).replace(", ", ",\n"))
-    if distributed_mode.is_main_process():
-        args_filepath = Path(args.output_dir) / "args.json"
-        logger.info(f"Saving args to {args_filepath}")
-        with open(args_filepath, "w") as f:
-            json.dump(vars(args), f, indent=2)
 
     device = torch.device(args.device)
 
@@ -95,6 +94,15 @@ def main(args):
     transform_train = get_train_transform()
     dataset_train = build_dataset(args=args, transform_train=transform_train)
     logger.info(dataset_train)
+    args.signal_scale_sq = estimate_signal_scale_sq_from_dataset(dataset_train)
+    args.clock_semantics_tag = resolve_clock_semantics_tag(
+        path_family=args.path_family,
+        clock_family=args.clock_family,
+        signal_scale_sq=args.signal_scale_sq,
+    )
+    args.model_output_type = "base_velocity"
+    args.time_sampling_strategy = "ds_dr_sq"
+    logger.info(f"Estimated signal_scale_sq={args.signal_scale_sq:.6f}")
 
     logger.info("Initializing DataLoader")
     num_tasks = distributed_mode.get_world_size()
@@ -122,7 +130,6 @@ def main(args):
         drop_last=False,
     )
     logger.info(str(sampler_train))
-
     logger.info("Initializing Model")
     model = instantiate_model(
         architechture=args.dataset,
@@ -172,6 +179,11 @@ def main(args):
         loss_scaler=loss_scaler,
         lr_schedule=lr_schedule,
     )
+    if distributed_mode.is_main_process():
+        args_filepath = Path(args.output_dir) / "args.json"
+        logger.info(f"Saving args to {args_filepath}")
+        with open(args_filepath, "w", encoding="utf-8") as f:
+            json.dump(vars(args), f, indent=2)
 
     logger.info(f"Start from {args.start_epoch} to {args.epochs} epochs")
     start_time = time.time()

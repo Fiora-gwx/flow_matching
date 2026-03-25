@@ -114,7 +114,7 @@ class VisualizeSolverSensitivityTest(unittest.TestCase):
             rows.extend(
                 make_metric_rows(
                     "linear_ft_beta_0_3_heun2",
-                    "ft_linear_beta",
+                    "ft_beta",
                     0.3,
                     "heun2",
                     12,
@@ -146,7 +146,7 @@ class VisualizeSolverSensitivityTest(unittest.TestCase):
             rows.extend(
                 make_metric_rows(
                     "linear_ft_beta_0_3_stork4",
-                    "ft_linear_beta",
+                    "ft_beta",
                     0.3,
                     "stork4",
                     10,

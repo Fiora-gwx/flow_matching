@@ -20,7 +20,7 @@ python3 examples/image/train.py \
   --dataset cifar10 \
   --data_path ./data/cifar10 \
   --path_family linear \
-  --clock_family ft_linear_beta \
+  --clock_family ft_beta \
   --clock_beta 0.5 \
   --sampling_solver heun2 \
   --cfg_scale 0.0 \
@@ -38,7 +38,7 @@ python3 examples/image/train.py \
   --dataset cifar10 \
   --data_path ./data/cifar10 \
   --path_family trig_vp \
-  --clock_family ft_vp_beta \
+  --clock_family ft_beta \
   --clock_beta 0.5 \
   --sampling_solver heun2 \
   --cfg_scale 0.0 \
@@ -67,18 +67,18 @@ python3 experiments/run_experiments.py --config experiments/configs/ft_clock/sol
 
 ```bash
 python3 experiments/visualize_results.py \
-  --csv experiments/results/ft_clock_linear_main/results.csv \
-  --out experiments/results/ft_clock_linear_main/plots \
-  --artifact_group ft_clock_linear_main
+  --csv experiments/results/ft_clock_linear_main_uparam/results.csv \
+  --out experiments/results/ft_clock_linear_main_uparam/plots \
+  --artifact_group ft_clock_linear_main_uparam
 ```
 
 只导出 beta-NFE 热力图：
 
 ```bash
 python3 experiments/visualize_results.py \
-  --csv experiments/results/ft_clock_linear_main/results.csv \
-  --out experiments/results/ft_clock_linear_main/plots_heatmap \
-  --artifact_group ft_clock_linear_main \
+  --csv experiments/results/ft_clock_linear_main_uparam/results.csv \
+  --out experiments/results/ft_clock_linear_main_uparam/plots_heatmap \
+  --artifact_group ft_clock_linear_main_uparam \
   --plot_heatmap_only
 ```
 

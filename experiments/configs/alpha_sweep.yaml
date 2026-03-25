@@ -1,4 +1,4 @@
-experiment_name: alpha_sweep
+experiment_name: alpha_sweep_uparam
 # Legacy filename retained; this is now a beta sweep under FT-clock naming.
 base_config:
   dataset: cifar10
@@ -17,37 +17,37 @@ experiments:
     eval_epochs: [99, 199, 299, 399, 499]
     eval_nfes: [4, 10, 20, 50, 100]
   - name: linear_ft_beta_0_2
-    clock_family: ft_linear_beta
+    clock_family: ft_beta
     clock_beta: 0.2
     eval_epochs: [99, 199, 299, 399, 499]
     eval_nfes: [4, 10, 20, 50, 100]
   - name: linear_ft_beta_0_3
-    clock_family: ft_linear_beta
+    clock_family: ft_beta
     clock_beta: 0.3
     eval_epochs: [99, 199, 299, 399, 499]
     eval_nfes: [4, 10, 20, 50, 100]
   - name: linear_ft_beta_0_4
-    clock_family: ft_linear_beta
+    clock_family: ft_beta
     clock_beta: 0.4
     eval_epochs: [99, 199, 299, 399, 499]
     eval_nfes: [4, 10, 20, 50, 100]
   - name: linear_ft_beta_0_5
-    clock_family: ft_linear_beta
+    clock_family: ft_beta
     clock_beta: 0.5
     eval_epochs: [99, 199, 299, 399, 499]
     eval_nfes: [4, 10, 20, 50, 100]
   - name: linear_ft_beta_0_6
-    clock_family: ft_linear_beta
+    clock_family: ft_beta
     clock_beta: 0.6
     eval_epochs: [99, 199, 299, 399, 499]
     eval_nfes: [4, 10, 20, 50, 100]
   - name: linear_ft_beta_0_7
-    clock_family: ft_linear_beta
+    clock_family: ft_beta
     clock_beta: 0.7
     eval_epochs: [99, 199, 299, 399, 499]
     eval_nfes: [4, 10, 20, 50, 100]
   - name: linear_ft_beta_0_8
-    clock_family: ft_linear_beta
+    clock_family: ft_beta
     clock_beta: 0.8
     eval_epochs: [99, 199, 299, 399, 499]
     eval_nfes: [4, 10, 20, 50, 100]

@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 import tempfile
@@ -51,6 +52,19 @@ class CheckpointUtilsTest(unittest.TestCase):
             base_dir.mkdir(parents=True)
             checkpoint = base_dir / 'checkpoint-499.pth'
             checkpoint.touch()
+            (base_dir / 'args.json').write_text(
+                json.dumps(
+                    {
+                        'path_family': 'linear',
+                        'clock_family': 'ft_beta',
+                        'clock_beta': 0.5,
+                        'clock_semantics_tag': 'ft_global_v2_linear_closed_form',
+                        'model_output_type': 'base_velocity',
+                        'time_sampling_strategy': 'ds_dr_sq',
+                    }
+                ),
+                encoding='utf-8',
+            )
             resolved = resolve_reused_checkpoint(
                 reference={
                     'artifact_group': 'ft_clock_linear_main',
@@ -60,8 +74,78 @@ class CheckpointUtilsTest(unittest.TestCase):
                 spec={
                     'dataset': 'cifar10',
                     'name': 'linear_ft_best',
+                    'path_family': 'linear',
+                    'clock_family': 'ft_beta',
                     'clock_beta': 0.5,
                 },
                 workspace_root=root,
             )
             self.assertEqual(resolved, checkpoint)
+
+    def test_resolve_reused_checkpoint_rejects_legacy_linear_ft_training_semantics(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            exp_dir = root / 'experiments' / 'results' / 'ft_clock_linear_main' / 'cifar10' / 'linear_ft_beta_0_5'
+            exp_dir.mkdir(parents=True)
+            checkpoint = exp_dir / 'checkpoint-499.pth'
+            checkpoint.touch()
+            (exp_dir / 'args.json').write_text(
+                json.dumps(
+                    {
+                        'path_family': 'linear',
+                        'clock_family': 'ft_linear_beta',
+                        'clock_beta': 0.5,
+                    }
+                ),
+                encoding='utf-8',
+            )
+            resolved = resolve_reused_checkpoint(
+                reference={
+                    'artifact_group': 'ft_clock_linear_main',
+                    'source_name_template': 'linear_ft_beta_{clock_beta_tag}',
+                    'checkpoint_epoch': 499,
+                },
+                spec={
+                    'dataset': 'cifar10',
+                    'name': 'linear_ft_best',
+                    'path_family': 'linear',
+                    'clock_family': 'ft_beta',
+                    'clock_beta': 0.5,
+                },
+                workspace_root=root,
+            )
+            self.assertIsNone(resolved)
+
+    def test_resolve_reused_checkpoint_rejects_legacy_trig_vp_ft_semantics(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            exp_dir = root / 'experiments' / 'results' / 'ft_clock_trig_vp' / 'cifar10' / 'trig_vp_ft_beta_0_5'
+            exp_dir.mkdir(parents=True)
+            checkpoint = exp_dir / 'checkpoint-499.pth'
+            checkpoint.touch()
+            (exp_dir / 'args.json').write_text(
+                json.dumps(
+                    {
+                        'path_family': 'trig_vp',
+                        'clock_family': 'ft_vp_beta',
+                        'clock_beta': 0.5,
+                    }
+                ),
+                encoding='utf-8',
+            )
+            resolved = resolve_reused_checkpoint(
+                reference={
+                    'artifact_group': 'ft_clock_trig_vp',
+                    'source_name_template': 'trig_vp_ft_beta_{clock_beta_tag}',
+                    'checkpoint_epoch': 499,
+                },
+                spec={
+                    'dataset': 'cifar10',
+                    'name': 'trig_vp_ft_best',
+                    'path_family': 'trig_vp',
+                    'clock_family': 'ft_beta',
+                    'clock_beta': 0.5,
+                },
+                workspace_root=root,
+            )
+            self.assertIsNone(resolved)

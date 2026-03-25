@@ -2,7 +2,11 @@ from typing import Dict, List
 
 import torch
 
-from training.continuous_runtime import build_continuous_batch, sample_strict_unit_interval
+from training.continuous_runtime import (
+    build_continuous_batch,
+    model_output_to_base_velocity,
+    sample_importance_weighted_time,
+)
 from training.fixed_step_solver import solve_fixed_budget
 
 
@@ -13,6 +17,7 @@ def collect_loss_and_velocity_profile(model, data_loader, device, args) -> List[
     bin_counts = torch.zeros(num_bins, dtype=torch.float64)
     loss_sums = torch.zeros(num_bins, dtype=torch.float64)
     velocity_sums = torch.zeros(num_bins, dtype=torch.float64)
+    base_velocity_sums = torch.zeros(num_bins, dtype=torch.float64)
 
     for batch_index, (samples, labels) in enumerate(data_loader):
         if batch_index >= batches:
@@ -20,7 +25,14 @@ def collect_loss_and_velocity_profile(model, data_loader, device, args) -> List[
         samples = samples.to(device, non_blocking=True) * 2.0 - 1.0
         labels = labels.to(device, non_blocking=True)
         noise = torch.randn_like(samples)
-        r = sample_strict_unit_interval(samples.shape[0], device=device)
+        r = sample_importance_weighted_time(
+            batch_size=samples.shape[0],
+            device=device,
+            path_family=args.path_family,
+            clock_family=args.clock_family,
+            clock_beta=args.clock_beta,
+            signal_scale_sq=args.signal_scale_sq,
+        )
         batch = build_continuous_batch(
             x_1=samples,
             x_0=noise,
@@ -28,10 +40,17 @@ def collect_loss_and_velocity_profile(model, data_loader, device, args) -> List[
             path_family=args.path_family,
             clock_family=args.clock_family,
             clock_beta=args.clock_beta,
+            signal_scale_sq=args.signal_scale_sq,
         )
         pred = model(batch.x_t, batch.r, extra={"label": labels})
-        losses = torch.pow(pred - batch.target_velocity, 2).flatten(start_dim=1).mean(dim=1)
+        pred_base_velocity = model_output_to_base_velocity(
+            model_output=pred,
+            ds_dr=batch.ds_dr,
+            model_output_type=getattr(args, "model_output_type", "velocity"),
+        )
+        losses = torch.pow(pred_base_velocity - batch.base_velocity, 2).flatten(start_dim=1).mean(dim=1)
         velocity_norm = batch.target_velocity.flatten(start_dim=1).norm(dim=1)
+        base_velocity_norm = batch.base_velocity.flatten(start_dim=1).norm(dim=1)
         bins = torch.clamp((r * num_bins).long(), max=num_bins - 1)
         for bin_index in range(num_bins):
             mask = bins == bin_index
@@ -40,6 +59,7 @@ def collect_loss_and_velocity_profile(model, data_loader, device, args) -> List[
             bin_counts[bin_index] += int(mask.sum())
             loss_sums[bin_index] += losses[mask].sum().cpu()
             velocity_sums[bin_index] += velocity_norm[mask].sum().cpu()
+            base_velocity_sums[bin_index] += base_velocity_norm[mask].sum().cpu()
 
     rows = []
     for bin_index in range(num_bins):
@@ -52,6 +72,7 @@ def collect_loss_and_velocity_profile(model, data_loader, device, args) -> List[
                 "count": float(bin_counts[bin_index].item()),
                 "mean_loss": float(loss_sums[bin_index].item() / count),
                 "mean_target_velocity_norm": float(velocity_sums[bin_index].item() / count),
+                "mean_base_velocity_norm": float(base_velocity_sums[bin_index].item() / count),
             }
         )
     return rows

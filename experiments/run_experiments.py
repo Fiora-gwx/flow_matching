@@ -31,6 +31,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 LEGACY_CONFIG_KEYS = {"alpha", "use_ft_eqm", "use_nt_ft_fm", "importance_weighting"}
+LEGACY_CLOCK_FAMILIES = {"ft_linear_beta", "ft_vp_beta"}
 
 
 def load_config(config_path: Path) -> Dict:
@@ -101,6 +102,12 @@ def assert_no_legacy_keys(spec: Dict) -> None:
         raise ValueError(
             f"Legacy config keys are no longer supported: {legacy_keys}. "
             "Use path_family/clock_family/clock_beta instead."
+        )
+    legacy_clock_family = spec.get("clock_family")
+    if legacy_clock_family in LEGACY_CLOCK_FAMILIES:
+        raise ValueError(
+            f"Legacy clock_family={legacy_clock_family} is no longer supported. "
+            "Use clock_family=ft_beta and let path_family determine the bridge."
         )
 
 

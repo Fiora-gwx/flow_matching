@@ -17,6 +17,7 @@ from experiments.result_utils import (
     baseline_vs_best_beta,
     best_rows_by_key,
     filter_rows,
+    is_ft_clock_family,
     load_result_rows,
     rows_to_matrix,
     write_table_csv,
@@ -26,6 +27,8 @@ from experiments.plot_style import selected_nfe_ticks, transform_focus_axis_valu
 
 def _clock_label(row: Dict[str, object]) -> str:
     family = str(row["clock_family"])
+    if family == "ft_linear_beta":
+        family = "ft_beta"
     param_name = row.get("clock_param_name")
     param_value = row.get("clock_param_value")
     if param_name not in {None, "", "none"} and param_value is not None:
@@ -42,14 +45,14 @@ def _plot_main_curve(rows: Sequence[Dict[str, object]], output_dir: Path) -> Non
     all_nfes = sorted({int(row["nfe"]) for row in rows})
     tick_values = selected_nfe_ticks(all_nfes)
     plt.figure(figsize=(10, 6))
-    ft_labels = [label for label in sorted(grouped.keys()) if label.startswith("ft_")]
+    ft_labels = [label for label in sorted(grouped.keys()) if label.startswith("ft_beta")]
     ft_palette = ["#d62728", "#ff7f0e", "#c44e52", "#e377c2", "#8c564b", "#bcbd22"]
     ft_colors = {label: ft_palette[index % len(ft_palette)] for index, label in enumerate(ft_labels)}
     other_palette = ["#7f7f7f", "#17becf", "#9467bd", "#8c8c8c"]
     other_labels = [
         label
         for label in sorted(grouped.keys())
-        if label != "uniform" and not label.startswith("ft_")
+        if label != "uniform" and not label.startswith("ft_beta")
     ]
     other_colors = {
         label: other_palette[index % len(other_palette)]
@@ -65,7 +68,7 @@ def _plot_main_curve(rows: Sequence[Dict[str, object]], output_dir: Path) -> Non
             linestyle = "--"
             marker = "x"
             linewidth = 2.2
-        elif label.startswith("ft_"):
+        elif label.startswith("ft_beta"):
             color = ft_colors[label]
             linestyle = "-"
             marker = "x"
@@ -133,10 +136,15 @@ def _cross_path_table(rows: Sequence[Dict[str, object]]) -> List[Dict[str, objec
             continue
         key = (row["dataset"], row["solver"], row["nfe"])
         entry = grouped.setdefault(key, {"dataset": row["dataset"], "solver": row["solver"], "nfe": row["nfe"]})
-        label = f"{row['path_family']}:{row['clock_family']}"
-        current = entry.get(label)
         value = row["value_mean"]
         value_std = row["value_std"]
+        if row["clock_family"] == "uniform":
+            entry[f"{row['path_family']}:uniform"] = (value, value_std)
+            continue
+        if not is_ft_clock_family(row["clock_family"]):
+            continue
+        label = f"{row['path_family']}:ft"
+        current = entry.get(label)
         if current is None or float(value) < float(current[0]):
             entry[label] = (value, value_std)
     output = []
@@ -148,12 +156,12 @@ def _cross_path_table(rows: Sequence[Dict[str, object]]) -> List[Dict[str, objec
                 "nfe": entry["nfe"],
                 "linear_uniform_mean": entry.get("linear:uniform", (None, None))[0],
                 "linear_uniform_std": entry.get("linear:uniform", (None, None))[1],
-                "linear_ft_mean": entry.get("linear:ft_linear_beta", (None, None))[0],
-                "linear_ft_std": entry.get("linear:ft_linear_beta", (None, None))[1],
+                "linear_ft_mean": entry.get("linear:ft", (None, None))[0],
+                "linear_ft_std": entry.get("linear:ft", (None, None))[1],
                 "trig_vp_uniform_mean": entry.get("trig_vp:uniform", (None, None))[0],
                 "trig_vp_uniform_std": entry.get("trig_vp:uniform", (None, None))[1],
-                "trig_vp_ft_mean": entry.get("trig_vp:ft_vp_beta", (None, None))[0],
-                "trig_vp_ft_std": entry.get("trig_vp:ft_vp_beta", (None, None))[1],
+                "trig_vp_ft_mean": entry.get("trig_vp:ft", (None, None))[0],
+                "trig_vp_ft_std": entry.get("trig_vp:ft", (None, None))[1],
             }
         )
     return output
@@ -173,7 +181,7 @@ def visualize_results(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     linear_rows = [row for row in fid_rows if row["path_family"] == "linear"]
-    ft_rows = [row for row in linear_rows if str(row["clock_family"]).startswith("ft_")]
+    ft_rows = [row for row in linear_rows if is_ft_clock_family(row["clock_family"])]
     _plot_heatmap(ft_rows, output_dir)
     if plot_heatmap_only:
         return
