@@ -114,6 +114,18 @@ class ContinuousRuntimeTest(unittest.TestCase):
         self.assertTrue(torch.all(r > 0.0))
         self.assertTrue(torch.all(r < 1.0))
 
+    def test_low_beta_importance_sampling_does_not_collapse_to_boundary_atom(self):
+        r = sample_importance_weighted_time(
+            batch_size=4096,
+            device=torch.device('cpu'),
+            path_family='linear',
+            clock_family='ft_beta',
+            clock_beta=0.2,
+            signal_scale_sq=1.0,
+        )
+        boundary = torch.tensor(1.0 - 1e-5, dtype=r.dtype)
+        self.assertEqual(int((r == boundary).sum().item()), 0)
+
     def test_model_output_conversion_helpers_are_inverses(self):
         ds_dr = torch.tensor([0.5, 2.0], dtype=torch.float32)
         base_velocity = torch.tensor(

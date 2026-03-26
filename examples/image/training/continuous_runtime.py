@@ -249,21 +249,22 @@ def _build_clock_importance_cdf(
         return cached
 
     r_grid = torch.linspace(
-        0.0,
-        1.0,
+        TIME_EPS,
+        1.0 - TIME_EPS,
         FT_CLOCK_GRID_SIZE,
         device=device,
         dtype=dtype,
     )
     clock = evaluate_clock(
-        r=clamp_time_inside_unit_interval(r_grid),
+        r=r_grid,
         clock_family=clock_family,
         clock_beta=clock_beta,
         path_family=path_family,
         signal_scale_sq=signal_scale_sq,
     )
     density = clock.ds_dr.square().clamp(min=EPS)
-    increments = 0.5 * (density[1:] + density[:-1]) * (1.0 / (r_grid.numel() - 1))
+    grid_step = (r_grid[-1] - r_grid[0]) / (r_grid.numel() - 1)
+    increments = 0.5 * (density[1:] + density[:-1]) * grid_step
     cdf = torch.zeros_like(r_grid)
     cdf[1:] = torch.cumsum(increments, dim=0)
     cdf = cdf / cdf[-1].clamp(min=EPS)

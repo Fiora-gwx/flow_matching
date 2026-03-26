@@ -160,6 +160,8 @@ def load_model(args, model_without_ddp, optimizer, loss_scaler, lr_schedule):
             args.time_sampling_strategy = checkpoint_time_sampling
 
         print("Resume checkpoint %s" % args.resume)
+        if "epoch" in checkpoint and is_eval_only:
+            args.start_epoch = checkpoint["epoch"]
         if (
             "optimizer" in checkpoint
             and "epoch" in checkpoint
