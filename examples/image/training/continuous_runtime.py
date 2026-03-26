@@ -256,7 +256,7 @@ def _build_clock_importance_cdf(
         dtype=dtype,
     )
     clock = evaluate_clock(
-        r=r_grid,
+        r=clamp_time_inside_unit_interval(r_grid),
         clock_family=clock_family,
         clock_beta=clock_beta,
         path_family=path_family,
@@ -444,6 +444,10 @@ def expand_like(time_tensor: Tensor, reference: Tensor) -> Tensor:
     return time_tensor.view(view_shape)
 
 
+def clamp_time_inside_unit_interval(r: Tensor) -> Tensor:
+    return r.clamp(min=TIME_EPS, max=1.0 - TIME_EPS)
+
+
 def normalize_model_output_type(model_output_type: Optional[str]) -> str:
     resolved = "velocity" if model_output_type is None else str(model_output_type)
     if resolved not in MODEL_OUTPUT_TYPES:
@@ -482,7 +486,7 @@ def sample_strict_unit_interval(
     dtype: torch.dtype = torch.float32,
 ) -> Tensor:
     r = torch.rand(batch_size, device=device, dtype=dtype)
-    return r * (1.0 - 2.0 * TIME_EPS) + TIME_EPS
+    return clamp_time_inside_unit_interval(r * (1.0 - 2.0 * TIME_EPS) + TIME_EPS)
 
 
 def sample_importance_weighted_time(
@@ -515,7 +519,7 @@ def sample_importance_weighted_time(
         s_grid=r_grid,
         r_grid=cdf,
     )
-    return sampled_r.clamp(min=TIME_EPS, max=1.0 - TIME_EPS)
+    return clamp_time_inside_unit_interval(sampled_r)
 
 
 def build_continuous_batch(

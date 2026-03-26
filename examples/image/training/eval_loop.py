@@ -24,7 +24,11 @@ from torch.nn.parallel import DistributedDataParallel
 from torchvision.utils import save_image
 
 from training import distributed_mode
-from training.continuous_runtime import evaluate_clock, model_output_to_velocity
+from training.continuous_runtime import (
+    clamp_time_inside_unit_interval,
+    evaluate_clock,
+    model_output_to_velocity,
+)
 from training.eval_utils import iter_batches_until_target
 from training.fixed_step_solver import solve_fixed_budget
 from training.metric_utils import (
@@ -101,7 +105,7 @@ class CFGScaledModel(ModelWrapper):
             return result
 
         clock = evaluate_clock(
-            r=t.to(dtype=torch.float32),
+            r=clamp_time_inside_unit_interval(t.to(dtype=torch.float32)),
             clock_family=self.clock_family,
             clock_beta=self.clock_beta,
             path_family=self.path_family,

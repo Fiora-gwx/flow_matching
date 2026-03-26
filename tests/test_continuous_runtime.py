@@ -12,6 +12,7 @@ if IMAGE_ROOT not in sys.path:
 from training.continuous_runtime import (
     CLOCK_FAMILIES,
     build_continuous_batch,
+    clamp_time_inside_unit_interval,
     evaluate_clock,
     evaluate_mean_terminal_error,
     evaluate_path,
@@ -93,6 +94,13 @@ class ContinuousRuntimeTest(unittest.TestCase):
         r = sample_strict_unit_interval(1024, device=torch.device('cpu'))
         self.assertTrue(torch.all(r > 0.0))
         self.assertTrue(torch.all(r < 1.0))
+
+    def test_clamp_time_inside_unit_interval_avoids_endpoint_zeroing(self):
+        r = torch.tensor([0.0, 0.5, 1.0], dtype=torch.float32)
+        clamped = clamp_time_inside_unit_interval(r)
+        self.assertGreater(float(clamped[0]), 0.0)
+        self.assertLess(float(clamped[-1]), 1.0)
+        self.assertAlmostEqual(float(clamped[1]), 0.5, places=6)
 
     def test_sample_importance_weighted_time_avoids_endpoints(self):
         r = sample_importance_weighted_time(
