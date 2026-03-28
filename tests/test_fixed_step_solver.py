@@ -37,6 +37,20 @@ class LinearModel(DummyModel):
         return self.rate * x
 
 
+class EndpointAdaptiveModel(DummyModel):
+    def __init__(self):
+        super().__init__()
+        self.queried_times = []
+
+    def adapt_solver_time(self, t, step_size):
+        return t.clamp(min=1e-5, max=1.0 - 0.5 * float(step_size))
+
+    def __call__(self, x, t, **kwargs):
+        self.nfe += 1
+        self.queried_times.append(t.detach().clone())
+        return torch.ones_like(x)
+
+
 class FixedStepSolverTest(unittest.TestCase):
     def test_build_step_methods_exact_budget(self):
         self.assertEqual(build_step_methods('euler', 3), ('euler', 'euler', 'euler'))
@@ -81,6 +95,22 @@ class FixedStepSolverTest(unittest.TestCase):
         self.assertTrue(result.solver_stats['is_exact_budget'])
         self.assertTrue(result.solver_stats['is_shared_budget'])
         self.assertFalse(result.solver_stats['used_tail_step'])
+
+    def test_heun2_uses_adapted_terminal_stage_time(self):
+        model = EndpointAdaptiveModel()
+        x_init = torch.zeros(1, 1)
+        solve_fixed_budget(model, x_init, 'heun2', 4)
+        queried_times = torch.cat(model.queried_times)
+        self.assertTrue(torch.all(queried_times < 1.0))
+        self.assertAlmostEqual(float(queried_times[-1]), 0.75, places=6)
+
+    def test_rk3_uses_adapted_terminal_stage_time(self):
+        model = EndpointAdaptiveModel()
+        x_init = torch.zeros(1, 1)
+        solve_fixed_budget(model, x_init, 'rk3', 6)
+        queried_times = torch.cat(model.queried_times)
+        self.assertTrue(torch.all(queried_times < 1.0))
+        self.assertAlmostEqual(float(queried_times[-1]), 0.75, places=6)
 
 
 if __name__ == '__main__':

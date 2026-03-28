@@ -25,7 +25,7 @@ from torchvision.utils import save_image
 
 from training import distributed_mode
 from training.continuous_runtime import (
-    clamp_time_inside_unit_interval,
+    TIME_EPS,
     evaluate_clock,
     model_output_to_velocity,
 )
@@ -71,6 +71,21 @@ class CFGScaledModel(ModelWrapper):
         self.signal_scale_sq = signal_scale_sq
         self.model_output_type = model_output_type
 
+    def adapt_solver_time(self, t: torch.Tensor, step_size: float) -> torch.Tensor:
+        adapted = t.to(dtype=torch.float32)
+        if self.model_output_type == "velocity" or self.clock_family == "uniform":
+            return adapted
+
+        adapted = torch.where(adapted <= TIME_EPS, torch.full_like(adapted, TIME_EPS), adapted)
+        terminal_backoff = max(TIME_EPS, 0.5 * float(step_size))
+        terminal_time = max(TIME_EPS, 1.0 - terminal_backoff)
+        adapted = torch.where(
+            adapted >= 1.0 - TIME_EPS,
+            torch.full_like(adapted, terminal_time),
+            adapted,
+        )
+        return adapted
+
     def forward(
         self, x: torch.Tensor, t: torch.Tensor, cfg_scale: float, label: torch.Tensor
     ):
@@ -105,7 +120,7 @@ class CFGScaledModel(ModelWrapper):
             return result
 
         clock = evaluate_clock(
-            r=clamp_time_inside_unit_interval(t.to(dtype=torch.float32)),
+            r=t.to(dtype=torch.float32),
             clock_family=self.clock_family,
             clock_beta=self.clock_beta,
             path_family=self.path_family,

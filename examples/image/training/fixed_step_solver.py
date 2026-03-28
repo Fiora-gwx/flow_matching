@@ -16,6 +16,13 @@ STEP_NFE_COST = {
 SHARED_FAIR_BUDGETS = frozenset({6, 12, 18, 24, 30, 48, 96})
 
 
+def _adapt_model_time(velocity_model, t: Tensor, step_size: float) -> Tensor:
+    adapt = getattr(velocity_model, "adapt_solver_time", None)
+    if callable(adapt):
+        return adapt(t=t, step_size=step_size)
+    return t
+
+
 @dataclass
 class FixedStepSample:
     sample: Tensor
@@ -120,7 +127,15 @@ def solve_fixed_budget(
                 device=x_t.device,
                 dtype=x_t.dtype,
             )
-            model_output = velocity_model(x_t, t_start, **model_extras)
+            model_output = velocity_model(
+                x_t,
+                _adapt_model_time(
+                    velocity_model=velocity_model,
+                    t=t_start,
+                    step_size=t_end_value - t_start_value,
+                ),
+                **model_extras,
+            )
             x_t = stork4_step(
                 model_output=model_output,
                 sample=x_t,
@@ -184,22 +199,56 @@ def solve_fixed_budget(
             device=x_t.device,
             dtype=x_t.dtype,
         )
+        t_end_value = float(time_grid[step_index + 1].item())
+        step_size = t_end_value - float(time_grid[step_index].item())
         if step_method == "euler":
-            k1 = velocity_model(x_t, t_start, **model_extras)
+            k1 = velocity_model(
+                x_t,
+                _adapt_model_time(
+                    velocity_model=velocity_model,
+                    t=t_start,
+                    step_size=step_size,
+                ),
+                **model_extras,
+            )
             x_t = x_t + dt * k1
         elif step_method == "heun2":
-            k1 = velocity_model(x_t, t_start, **model_extras)
+            k1 = velocity_model(
+                x_t,
+                _adapt_model_time(
+                    velocity_model=velocity_model,
+                    t=t_start,
+                    step_size=step_size,
+                ),
+                **model_extras,
+            )
             x_predict = x_t + dt * k1
             t_end = torch.full(
                 (x_t.shape[0],),
-                float(time_grid[step_index + 1].item()),
+                t_end_value,
                 device=x_t.device,
                 dtype=x_t.dtype,
             )
-            k2 = velocity_model(x_predict, t_end, **model_extras)
+            k2 = velocity_model(
+                x_predict,
+                _adapt_model_time(
+                    velocity_model=velocity_model,
+                    t=t_end,
+                    step_size=step_size,
+                ),
+                **model_extras,
+            )
             x_t = x_t + 0.5 * dt * (k1 + k2)
         elif step_method == "rk3":
-            k1 = velocity_model(x_t, t_start, **model_extras)
+            k1 = velocity_model(
+                x_t,
+                _adapt_model_time(
+                    velocity_model=velocity_model,
+                    t=t_start,
+                    step_size=step_size,
+                ),
+                **model_extras,
+            )
             t_mid = torch.full(
                 (x_t.shape[0],),
                 float(time_grid[step_index].item() + 0.5 * dt),
@@ -207,15 +256,31 @@ def solve_fixed_budget(
                 dtype=x_t.dtype,
             )
             x_mid = x_t + 0.5 * dt * k1
-            k2 = velocity_model(x_mid, t_mid, **model_extras)
+            k2 = velocity_model(
+                x_mid,
+                _adapt_model_time(
+                    velocity_model=velocity_model,
+                    t=t_mid,
+                    step_size=step_size,
+                ),
+                **model_extras,
+            )
             t_end = torch.full(
                 (x_t.shape[0],),
-                float(time_grid[step_index + 1].item()),
+                t_end_value,
                 device=x_t.device,
                 dtype=x_t.dtype,
             )
             x_end = x_t - dt * k1 + 2.0 * dt * k2
-            k3 = velocity_model(x_end, t_end, **model_extras)
+            k3 = velocity_model(
+                x_end,
+                _adapt_model_time(
+                    velocity_model=velocity_model,
+                    t=t_end,
+                    step_size=step_size,
+                ),
+                **model_extras,
+            )
             x_t = x_t + dt * ((1.0 / 6.0) * k1 + (2.0 / 3.0) * k2 + (1.0 / 6.0) * k3)
         else:
             raise AssertionError(f"Unhandled step_method={step_method}.")
