@@ -250,6 +250,7 @@ def eval_model(
             )
             last_nfe = cfg_scaled_model.get_nfe()
             last_step_count = args.discrete_fm_steps
+            synthetic_samples = synthetic_samples.to(torch.float32) / 255.0
         else:
             x_0 = torch.randn(samples.shape, dtype=torch.float32, device=device)
             sampling = solve_fixed_budget(
@@ -268,9 +269,6 @@ def eval_model(
             synthetic_samples = torch.clamp(
                 synthetic_samples * 0.5 + 0.5, min=0.0, max=1.0
             )
-            synthetic_samples = torch.floor(synthetic_samples * 255)
-
-        synthetic_samples = synthetic_samples.to(torch.float32) / 255.0
         logger.info(
             f"{samples.shape[0]} samples generated in {last_nfe} evaluations and {last_step_count} steps."
         )

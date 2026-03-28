@@ -141,6 +141,80 @@ class EvalLoopPrecisionRecallTest(unittest.TestCase):
         self.assertEqual(results["synthetic_samples"], 2.0)
 
 
+@unittest.skipUnless(HAS_TORCH, "torch is required for eval fid tests")
+class EvalLoopFidInputTest(unittest.TestCase):
+    def test_eval_model_keeps_continuous_fake_samples_as_float_for_metrics(self):
+        from training import eval_loop
+
+        class FakeMetricBackend:
+            def __init__(self):
+                self.real_inputs = []
+                self.fake_inputs = []
+
+            def update(self, images, real):
+                if real:
+                    self.real_inputs.append(images.detach().clone())
+                else:
+                    self.fake_inputs.append(images.detach().clone())
+
+            def compute(self):
+                return torch.tensor(0.0)
+
+        fake_backend = FakeMetricBackend()
+        real_sample = torch.full((1, 3, 4, 4), 0.25, dtype=torch.float32)
+        labels = torch.zeros(1, dtype=torch.long)
+        data_loader = [(real_sample, labels)]
+        args = types.SimpleNamespace(
+            metrics=["fid"],
+            compute_fid=False,
+            discrete_flow_matching=False,
+            output_dir=None,
+            test_run=True,
+            save_fid_samples=False,
+            sampling_solver="heun2",
+            eval_nfe=10,
+            cfg_scale=0.0,
+            path_family="linear",
+            clock_family="uniform",
+            clock_beta=None,
+            signal_scale_sq=None,
+            precision_recall_neighbors=3,
+            precision_recall_max_samples=16,
+        )
+
+        class DummyModel(torch.nn.Module):
+            def forward(self, x, t, extra=None):
+                return x
+
+        fake_sampling = types.SimpleNamespace(
+            sample=torch.full((1, 3, 4, 4), -0.7532, dtype=torch.float32),
+            nfe=10,
+            step_count=5,
+        )
+
+        with mock.patch.object(eval_loop, "_build_fid_metric", return_value=fake_backend):
+            with mock.patch.object(eval_loop, "solve_fixed_budget", return_value=fake_sampling):
+                results = eval_loop.eval_model(
+                    model=DummyModel(),
+                    data_loader=data_loader,
+                    device=torch.device("cpu"),
+                    epoch=0,
+                    fid_samples=1,
+                    args=args,
+                )
+
+        self.assertEqual(len(fake_backend.real_inputs), 1)
+        self.assertEqual(len(fake_backend.fake_inputs), 1)
+        self.assertAlmostEqual(fake_backend.real_inputs[0][0, 0, 0, 0].item(), 0.25, places=6)
+        self.assertAlmostEqual(fake_backend.fake_inputs[0][0, 0, 0, 0].item(), 0.1234, places=4)
+        self.assertNotAlmostEqual(
+            fake_backend.fake_inputs[0][0, 0, 0, 0].item(),
+            31.0 / 255.0,
+            places=6,
+        )
+        self.assertEqual(results["synthetic_samples"], 1.0)
+
+
 @unittest.skipUnless(HAS_TORCH, "torch is required for eval inception score tests")
 class EvalLoopInceptionScoreTest(unittest.TestCase):
     def test_eval_model_inception_score_accepts_float_images(self):

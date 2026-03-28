@@ -28,7 +28,7 @@ from training.continuous_runtime import (
     resolve_curriculum_signature,
     validate_strategy_configuration,
 )
-from training.data_transform import get_train_transform
+from training.data_transform import get_eval_transform, get_train_transform
 from training.eval_loop import eval_model
 from training.grad_scaler import NativeScalerWithGradNormCount as NativeScaler
 from training.load_and_save import load_model, save_model
@@ -37,22 +37,22 @@ from training.train_loop import train_one_epoch
 logger = logging.getLogger(__name__)
 
 
-def build_dataset(args, transform_train):
+def build_dataset(args, transform):
     if args.dataset == "imagenet":
-        return datasets.ImageFolder(args.data_path, transform=transform_train)
+        return datasets.ImageFolder(args.data_path, transform=transform)
     if args.dataset == "cifar10":
         return datasets.CIFAR10(
             root=args.data_path,
             train=True,
             download=True,
-            transform=transform_train,
+            transform=transform,
         )
     if args.dataset == "cifar100":
         return datasets.CIFAR100(
             root=args.data_path,
             train=True,
             download=True,
-            transform=transform_train,
+            transform=transform,
         )
     raise NotImplementedError(f"Unsupported dataset {args.dataset}")
 
@@ -95,7 +95,9 @@ def main(args):
 
     logger.info(f"Initializing Dataset: {args.dataset}")
     transform_train = get_train_transform()
-    dataset_train = build_dataset(args=args, transform_train=transform_train)
+    transform_eval = get_eval_transform()
+    dataset_train = build_dataset(args=args, transform=transform_train)
+    dataset_eval = build_dataset(args=args, transform=transform_eval)
     logger.info(dataset_train)
     args.signal_scale_sq = estimate_signal_scale_sq_from_dataset(dataset_train)
     args.clock_semantics_tag = resolve_clock_semantics_tag(
@@ -126,7 +128,7 @@ def main(args):
         dataset_train, num_replicas=num_tasks, rank=global_rank, shuffle=True
     )
     sampler_eval = torch.utils.data.DistributedSampler(
-        dataset_train, num_replicas=num_tasks, rank=global_rank, shuffle=False
+        dataset_eval, num_replicas=num_tasks, rank=global_rank, shuffle=False
     )
     data_loader_train = torch.utils.data.DataLoader(
         dataset_train,
@@ -137,7 +139,7 @@ def main(args):
         drop_last=True,
     )
     data_loader_eval = torch.utils.data.DataLoader(
-        dataset_train,
+        dataset_eval,
         sampler=sampler_eval,
         batch_size=args.batch_size,
         num_workers=args.num_workers,

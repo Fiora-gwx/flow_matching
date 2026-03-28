@@ -14,3 +14,11 @@ def get_train_transform():
         ToDtype(torch.float32, scale=True),
     ]
     return Compose(transform_list)
+
+
+def get_eval_transform():
+    transform_list = [
+        ToImage(),
+        ToDtype(torch.float32, scale=True),
+    ]
+    return Compose(transform_list)

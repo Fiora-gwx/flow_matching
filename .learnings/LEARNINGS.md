@@ -45,6 +45,29 @@ Keep training on base velocity, keep importance sampling on `ds_dr^2`, and make 
 
 ---
 
+## [LRN-20260328-002] correction
+
+**Logged**: 2026-03-28T00:00:00+08:00
+**Priority**: high
+**Status**: pending
+**Area**: tests
+
+### Summary
+Evaluation must use a deterministic real-data transform, and metric inputs must keep real/fake preprocessing symmetric.
+
+### Details
+The image training pipeline reused the training dataset object for evaluation, so the real benchmark distribution still passed through `RandomHorizontalFlip`. That makes FID, precision/recall, and similar metrics drift across runs because the real reference distribution is no longer fixed. Separately, continuous-model fake samples were quantized to an 8-bit grid before being passed into metric computation, while real samples stayed as float images. That creates an asymmetric preprocessing path and can distort solver/path comparisons. The correct setup is to build a separate evaluation dataset with a deterministic transform and to keep metric inputs as float images in `[0, 1]`, only converting to uint8 when writing image files.
+
+### Suggested Action
+Split train and eval transforms, route `data_loader_eval` through the deterministic dataset, and remove pre-metric fake quantization from `eval_loop.py`.
+
+### Metadata
+- Source: user_feedback
+- Related Files: examples/image/train.py, examples/image/training/data_transform.py, examples/image/training/eval_loop.py
+- Tags: evaluation, metrics, fid, precision-recall, preprocessing
+
+---
+
 ## [LRN-20260328-001] correction
 
 **Logged**: 2026-03-28T00:00:00+08:00
