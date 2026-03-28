@@ -35,6 +35,12 @@ MANIFEST
 # VSCode
 *.vscode
 
+# Local environment
+.venv/
+venv/
+env/
+.DS_Store
+
 # Others
 examples/image_generation/data
 examples/*/output_dir*

@@ -1,6 +1,0 @@
-#!/Users/master/Documents/project/wt-t001-ft-clock-experiment-platform/.venv/bin/python
-import sys
-from torch_fidelity.fidelity import main
-if __name__ == '__main__':
-    sys.argv[0] = sys.argv[0].removesuffix('.exe')
-    sys.exit(main())
