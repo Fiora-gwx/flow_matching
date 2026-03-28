@@ -5,7 +5,8 @@ import torch
 from training.continuous_runtime import (
     build_continuous_batch,
     model_output_to_base_velocity,
-    sample_importance_weighted_time,
+    model_output_to_velocity,
+    sample_time_by_strategy,
 )
 from training.fixed_step_solver import solve_fixed_budget
 
@@ -25,13 +26,18 @@ def collect_loss_and_velocity_profile(model, data_loader, device, args) -> List[
         samples = samples.to(device, non_blocking=True) * 2.0 - 1.0
         labels = labels.to(device, non_blocking=True)
         noise = torch.randn_like(samples)
-        r = sample_importance_weighted_time(
+        r = sample_time_by_strategy(
             batch_size=samples.shape[0],
             device=device,
             path_family=args.path_family,
             clock_family=args.clock_family,
             clock_beta=args.clock_beta,
             signal_scale_sq=args.signal_scale_sq,
+            strategy=getattr(args, "time_sampling_strategy", "uniform"),
+            mixed_lambda=getattr(args, "mixed_lambda", 0.5),
+            stratified_bins=getattr(args, "stratified_bins", 16),
+            current_epoch=max(int(getattr(args, "epochs", 1)) - 1, 0),
+            total_epochs=getattr(args, "epochs", 1),
         )
         batch = build_continuous_batch(
             x_1=samples,
@@ -48,7 +54,21 @@ def collect_loss_and_velocity_profile(model, data_loader, device, args) -> List[
             ds_dr=batch.ds_dr,
             model_output_type=getattr(args, "model_output_type", "velocity"),
         )
-        losses = torch.pow(pred_base_velocity - batch.base_velocity, 2).flatten(start_dim=1).mean(dim=1)
+        pred_velocity = model_output_to_velocity(
+            model_output=pred,
+            ds_dr=batch.ds_dr,
+            model_output_type=getattr(args, "model_output_type", "velocity"),
+        )
+        if getattr(args, "model_output_type", "velocity") == "base_velocity":
+            losses = torch.pow(
+                pred_base_velocity - batch.base_velocity,
+                2,
+            ).flatten(start_dim=1).mean(dim=1)
+        else:
+            losses = torch.pow(
+                pred_velocity - batch.target_velocity,
+                2,
+            ).flatten(start_dim=1).mean(dim=1)
         velocity_norm = batch.target_velocity.flatten(start_dim=1).norm(dim=1)
         base_velocity_norm = batch.base_velocity.flatten(start_dim=1).norm(dim=1)
         bins = torch.clamp((r * num_bins).long(), max=num_bins - 1)

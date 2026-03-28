@@ -7,6 +7,12 @@ from argparse import Namespace
 from pathlib import Path
 
 import torch
+from training.continuous_runtime import (
+    CURRICULUM_SIGNATURE,
+    infer_strategy_id,
+    normalize_model_output_type,
+    normalize_time_sampling_strategy,
+)
 from training.distributed_mode import is_main_process
 
 
@@ -74,6 +80,35 @@ def _float_matches(expected, observed, tol: float = 1e-8):
         return False
 
 
+def _normalize_strategy_semantics(payload):
+    default_sampling = "ds_dr_sq" if payload.get("model_output_type") == "base_velocity" else "uniform"
+    model_output_type = normalize_model_output_type(
+        payload.get("model_output_type", "velocity")
+    )
+    time_sampling_strategy = normalize_time_sampling_strategy(
+        payload.get("time_sampling_strategy", default_sampling)
+    )
+    mixed_lambda = float(payload.get("mixed_lambda", 0.5))
+    stratified_bins = int(payload.get("stratified_bins", 16))
+    curriculum_signature = str(
+        payload.get(
+            "curriculum_signature",
+            CURRICULUM_SIGNATURE if time_sampling_strategy == "curriculum" else "",
+        )
+    )
+    return {
+        "model_output_type": model_output_type,
+        "time_sampling_strategy": time_sampling_strategy,
+        "mixed_lambda": mixed_lambda,
+        "stratified_bins": stratified_bins,
+        "curriculum_signature": curriculum_signature,
+        "strategy_id": infer_strategy_id(
+            model_output_type=model_output_type,
+            time_sampling_strategy=time_sampling_strategy,
+        ),
+    }
+
+
 def load_model(args, model_without_ddp, optimizer, loss_scaler, lr_schedule):
     if args.resume:
         if args.resume.startswith("https"):
@@ -87,10 +122,8 @@ def load_model(args, model_without_ddp, optimizer, loss_scaler, lr_schedule):
         requested_clock_family = getattr(args, "clock_family", None)
         requested_clock_beta = getattr(args, "clock_beta", None)
         checkpoint_args = _checkpoint_args_to_dict(checkpoint.get("args"))
-        checkpoint_model_output_type = str(
-            checkpoint_args.get("model_output_type", "velocity")
-        )
-        checkpoint_time_sampling = checkpoint_args.get("time_sampling_strategy")
+        checkpoint_strategy = _normalize_strategy_semantics(checkpoint_args)
+        requested_strategy = _normalize_strategy_semantics(vars(args))
         is_eval_only = bool(hasattr(args, "eval") and args.eval) or bool(
             getattr(args, "eval_only", False)
         )
@@ -105,6 +138,8 @@ def load_model(args, model_without_ddp, optimizer, loss_scaler, lr_schedule):
                 checkpoint_args["clock_family"]
             )
         checkpoint_path_family = checkpoint_args.get("path_family")
+        checkpoint_clock_tag = checkpoint_args.get("clock_semantics_tag")
+        requested_clock_tag = getattr(args, "clock_semantics_tag", None)
 
         if not is_eval_only:
             if (
@@ -136,6 +171,19 @@ def load_model(args, model_without_ddp, optimizer, loss_scaler, lr_schedule):
                     f"clock_beta. expected={requested_clock_beta}, "
                     f"checkpoint={checkpoint_clock_beta}"
                 )
+            if checkpoint_clock_tag is not None and requested_clock_tag is not None:
+                if str(checkpoint_clock_tag) != str(requested_clock_tag):
+                    raise ValueError(
+                        "Refusing to resume training from a checkpoint with a different "
+                        f"clock_semantics_tag. expected={requested_clock_tag}, "
+                        f"checkpoint={checkpoint_clock_tag}"
+                    )
+            if checkpoint_strategy != requested_strategy:
+                raise ValueError(
+                    "Refusing to resume training from a checkpoint with different "
+                    "strategy semantics. "
+                    f"expected={requested_strategy}, checkpoint={checkpoint_strategy}"
+                )
 
         if checkpoint_clock_beta is not None:
             args.clock_beta = checkpoint_clock_beta
@@ -143,21 +191,12 @@ def load_model(args, model_without_ddp, optimizer, loss_scaler, lr_schedule):
             args.clock_family = checkpoint_clock_family
         if checkpoint_path_family is not None:
             args.path_family = checkpoint_path_family
-
-        if not is_eval_only and args.clock_family != "uniform":
-            if (
-                checkpoint_model_output_type != "base_velocity"
-                or checkpoint_time_sampling != "ds_dr_sq"
-            ):
-                raise ValueError(
-                    "Refusing to continue non-uniform-clock training from a legacy "
-                    "checkpoint with velocity-output semantics. Re-run the experiment "
-                    "from scratch under the new u-parameterized objective."
-                )
-
-        args.model_output_type = checkpoint_model_output_type
-        if checkpoint_time_sampling is not None:
-            args.time_sampling_strategy = checkpoint_time_sampling
+        args.model_output_type = checkpoint_strategy["model_output_type"]
+        args.time_sampling_strategy = checkpoint_strategy["time_sampling_strategy"]
+        args.mixed_lambda = checkpoint_strategy["mixed_lambda"]
+        args.stratified_bins = checkpoint_strategy["stratified_bins"]
+        args.curriculum_signature = checkpoint_strategy["curriculum_signature"]
+        args.strategy_id = checkpoint_strategy["strategy_id"]
 
         print("Resume checkpoint %s" % args.resume)
         if "epoch" in checkpoint and is_eval_only:

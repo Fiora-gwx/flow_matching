@@ -184,6 +184,13 @@ def main(config_path: Path):
             clock_beta=checkpoint_args.get('clock_beta', spec.get('clock_beta')),
             signal_scale_sq=signal_scale_sq,
             model_output_type=checkpoint_args.get('model_output_type', 'velocity'),
+            time_sampling_strategy=checkpoint_args.get(
+                'time_sampling_strategy',
+                spec.get('time_sampling_strategy', 'uniform'),
+            ),
+            mixed_lambda=checkpoint_args.get('mixed_lambda', spec.get('mixed_lambda', 0.5)),
+            stratified_bins=checkpoint_args.get('stratified_bins', spec.get('stratified_bins', 16)),
+            epochs=checkpoint_args.get('epochs', spec.get('epochs', 1)),
             analysis_num_bins=spec.get('analysis_num_bins', 20),
             analysis_num_batches=spec.get('analysis_num_batches', 8),
             analysis_num_samples=spec.get('analysis_num_samples', 512),

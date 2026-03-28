@@ -31,9 +31,14 @@ def _clock_label(row: Dict[str, object]) -> str:
         family = "ft_beta"
     param_name = row.get("clock_param_name")
     param_value = row.get("clock_param_value")
+    strategy_id = str(row.get("strategy_id", ""))
     if param_name not in {None, "", "none"} and param_value is not None:
-        return f"{family} ({param_name}={param_value})"
-    return family
+        label = f"{family} ({param_name}={param_value})"
+    else:
+        label = family
+    if strategy_id:
+        return f"strategy {strategy_id}: {label}"
+    return label
 
 
 def _plot_main_curve(rows: Sequence[Dict[str, object]], output_dir: Path) -> None:
@@ -105,22 +110,68 @@ def _plot_main_curve(rows: Sequence[Dict[str, object]], output_dir: Path) -> Non
 def _plot_heatmap(rows: Sequence[Dict[str, object]], output_dir: Path) -> None:
     if not rows:
         return
-    matrix = rows_to_matrix(rows, row_field="clock_param_value", col_field="nfe")
-    beta_values = sorted(matrix.keys())
-    nfe_values = sorted({nfe for values in matrix.values() for nfe in values.keys()})
-    if not beta_values or not nfe_values:
+    grouped: Dict[str, List[Dict[str, object]]] = {}
+    for row in rows:
+        grouped.setdefault(str(row.get("strategy_id", "")), []).append(row)
+    for strategy_id, grouped_rows in grouped.items():
+        matrix = rows_to_matrix(grouped_rows, row_field="clock_param_value", col_field="nfe")
+        beta_values = sorted(matrix.keys())
+        nfe_values = sorted({nfe for values in matrix.values() for nfe in values.keys()})
+        if not beta_values or not nfe_values:
+            continue
+        heatmap = [[matrix[beta].get(nfe, float("nan")) for nfe in nfe_values] for beta in beta_values]
+        plt.figure(figsize=(10, 6))
+        plt.imshow(heatmap, aspect="auto", origin="lower")
+        plt.colorbar(label="FID")
+        plt.xticks(range(len(nfe_values)), [str(nfe) for nfe in nfe_values])
+        plt.yticks(range(len(beta_values)), [str(beta) for beta in beta_values])
+        plt.xlabel("NFE")
+        plt.ylabel("beta")
+        plt.tight_layout()
+        filename = "fid_heatmap_beta_nfe.png"
+        if strategy_id:
+            filename = f"fid_heatmap_beta_nfe_strategy_{strategy_id}.png"
+        plt.savefig(output_dir / filename, dpi=300)
+        plt.close()
+
+
+def _write_ablation_tables(rows: Sequence[Dict[str, object]], output_dir: Path) -> None:
+    if not rows or not any(str(row.get("strategy_id", "")) for row in rows):
         return
-    heatmap = [[matrix[beta].get(nfe, float("nan")) for nfe in nfe_values] for beta in beta_values]
-    plt.figure(figsize=(10, 6))
-    plt.imshow(heatmap, aspect="auto", origin="lower")
-    plt.colorbar(label="FID")
-    plt.xticks(range(len(nfe_values)), [str(nfe) for nfe in nfe_values])
-    plt.yticks(range(len(beta_values)), [str(beta) for beta in beta_values])
-    plt.xlabel("NFE")
-    plt.ylabel("beta")
-    plt.tight_layout()
-    plt.savefig(output_dir / "fid_heatmap_beta_nfe.png", dpi=300)
-    plt.close()
+    best_rows = []
+    grouped: Dict[Tuple[object, object, object], List[Dict[str, object]]] = {}
+    for row in rows:
+        if not is_ft_clock_family(row["clock_family"]):
+            continue
+        key = (row.get("clock_param_value"), row.get("solver"), row.get("nfe"))
+        grouped.setdefault(key, []).append(row)
+    comparison_rows = []
+    for (beta, solver, nfe), group_rows in sorted(grouped.items()):
+        best_row = min(group_rows, key=lambda row: float(row["value_mean"]))
+        best_rows.append(
+            {
+                "beta": beta,
+                "solver": solver,
+                "nfe": nfe,
+                "best_strategy_id": best_row.get("strategy_id", ""),
+                "best_fid_mean": best_row["value_mean"],
+                "best_fid_std": best_row["value_std"],
+            }
+        )
+        by_strategy = {str(row.get("strategy_id", "")): row for row in group_rows}
+        if "A" in by_strategy and "B" in by_strategy:
+            comparison_rows.append(
+                {
+                    "beta": beta,
+                    "solver": solver,
+                    "nfe": nfe,
+                    "strategy_A_fid_mean": by_strategy["A"]["value_mean"],
+                    "strategy_B_fid_mean": by_strategy["B"]["value_mean"],
+                    "strategy_B_minus_A": by_strategy["B"]["value_mean"] - by_strategy["A"]["value_mean"],
+                }
+            )
+    write_table_csv(output_dir / "ablation_best_strategy_by_beta_nfe.csv", best_rows)
+    write_table_csv(output_dir / "ablation_strategy_b_vs_a.csv", comparison_rows)
 
 
 def _schedule_family_table(rows: Sequence[Dict[str, object]]) -> List[Dict[str, object]]:
@@ -192,6 +243,7 @@ def visualize_results(
     write_table_csv(output_dir / "baseline_vs_best_ft.csv", main_table)
     write_table_csv(output_dir / "schedule_family_table.csv", _schedule_family_table(linear_rows))
     write_table_csv(output_dir / "cross_path_table.csv", _cross_path_table(fid_rows))
+    _write_ablation_tables(linear_rows, output_dir)
 
 
 if __name__ == "__main__":

@@ -46,13 +46,22 @@ def solver_budget_flags(solver: str, nfe: int) -> Dict[str, object]:
     }
 
 
-def method_label(path_family: str, clock_family: str, beta: Optional[float]) -> str:
+def method_label(
+    path_family: str,
+    clock_family: str,
+    beta: Optional[float],
+    strategy_id: str = "",
+) -> str:
     if clock_family == "uniform":
-        return f"{path_family}_uniform"
-    if beta is None:
-        return f"{path_family}_{clock_family}"
-    beta_tag = str(beta).replace(".", "_")
-    return f"{path_family}_ft_beta_{beta_tag}"
+        base = f"{path_family}_uniform"
+    elif beta is None:
+        base = f"{path_family}_{clock_family}"
+    else:
+        beta_tag = str(beta).replace(".", "_")
+        base = f"{path_family}_ft_beta_{beta_tag}"
+    if strategy_id:
+        return f"strategy_{strategy_id}_{base}"
+    return base
 
 
 def pivot_metric_rows(rows: Sequence[Dict[str, object]]) -> List[Dict[str, object]]:
@@ -68,6 +77,11 @@ def pivot_metric_rows(rows: Sequence[Dict[str, object]]) -> List[Dict[str, objec
             row.get("nfe"),
             row.get("checkpoint_epoch"),
             row.get("artifact_group"),
+            row.get("strategy_id", ""),
+            row.get("model_output_type", "velocity"),
+            row.get("time_sampling_strategy", "uniform"),
+            row.get("mixed_lambda"),
+            row.get("stratified_bins"),
         )
         if key not in grouped:
             flags = solver_budget_flags(str(row["solver"]), int(row["nfe"]))
@@ -84,10 +98,16 @@ def pivot_metric_rows(rows: Sequence[Dict[str, object]]) -> List[Dict[str, objec
                 "step_count": int(row.get("step_count", 0)),
                 "checkpoint_epoch": int(row.get("checkpoint_epoch", 0)),
                 "artifact_group": row.get("artifact_group"),
+                "strategy_id": row.get("strategy_id", ""),
+                "model_output_type": row.get("model_output_type", "velocity"),
+                "time_sampling_strategy": row.get("time_sampling_strategy", "uniform"),
+                "mixed_lambda": row.get("mixed_lambda"),
+                "stratified_bins": row.get("stratified_bins"),
                 "method": method_label(
                     str(row.get("path_family")),
                     str(row.get("clock_family")),
                     None if beta is None else float(beta),
+                    str(row.get("strategy_id", "")),
                 ),
                 **flags,
             }
@@ -202,11 +222,15 @@ def plot_fid_vs_nfe(rows: Sequence[Dict[str, object]], output_path: Path) -> Non
 
 def write_summary(rows: Sequence[Dict[str, object]], output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    grouped: Dict[Tuple[str, str], Dict[str, List[Dict[str, object]]]] = defaultdict(
+    grouped: Dict[Tuple[str, str, str], Dict[str, List[Dict[str, object]]]] = defaultdict(
         lambda: {"baseline": [], "ft": []}
     )
     for row in rows:
-        key = (str(row["path_family"]), str(row["solver"]))
+        key = (
+            str(row["path_family"]),
+            str(row.get("strategy_id", "")),
+            str(row["solver"]),
+        )
         if row["clock_family"] == "uniform":
             grouped[key]["baseline"].append(row)
         elif is_ft_clock_family(row["clock_family"]):
@@ -218,7 +242,7 @@ def write_summary(rows: Sequence[Dict[str, object]], output_path: Path) -> None:
         output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         return
 
-    for (path_family, solver), payload in sorted(grouped.items()):
+    for (path_family, strategy_id, solver), payload in sorted(grouped.items()):
         baseline_by_nfe = {int(row["nfe"]): row for row in payload["baseline"]}
         ft_by_nfe: Dict[int, Dict[str, object]] = {}
         for row in payload["ft"]:
@@ -228,7 +252,10 @@ def write_summary(rows: Sequence[Dict[str, object]], output_path: Path) -> None:
                 ft_by_nfe[nfe] = row
 
         common_nfes = sorted(set(baseline_by_nfe) & set(ft_by_nfe))
-        lines.append(f"## {path_family} / {solver}")
+        title = f"{path_family} / {solver}"
+        if strategy_id:
+            title = f"{title} / strategy {strategy_id}"
+        lines.append(f"## {title}")
         if not common_nfes:
             lines.append("- No overlapping baseline-vs-FT fairness rows.")
             lines.append("")

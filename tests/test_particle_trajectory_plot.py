@@ -128,6 +128,8 @@ class ParticleTrajectoryPlotTest(unittest.TestCase):
                         "name": "linear_ft_best",
                         "path_family": "linear",
                         "clock_family": "ft_beta",
+                        "model_output_type": "base_velocity",
+                        "time_sampling_strategy": "ds_dr_sq",
                         "best_beta_from": {
                             "results_csv": "experiments/results/ft_clock_linear_main/results.csv",
                             "artifact_group": "ft_clock_linear_main",

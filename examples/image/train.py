@@ -23,7 +23,10 @@ from train_arg_parser import get_args_parser
 from training import distributed_mode
 from training.continuous_runtime import (
     estimate_signal_scale_sq_from_dataset,
+    infer_strategy_id,
     resolve_clock_semantics_tag,
+    resolve_curriculum_signature,
+    validate_strategy_configuration,
 )
 from training.data_transform import get_train_transform
 from training.eval_loop import eval_model
@@ -100,8 +103,20 @@ def main(args):
         clock_family=args.clock_family,
         signal_scale_sq=args.signal_scale_sq,
     )
-    args.model_output_type = "base_velocity"
-    args.time_sampling_strategy = "ds_dr_sq"
+    (
+        args.model_output_type,
+        args.time_sampling_strategy,
+    ) = validate_strategy_configuration(
+        model_output_type=args.model_output_type,
+        time_sampling_strategy=args.time_sampling_strategy,
+    )
+    args.strategy_id = infer_strategy_id(
+        model_output_type=args.model_output_type,
+        time_sampling_strategy=args.time_sampling_strategy,
+    )
+    args.curriculum_signature = resolve_curriculum_signature(
+        time_sampling_strategy=args.time_sampling_strategy,
+    )
     logger.info(f"Estimated signal_scale_sq={args.signal_scale_sq:.6f}")
 
     logger.info("Initializing DataLoader")

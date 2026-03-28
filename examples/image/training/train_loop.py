@@ -18,7 +18,7 @@ from flow_matching.path import MixtureDiscreteProbPath
 from flow_matching.path.scheduler import PolynomialConvexScheduler
 from training.continuous_runtime import (
     build_continuous_batch,
-    sample_importance_weighted_time,
+    sample_time_by_strategy,
 )
 from training.grad_scaler import NativeScalerWithGradNormCount
 
@@ -78,13 +78,18 @@ def train_one_epoch(
         else:
             samples = samples * 2.0 - 1.0
             noise = torch.randn_like(samples)
-            r = sample_importance_weighted_time(
+            r = sample_time_by_strategy(
                 batch_size=samples.shape[0],
                 device=device,
                 path_family=args.path_family,
                 clock_family=args.clock_family,
                 clock_beta=args.clock_beta,
                 signal_scale_sq=args.signal_scale_sq,
+                strategy=getattr(args, "time_sampling_strategy", "uniform"),
+                mixed_lambda=getattr(args, "mixed_lambda", 0.5),
+                stratified_bins=getattr(args, "stratified_bins", 16),
+                current_epoch=epoch,
+                total_epochs=getattr(args, "epochs", None),
             )
             continuous_batch = build_continuous_batch(
                 x_1=samples,
@@ -97,7 +102,11 @@ def train_one_epoch(
             )
             with torch.cuda.amp.autocast():
                 pred = model(continuous_batch.x_t, continuous_batch.r, extra=conditioning)
-                loss = torch.pow(pred - continuous_batch.base_velocity, 2).mean()
+                if getattr(args, "model_output_type", "velocity") == "base_velocity":
+                    target = continuous_batch.base_velocity
+                else:
+                    target = continuous_batch.target_velocity
+                loss = torch.pow(pred - target, 2).mean()
 
         loss_value = loss.item()
         batch_loss.update(loss)

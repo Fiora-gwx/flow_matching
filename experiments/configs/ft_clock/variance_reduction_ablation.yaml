@@ -1,0 +1,274 @@
+experiment_name: ft_clock_variance_reduction_ablation
+base_config:
+  dataset: cifar10
+  data_path: ./data/cifar10
+  epochs: 500
+  batch_size: 128
+  num_gpus: 4
+  path_family: linear
+  cfg_scale: 0.0
+  class_drop_prob: 1.0
+  metrics: [fid]
+  eval_epochs: [499]
+  eval_nfes: [4, 8, 16, 32, 100]
+
+experiments:
+  - name: linear_ft_beta_0_3_strategy_A_euler
+    strategy_id: A
+    clock_family: ft_beta
+    clock_beta: 0.3
+    model_output_type: velocity
+    time_sampling_strategy: uniform
+    sampling_solver: euler
+  - name: linear_ft_beta_0_3_strategy_A_heun2
+    strategy_id: A
+    clock_family: ft_beta
+    clock_beta: 0.3
+    model_output_type: velocity
+    time_sampling_strategy: uniform
+    sampling_solver: heun2
+  - name: linear_ft_beta_0_3_strategy_A_rk3
+    strategy_id: A
+    clock_family: ft_beta
+    clock_beta: 0.3
+    model_output_type: velocity
+    time_sampling_strategy: uniform
+    sampling_solver: rk3
+  - name: linear_ft_beta_0_3_strategy_A_stork4
+    strategy_id: A
+    clock_family: ft_beta
+    clock_beta: 0.3
+    model_output_type: velocity
+    time_sampling_strategy: uniform
+    sampling_solver: stork4
+
+  - name: linear_ft_beta_0_5_strategy_A_euler
+    strategy_id: A
+    clock_family: ft_beta
+    clock_beta: 0.5
+    model_output_type: velocity
+    time_sampling_strategy: uniform
+    sampling_solver: euler
+  - name: linear_ft_beta_0_5_strategy_A_heun2
+    strategy_id: A
+    clock_family: ft_beta
+    clock_beta: 0.5
+    model_output_type: velocity
+    time_sampling_strategy: uniform
+    sampling_solver: heun2
+  - name: linear_ft_beta_0_5_strategy_A_rk3
+    strategy_id: A
+    clock_family: ft_beta
+    clock_beta: 0.5
+    model_output_type: velocity
+    time_sampling_strategy: uniform
+    sampling_solver: rk3
+  - name: linear_ft_beta_0_5_strategy_A_stork4
+    strategy_id: A
+    clock_family: ft_beta
+    clock_beta: 0.5
+    model_output_type: velocity
+    time_sampling_strategy: uniform
+    sampling_solver: stork4
+
+  - name: linear_ft_beta_0_7_strategy_A_euler
+    strategy_id: A
+    clock_family: ft_beta
+    clock_beta: 0.7
+    model_output_type: velocity
+    time_sampling_strategy: uniform
+    sampling_solver: euler
+  - name: linear_ft_beta_0_7_strategy_A_heun2
+    strategy_id: A
+    clock_family: ft_beta
+    clock_beta: 0.7
+    model_output_type: velocity
+    time_sampling_strategy: uniform
+    sampling_solver: heun2
+  - name: linear_ft_beta_0_7_strategy_A_rk3
+    strategy_id: A
+    clock_family: ft_beta
+    clock_beta: 0.7
+    model_output_type: velocity
+    time_sampling_strategy: uniform
+    sampling_solver: rk3
+  - name: linear_ft_beta_0_7_strategy_A_stork4
+    strategy_id: A
+    clock_family: ft_beta
+    clock_beta: 0.7
+    model_output_type: velocity
+    time_sampling_strategy: uniform
+    sampling_solver: stork4
+
+  - name: linear_ft_beta_0_3_strategy_B_heun2
+    strategy_id: B
+    clock_family: ft_beta
+    clock_beta: 0.3
+    model_output_type: base_velocity
+    time_sampling_strategy: ds_dr_sq
+    sampling_solver: heun2
+  - name: linear_ft_beta_0_5_strategy_B_heun2
+    strategy_id: B
+    clock_family: ft_beta
+    clock_beta: 0.5
+    model_output_type: base_velocity
+    time_sampling_strategy: ds_dr_sq
+    sampling_solver: heun2
+  - name: linear_ft_beta_0_7_strategy_B_heun2
+    strategy_id: B
+    clock_family: ft_beta
+    clock_beta: 0.7
+    model_output_type: base_velocity
+    time_sampling_strategy: ds_dr_sq
+    sampling_solver: heun2
+
+  - name: linear_ft_beta_0_3_strategy_C_lambda_0_5_heun2
+    strategy_id: C
+    clock_family: ft_beta
+    clock_beta: 0.3
+    model_output_type: velocity
+    time_sampling_strategy: mixed_lambda
+    mixed_lambda: 0.5
+    sampling_solver: heun2
+  - name: linear_ft_beta_0_3_strategy_C_lambda_0_7_heun2
+    strategy_id: C
+    clock_family: ft_beta
+    clock_beta: 0.3
+    model_output_type: velocity
+    time_sampling_strategy: mixed_lambda
+    mixed_lambda: 0.7
+    sampling_solver: heun2
+  - name: linear_ft_beta_0_5_strategy_C_lambda_0_5_heun2
+    strategy_id: C
+    clock_family: ft_beta
+    clock_beta: 0.5
+    model_output_type: velocity
+    time_sampling_strategy: mixed_lambda
+    mixed_lambda: 0.5
+    sampling_solver: heun2
+  - name: linear_ft_beta_0_5_strategy_C_lambda_0_7_heun2
+    strategy_id: C
+    clock_family: ft_beta
+    clock_beta: 0.5
+    model_output_type: velocity
+    time_sampling_strategy: mixed_lambda
+    mixed_lambda: 0.7
+    sampling_solver: heun2
+  - name: linear_ft_beta_0_7_strategy_C_lambda_0_5_heun2
+    strategy_id: C
+    clock_family: ft_beta
+    clock_beta: 0.7
+    model_output_type: velocity
+    time_sampling_strategy: mixed_lambda
+    mixed_lambda: 0.5
+    sampling_solver: heun2
+  - name: linear_ft_beta_0_7_strategy_C_lambda_0_7_heun2
+    strategy_id: C
+    clock_family: ft_beta
+    clock_beta: 0.7
+    model_output_type: velocity
+    time_sampling_strategy: mixed_lambda
+    mixed_lambda: 0.7
+    sampling_solver: heun2
+
+  - name: linear_ft_beta_0_3_strategy_D_heun2
+    strategy_id: D
+    clock_family: ft_beta
+    clock_beta: 0.3
+    model_output_type: velocity
+    time_sampling_strategy: stratified
+    stratified_bins: 16
+    sampling_solver: heun2
+  - name: linear_ft_beta_0_5_strategy_D_heun2
+    strategy_id: D
+    clock_family: ft_beta
+    clock_beta: 0.5
+    model_output_type: velocity
+    time_sampling_strategy: stratified
+    stratified_bins: 16
+    sampling_solver: heun2
+  - name: linear_ft_beta_0_7_strategy_D_heun2
+    strategy_id: D
+    clock_family: ft_beta
+    clock_beta: 0.7
+    model_output_type: velocity
+    time_sampling_strategy: stratified
+    stratified_bins: 16
+    sampling_solver: heun2
+
+  - name: linear_ft_beta_0_3_strategy_E_lambda_0_5_heun2
+    strategy_id: E
+    clock_family: ft_beta
+    clock_beta: 0.3
+    model_output_type: velocity
+    time_sampling_strategy: stratified_mixed
+    mixed_lambda: 0.5
+    stratified_bins: 16
+    sampling_solver: heun2
+  - name: linear_ft_beta_0_3_strategy_E_lambda_0_7_heun2
+    strategy_id: E
+    clock_family: ft_beta
+    clock_beta: 0.3
+    model_output_type: velocity
+    time_sampling_strategy: stratified_mixed
+    mixed_lambda: 0.7
+    stratified_bins: 16
+    sampling_solver: heun2
+  - name: linear_ft_beta_0_5_strategy_E_lambda_0_5_heun2
+    strategy_id: E
+    clock_family: ft_beta
+    clock_beta: 0.5
+    model_output_type: velocity
+    time_sampling_strategy: stratified_mixed
+    mixed_lambda: 0.5
+    stratified_bins: 16
+    sampling_solver: heun2
+  - name: linear_ft_beta_0_5_strategy_E_lambda_0_7_heun2
+    strategy_id: E
+    clock_family: ft_beta
+    clock_beta: 0.5
+    model_output_type: velocity
+    time_sampling_strategy: stratified_mixed
+    mixed_lambda: 0.7
+    stratified_bins: 16
+    sampling_solver: heun2
+  - name: linear_ft_beta_0_7_strategy_E_lambda_0_5_heun2
+    strategy_id: E
+    clock_family: ft_beta
+    clock_beta: 0.7
+    model_output_type: velocity
+    time_sampling_strategy: stratified_mixed
+    mixed_lambda: 0.5
+    stratified_bins: 16
+    sampling_solver: heun2
+  - name: linear_ft_beta_0_7_strategy_E_lambda_0_7_heun2
+    strategy_id: E
+    clock_family: ft_beta
+    clock_beta: 0.7
+    model_output_type: velocity
+    time_sampling_strategy: stratified_mixed
+    mixed_lambda: 0.7
+    stratified_bins: 16
+    sampling_solver: heun2
+
+  - name: linear_ft_beta_0_3_strategy_F_heun2
+    strategy_id: F
+    clock_family: ft_beta
+    clock_beta: 0.3
+    model_output_type: velocity
+    time_sampling_strategy: curriculum
+    sampling_solver: heun2
+  - name: linear_ft_beta_0_5_strategy_F_heun2
+    strategy_id: F
+    clock_family: ft_beta
+    clock_beta: 0.5
+    model_output_type: velocity
+    time_sampling_strategy: curriculum
+    sampling_solver: heun2
+  - name: linear_ft_beta_0_7_strategy_F_heun2
+    strategy_id: F
+    clock_family: ft_beta
+    clock_beta: 0.7
+    model_output_type: velocity
+    time_sampling_strategy: curriculum
+    sampling_solver: heun2

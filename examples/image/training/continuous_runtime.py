@@ -11,6 +11,16 @@ FT_TRIG_VP_UNIT_SCALE_TOL = 1e-6
 PATH_FAMILIES = ("linear", "trig_vp")
 FT_CLOCK_FAMILIES = ("ft_beta",)
 MODEL_OUTPUT_TYPES = ("velocity", "base_velocity")
+TIME_SAMPLING_STRATEGIES = (
+    "uniform",
+    "ds_dr_sq",
+    "mixed_lambda",
+    "stratified",
+    "stratified_mixed",
+    "curriculum",
+)
+CURRICULUM_SIGNATURE = "warmup0.3_linear_to1"
+CURRICULUM_WARMUP_FRACTION = 0.3
 CLOCK_FAMILIES = (
     "uniform",
     "ft_beta",
@@ -208,6 +218,26 @@ def _interpolate_monotone_inverse(
     weight = (flat_r - r_left) / (r_right - r_left).clamp(min=EPS)
     interpolated = s_left + weight * (s_right - s_left)
     return interpolated.reshape_as(r)
+
+
+def _interpolate_monotone_lookup(
+    x: Tensor,
+    x_grid: Tensor,
+    y_grid: Tensor,
+) -> Tensor:
+    flat_x = x.reshape(-1).clamp(float(x_grid[0].item()), float(x_grid[-1].item()))
+    right_indices = torch.searchsorted(x_grid, flat_x, right=True)
+    right_indices = right_indices.clamp(min=1, max=x_grid.numel() - 1)
+    left_indices = right_indices - 1
+
+    x_left = x_grid[left_indices]
+    x_right = x_grid[right_indices]
+    y_left = y_grid[left_indices]
+    y_right = y_grid[right_indices]
+
+    weight = (flat_x - x_left) / (x_right - x_left).clamp(min=EPS)
+    interpolated = y_left + weight * (y_right - y_left)
+    return interpolated.reshape_as(x)
 
 
 def _clock_importance_cache_key(
@@ -449,6 +479,16 @@ def clamp_time_inside_unit_interval(r: Tensor) -> Tensor:
     return r.clamp(min=TIME_EPS, max=1.0 - TIME_EPS)
 
 
+def normalize_time_sampling_strategy(time_sampling_strategy: Optional[str]) -> str:
+    resolved = "uniform" if time_sampling_strategy is None else str(time_sampling_strategy)
+    if resolved not in TIME_SAMPLING_STRATEGIES:
+        raise ValueError(
+            f"Unsupported time_sampling_strategy={time_sampling_strategy}. "
+            f"Expected one of {TIME_SAMPLING_STRATEGIES}."
+        )
+    return resolved
+
+
 def normalize_model_output_type(model_output_type: Optional[str]) -> str:
     resolved = "velocity" if model_output_type is None else str(model_output_type)
     if resolved not in MODEL_OUTPUT_TYPES:
@@ -457,6 +497,69 @@ def normalize_model_output_type(model_output_type: Optional[str]) -> str:
             f"Expected one of {MODEL_OUTPUT_TYPES}."
         )
     return resolved
+
+
+def validate_strategy_configuration(
+    model_output_type: Optional[str],
+    time_sampling_strategy: Optional[str],
+) -> Tuple[str, str]:
+    resolved_model_output = normalize_model_output_type(model_output_type)
+    resolved_sampling_strategy = normalize_time_sampling_strategy(time_sampling_strategy)
+    if resolved_sampling_strategy == "ds_dr_sq":
+        if resolved_model_output != "base_velocity":
+            raise ValueError(
+                "time_sampling_strategy=ds_dr_sq requires model_output_type=base_velocity."
+            )
+    elif resolved_model_output != "velocity":
+        raise ValueError(
+            f"time_sampling_strategy={resolved_sampling_strategy} requires "
+            "model_output_type=velocity."
+        )
+    return resolved_model_output, resolved_sampling_strategy
+
+
+def infer_strategy_id(
+    model_output_type: Optional[str],
+    time_sampling_strategy: Optional[str],
+) -> str:
+    _, resolved_sampling_strategy = validate_strategy_configuration(
+        model_output_type=model_output_type,
+        time_sampling_strategy=time_sampling_strategy,
+    )
+    mapping = {
+        "uniform": "A",
+        "ds_dr_sq": "B",
+        "mixed_lambda": "C",
+        "stratified": "D",
+        "stratified_mixed": "E",
+        "curriculum": "F",
+    }
+    return mapping[resolved_sampling_strategy]
+
+
+def resolve_curriculum_signature(time_sampling_strategy: Optional[str]) -> str:
+    if normalize_time_sampling_strategy(time_sampling_strategy) == "curriculum":
+        return CURRICULUM_SIGNATURE
+    return ""
+
+
+def resolve_curriculum_lambda(
+    current_epoch: Optional[int],
+    total_epochs: Optional[int],
+) -> float:
+    if current_epoch is None or total_epochs is None or int(total_epochs) <= 1:
+        return 1.0
+    progress = float(current_epoch) / float(max(int(total_epochs) - 1, 1))
+    if progress <= CURRICULUM_WARMUP_FRACTION:
+        return 0.0
+    return min(
+        1.0,
+        max(
+            0.0,
+            (progress - CURRICULUM_WARMUP_FRACTION)
+            / (1.0 - CURRICULUM_WARMUP_FRACTION),
+        ),
+    )
 
 
 def model_output_to_velocity(
@@ -490,6 +593,51 @@ def sample_strict_unit_interval(
     return clamp_time_inside_unit_interval(r * (1.0 - 2.0 * TIME_EPS) + TIME_EPS)
 
 
+def _sample_uniform_in_interval(
+    batch_size: int,
+    left: float,
+    right: float,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> Tensor:
+    if batch_size <= 0:
+        return torch.empty(0, device=device, dtype=dtype)
+    left = float(left)
+    right = float(right)
+    if not (0.0 <= left < right <= 1.0):
+        raise ValueError(f"Invalid interval [{left}, {right}] for time sampling.")
+    samples = sample_strict_unit_interval(batch_size=batch_size, device=device, dtype=dtype)
+    return left + (right - left) * samples
+
+
+def _sample_from_importance_cdf(
+    batch_size: int,
+    r_grid: Tensor,
+    cdf: Tensor,
+    device: torch.device,
+    dtype: torch.dtype,
+    cdf_left: float = 0.0,
+    cdf_right: float = 1.0,
+) -> Tensor:
+    if batch_size <= 0:
+        return torch.empty(0, device=device, dtype=dtype)
+    if not (0.0 <= cdf_left < cdf_right <= 1.0):
+        raise ValueError(f"Invalid CDF interval [{cdf_left}, {cdf_right}] for importance sampling.")
+    uniform_samples = sample_strict_unit_interval(
+        batch_size=batch_size,
+        device=device,
+        dtype=dtype,
+    )
+    if cdf_left != 0.0 or cdf_right != 1.0:
+        uniform_samples = cdf_left + (cdf_right - cdf_left) * uniform_samples
+    sampled_r = _interpolate_monotone_inverse(
+        r=uniform_samples,
+        s_grid=r_grid,
+        r_grid=cdf,
+    )
+    return clamp_time_inside_unit_interval(sampled_r)
+
+
 def sample_importance_weighted_time(
     batch_size: int,
     device: torch.device,
@@ -510,17 +658,260 @@ def sample_importance_weighted_time(
         device=device,
         dtype=dtype,
     )
+    return _sample_from_importance_cdf(
+        batch_size=batch_size,
+        r_grid=r_grid,
+        cdf=cdf,
+        device=device,
+        dtype=dtype,
+    )
+
+
+def _sample_importance_weighted_time_in_interval(
+    batch_size: int,
+    left: float,
+    right: float,
+    path_family: str,
+    clock_family: str,
+    clock_beta: Optional[float],
+    signal_scale_sq: Optional[float],
+    device: torch.device,
+    dtype: torch.dtype,
+) -> Tensor:
+    if batch_size <= 0:
+        return torch.empty(0, device=device, dtype=dtype)
+    if clock_family == "uniform":
+        return _sample_uniform_in_interval(
+            batch_size=batch_size,
+            left=left,
+            right=right,
+            device=device,
+            dtype=dtype,
+        )
+    r_grid, cdf = _build_clock_importance_cdf(
+        clock_family=clock_family,
+        path_family=path_family,
+        clock_beta=clock_beta,
+        signal_scale_sq=signal_scale_sq,
+        device=device,
+        dtype=dtype,
+    )
+    interval = torch.tensor([left, right], device=device, dtype=dtype)
+    cdf_interval = _interpolate_monotone_lookup(
+        x=interval,
+        x_grid=r_grid,
+        y_grid=cdf,
+    )
+    cdf_left = float(cdf_interval[0].item())
+    cdf_right = float(cdf_interval[1].item())
+    if cdf_right <= cdf_left + EPS:
+        return _sample_uniform_in_interval(
+            batch_size=batch_size,
+            left=left,
+            right=right,
+            device=device,
+            dtype=dtype,
+        )
+    return _sample_from_importance_cdf(
+        batch_size=batch_size,
+        r_grid=r_grid,
+        cdf=cdf,
+        device=device,
+        dtype=dtype,
+        cdf_left=cdf_left,
+        cdf_right=cdf_right,
+    )
+
+
+def _sample_mixed_lambda_time(
+    batch_size: int,
+    device: torch.device,
+    path_family: str,
+    clock_family: str,
+    clock_beta: Optional[float],
+    signal_scale_sq: Optional[float],
+    mixed_lambda: float,
+    dtype: torch.dtype,
+) -> Tensor:
+    mixed_lambda = float(min(max(mixed_lambda, 0.0), 1.0))
+    if mixed_lambda <= 0.0:
+        return sample_strict_unit_interval(
+            batch_size=batch_size,
+            device=device,
+            dtype=dtype,
+        )
+    if mixed_lambda >= 1.0:
+        return sample_importance_weighted_time(
+            batch_size=batch_size,
+            device=device,
+            path_family=path_family,
+            clock_family=clock_family,
+            clock_beta=clock_beta,
+            signal_scale_sq=signal_scale_sq,
+            dtype=dtype,
+        )
     uniform_samples = sample_strict_unit_interval(
         batch_size=batch_size,
         device=device,
         dtype=dtype,
     )
-    sampled_r = _interpolate_monotone_inverse(
-        r=uniform_samples,
-        s_grid=r_grid,
-        r_grid=cdf,
+    importance_samples = sample_importance_weighted_time(
+        batch_size=batch_size,
+        device=device,
+        path_family=path_family,
+        clock_family=clock_family,
+        clock_beta=clock_beta,
+        signal_scale_sq=signal_scale_sq,
+        dtype=dtype,
     )
-    return clamp_time_inside_unit_interval(sampled_r)
+    selector = torch.rand(batch_size, device=device) < mixed_lambda
+    return torch.where(selector, importance_samples, uniform_samples)
+
+
+def _sample_stratified_time(
+    batch_size: int,
+    device: torch.device,
+    stratified_bins: int,
+    dtype: torch.dtype,
+) -> Tensor:
+    if stratified_bins <= 0:
+        raise ValueError(f"stratified_bins must be positive. Got {stratified_bins}.")
+    counts = [batch_size // stratified_bins for _ in range(stratified_bins)]
+    counts[-1] += batch_size - sum(counts)
+    samples = []
+    for bin_index, count in enumerate(counts):
+        left = bin_index / stratified_bins
+        right = (bin_index + 1) / stratified_bins
+        samples.append(
+            _sample_uniform_in_interval(
+                batch_size=count,
+                left=left,
+                right=right,
+                device=device,
+                dtype=dtype,
+            )
+        )
+    stacked = torch.cat(samples, dim=0)
+    return stacked[torch.randperm(stacked.shape[0], device=device)]
+
+
+def _sample_stratified_mixed_time(
+    batch_size: int,
+    device: torch.device,
+    path_family: str,
+    clock_family: str,
+    clock_beta: Optional[float],
+    signal_scale_sq: Optional[float],
+    mixed_lambda: float,
+    stratified_bins: int,
+    dtype: torch.dtype,
+) -> Tensor:
+    if stratified_bins <= 0:
+        raise ValueError(f"stratified_bins must be positive. Got {stratified_bins}.")
+    mixed_lambda = float(min(max(mixed_lambda, 0.0), 1.0))
+    counts = [batch_size // stratified_bins for _ in range(stratified_bins)]
+    counts[-1] += batch_size - sum(counts)
+    samples = []
+    for bin_index, count in enumerate(counts):
+        left = bin_index / stratified_bins
+        right = (bin_index + 1) / stratified_bins
+        uniform_samples = _sample_uniform_in_interval(
+            batch_size=count,
+            left=left,
+            right=right,
+            device=device,
+            dtype=dtype,
+        )
+        importance_samples = _sample_importance_weighted_time_in_interval(
+            batch_size=count,
+            left=left,
+            right=right,
+            path_family=path_family,
+            clock_family=clock_family,
+            clock_beta=clock_beta,
+            signal_scale_sq=signal_scale_sq,
+            device=device,
+            dtype=dtype,
+        )
+        selector = torch.rand(count, device=device) < mixed_lambda
+        samples.append(torch.where(selector, importance_samples, uniform_samples))
+    stacked = torch.cat(samples, dim=0)
+    return stacked[torch.randperm(stacked.shape[0], device=device)]
+
+
+def sample_time_by_strategy(
+    batch_size: int,
+    device: torch.device,
+    path_family: str,
+    clock_family: str,
+    clock_beta: Optional[float],
+    signal_scale_sq: Optional[float],
+    strategy: Optional[str],
+    mixed_lambda: float = 0.5,
+    stratified_bins: int = 16,
+    current_epoch: Optional[int] = None,
+    total_epochs: Optional[int] = None,
+    dtype: torch.dtype = torch.float32,
+) -> Tensor:
+    resolved_strategy = normalize_time_sampling_strategy(strategy)
+    if resolved_strategy == "uniform":
+        return sample_strict_unit_interval(batch_size=batch_size, device=device, dtype=dtype)
+    if resolved_strategy == "ds_dr_sq":
+        return sample_importance_weighted_time(
+            batch_size=batch_size,
+            device=device,
+            path_family=path_family,
+            clock_family=clock_family,
+            clock_beta=clock_beta,
+            signal_scale_sq=signal_scale_sq,
+            dtype=dtype,
+        )
+    if resolved_strategy == "mixed_lambda":
+        return _sample_mixed_lambda_time(
+            batch_size=batch_size,
+            device=device,
+            path_family=path_family,
+            clock_family=clock_family,
+            clock_beta=clock_beta,
+            signal_scale_sq=signal_scale_sq,
+            mixed_lambda=mixed_lambda,
+            dtype=dtype,
+        )
+    if resolved_strategy == "stratified":
+        return _sample_stratified_time(
+            batch_size=batch_size,
+            device=device,
+            stratified_bins=stratified_bins,
+            dtype=dtype,
+        )
+    if resolved_strategy == "stratified_mixed":
+        return _sample_stratified_mixed_time(
+            batch_size=batch_size,
+            device=device,
+            path_family=path_family,
+            clock_family=clock_family,
+            clock_beta=clock_beta,
+            signal_scale_sq=signal_scale_sq,
+            mixed_lambda=mixed_lambda,
+            stratified_bins=stratified_bins,
+            dtype=dtype,
+        )
+    if resolved_strategy == "curriculum":
+        curriculum_lambda = resolve_curriculum_lambda(
+            current_epoch=current_epoch,
+            total_epochs=total_epochs,
+        )
+        return _sample_mixed_lambda_time(
+            batch_size=batch_size,
+            device=device,
+            path_family=path_family,
+            clock_family=clock_family,
+            clock_beta=clock_beta,
+            signal_scale_sq=signal_scale_sq,
+            mixed_lambda=curriculum_lambda,
+            dtype=dtype,
+        )
+    raise AssertionError(f"Unhandled time sampling strategy {resolved_strategy}.")
 
 
 def build_continuous_batch(

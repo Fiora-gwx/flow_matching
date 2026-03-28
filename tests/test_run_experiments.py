@@ -144,6 +144,8 @@ class RunExperimentsTest(unittest.TestCase):
             self.assertEqual(rows[0]['clock_param_value'], 0.5)
             self.assertEqual(rows[0]['real_samples'], 50000)
             self.assertEqual(rows[0]['synthetic_samples'], 50000)
+            self.assertEqual(rows[0]['strategy_id'], 'A')
+            self.assertEqual(rows[0]['time_sampling_strategy'], 'uniform')
 
     def test_build_train_cmd_adds_resume_for_existing_checkpoint(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -154,25 +156,73 @@ class RunExperimentsTest(unittest.TestCase):
                 'base_config': {},
                 'experiments': [],
             }), encoding='utf-8')
-            manager = ExperimentManager(config_path)
-            checkpoint = workspace / 'checkpoint.pth'
-            cmd = manager.build_train_cmd(
-                {
-                    'dataset': 'cifar10',
-                    'data_path': './data/cifar10',
-                    'batch_size': 8,
-                    'epochs': 2,
-                    'seed': 0,
-                    'num_gpus': 1,
-                    'path_family': 'linear',
-                    'clock_family': 'uniform',
-                    'sampling_solver': 'heun2',
-                },
-                workspace / 'out',
-                resume_checkpoint=checkpoint,
-            )
+            cwd = os.getcwd()
+            os.chdir(workspace)
+            try:
+                manager = ExperimentManager(config_path)
+                checkpoint = workspace / 'checkpoint.pth'
+                cmd = manager.build_train_cmd(
+                    {
+                        'dataset': 'cifar10',
+                        'data_path': './data/cifar10',
+                        'batch_size': 8,
+                        'epochs': 2,
+                        'seed': 0,
+                        'num_gpus': 1,
+                        'path_family': 'linear',
+                        'clock_family': 'uniform',
+                        'sampling_solver': 'heun2',
+                        'model_output_type': 'velocity',
+                        'time_sampling_strategy': 'uniform',
+                    },
+                    workspace / 'out',
+                    resume_checkpoint=checkpoint,
+                )
+            finally:
+                os.chdir(cwd)
             self.assertIn(f'--resume {checkpoint}', cmd)
             self.assertIn('--eval_frequency -1', cmd)
+            self.assertIn('--model_output_type velocity', cmd)
+            self.assertIn('--time_sampling_strategy uniform', cmd)
+
+    def test_build_train_cmd_preserves_strategy_flags(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            config_path = workspace / 'config.json'
+            config_path.write_text(json.dumps({
+                'experiment_name': 'demo_group',
+                'base_config': {},
+                'experiments': [],
+            }), encoding='utf-8')
+            cwd = os.getcwd()
+            os.chdir(workspace)
+            try:
+                manager = ExperimentManager(config_path)
+                cmd = manager.build_train_cmd(
+                    {
+                        'dataset': 'cifar10',
+                        'data_path': './data/cifar10',
+                        'batch_size': 8,
+                        'epochs': 2,
+                        'seed': 0,
+                        'num_gpus': 1,
+                        'path_family': 'linear',
+                        'clock_family': 'ft_beta',
+                        'clock_beta': 0.3,
+                        'sampling_solver': 'heun2',
+                        'model_output_type': 'velocity',
+                        'time_sampling_strategy': 'stratified_mixed',
+                        'mixed_lambda': 0.7,
+                        'stratified_bins': 16,
+                    },
+                    workspace / 'out',
+                )
+            finally:
+                os.chdir(cwd)
+            self.assertIn('--model_output_type velocity', cmd)
+            self.assertIn('--time_sampling_strategy stratified_mixed', cmd)
+            self.assertIn('--mixed_lambda 0.7', cmd)
+            self.assertIn('--stratified_bins 16', cmd)
 
     def test_experiment_manager_resumes_training_when_checkpoint_exists(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -343,6 +393,8 @@ class RunExperimentsTest(unittest.TestCase):
                         'path_family': 'linear',
                         'clock_family': 'ft_beta',
                         'clock_beta': 0.5,
+                        'model_output_type': 'base_velocity',
+                        'time_sampling_strategy': 'ds_dr_sq',
                         'checkpoint_from': {
                             'artifact_group': 'ft_clock_linear_main',
                             'source_name_template': 'linear_ft_beta_{clock_beta_tag}',

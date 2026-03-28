@@ -71,20 +71,19 @@ class CFGScaledModel(ModelWrapper):
         self.signal_scale_sq = signal_scale_sq
         self.model_output_type = model_output_type
 
-    def adapt_solver_time(self, t: torch.Tensor, step_size: float) -> torch.Tensor:
+    def adapt_solver_time(
+        self,
+        t: torch.Tensor,
+        step_size: float,
+        step_count: Optional[int] = None,
+    ) -> torch.Tensor:
         adapted = t.to(dtype=torch.float32)
         if self.model_output_type == "velocity" or self.clock_family == "uniform":
             return adapted
 
-        adapted = torch.where(adapted <= TIME_EPS, torch.full_like(adapted, TIME_EPS), adapted)
-        terminal_backoff = max(TIME_EPS, 0.5 * float(step_size))
-        terminal_time = max(TIME_EPS, 1.0 - terminal_backoff)
-        adapted = torch.where(
-            adapted >= 1.0 - TIME_EPS,
-            torch.full_like(adapted, terminal_time),
-            adapted,
-        )
-        return adapted
+        resolved_step_count = max(1, int(step_count if step_count is not None else 0))
+        sample_eps = min(0.5 - TIME_EPS, max(TIME_EPS, 1.0 / float(resolved_step_count)))
+        return adapted.clamp(min=sample_eps, max=1.0 - sample_eps)
 
     def forward(
         self, x: torch.Tensor, t: torch.Tensor, cfg_scale: float, label: torch.Tensor

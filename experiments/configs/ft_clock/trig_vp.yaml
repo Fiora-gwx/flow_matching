@@ -7,6 +7,8 @@ base_config:
   num_gpus: 4
   path_family: trig_vp
   sampling_solver: heun2
+  model_output_type: base_velocity
+  time_sampling_strategy: ds_dr_sq
   cfg_scale: 0.0
   class_drop_prob: 1.0
   metrics: [fid, precision_recall, inception_score]

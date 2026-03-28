@@ -10,6 +10,8 @@ base_config:
   analysis_num_batches: 8
   analysis_num_samples: 512
   sampling_solver: heun2
+  model_output_type: base_velocity
+  time_sampling_strategy: ds_dr_sq
   eval_nfes: [10, 20, 50]
 experiments:
   - name: linear_uniform

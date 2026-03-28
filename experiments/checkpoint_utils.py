@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Dict, Optional
 
 logger = logging.getLogger(__name__)
+CURRICULUM_SIGNATURE = "warmup0.3_linear_to1"
 
 
 def _load_checkpoint_args(checkpoint_path: Path) -> Optional[Dict[str, object]]:
@@ -38,7 +39,50 @@ def _float_matches(expected: object, observed: object, tol: float = 1e-8) -> boo
         return False
 
 
-def _uses_new_nonuniform_training_semantics(
+def _normalize_strategy_semantics(payload: Dict[str, object]) -> Dict[str, object]:
+    model_output_type = str(payload.get("model_output_type", "velocity"))
+    default_sampling = "ds_dr_sq" if model_output_type == "base_velocity" else "uniform"
+    time_sampling_strategy = str(payload.get("time_sampling_strategy", default_sampling))
+    mixed_lambda = float(payload.get("mixed_lambda", 0.5))
+    stratified_bins = int(payload.get("stratified_bins", 16))
+    curriculum_signature = str(
+        payload.get(
+            "curriculum_signature",
+            CURRICULUM_SIGNATURE if time_sampling_strategy == "curriculum" else "",
+        )
+    )
+    strategy_mapping = {
+        ("velocity", "uniform"): "A",
+        ("base_velocity", "ds_dr_sq"): "B",
+        ("velocity", "mixed_lambda"): "C",
+        ("velocity", "stratified"): "D",
+        ("velocity", "stratified_mixed"): "E",
+        ("velocity", "curriculum"): "F",
+    }
+    strategy_id = strategy_mapping.get((model_output_type, time_sampling_strategy))
+    if strategy_id is None:
+        raise ValueError(
+            "Unsupported checkpoint strategy semantics: "
+            f"model_output_type={model_output_type}, "
+            f"time_sampling_strategy={time_sampling_strategy}"
+        )
+    return {
+        "model_output_type": model_output_type,
+        "time_sampling_strategy": time_sampling_strategy,
+        "mixed_lambda": mixed_lambda,
+        "stratified_bins": stratified_bins,
+        "curriculum_signature": curriculum_signature,
+        "strategy_id": strategy_id,
+    }
+
+
+def _strategy_matches(expected_spec: Dict[str, object], checkpoint_args: Dict[str, object]) -> bool:
+    expected = _normalize_strategy_semantics(expected_spec)
+    observed = _normalize_strategy_semantics(checkpoint_args)
+    return expected == observed
+
+
+def _uses_strategy_b_semantics(
     checkpoint_args: Dict[str, object],
 ) -> bool:
     return (
@@ -61,26 +105,35 @@ def _is_semantically_compatible(
     observed_clock = checkpoint_args.get("clock_family")
     observed_beta = checkpoint_args.get("clock_beta")
     observed_tag = str(checkpoint_args.get("clock_semantics_tag", ""))
+    expected_tag = str(expected_spec.get("clock_semantics_tag", ""))
 
     if expected_path is not None and observed_path != expected_path:
         return False
 
-    if expected_clock not in {None, "uniform"} and not _uses_new_nonuniform_training_semantics(
-        checkpoint_args
-    ):
+    try:
+        if not _strategy_matches(expected_spec, checkpoint_args):
+            return False
+    except ValueError:
         return False
 
     if expected_clock == "ft_beta":
         if observed_clock != "ft_beta" or not _float_matches(expected_beta, observed_beta):
             return False
         if expected_path == "linear":
-            return observed_path == "linear" and observed_tag == "ft_global_v2_linear_closed_form"
+            return (
+                observed_path == "linear"
+                and observed_tag == "ft_global_v2_linear_closed_form"
+            )
         if expected_path == "trig_vp":
             return (
                 observed_path == "trig_vp"
                 and observed_tag.startswith("ft_global_v2_trig_vp_")
             )
         return observed_tag.startswith("ft_global_v2_")
+
+    if expected_clock == "uniform" and expected_tag and observed_tag:
+        if observed_tag != expected_tag:
+            return False
 
     if expected_clock is not None and observed_clock != expected_clock:
         return False

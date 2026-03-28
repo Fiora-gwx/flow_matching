@@ -11,15 +11,19 @@ if IMAGE_ROOT not in sys.path:
 
 from training.continuous_runtime import (
     CLOCK_FAMILIES,
+    TIME_SAMPLING_STRATEGIES,
     build_continuous_batch,
     clamp_time_inside_unit_interval,
     evaluate_clock,
     evaluate_mean_terminal_error,
     evaluate_path,
+    infer_strategy_id,
     model_output_to_base_velocity,
     model_output_to_velocity,
     sample_importance_weighted_time,
+    sample_time_by_strategy,
     sample_strict_unit_interval,
+    validate_strategy_configuration,
 )
 
 
@@ -125,6 +129,130 @@ class ContinuousRuntimeTest(unittest.TestCase):
         )
         boundary = torch.tensor(1.0 - 1e-5, dtype=r.dtype)
         self.assertEqual(int((r == boundary).sum().item()), 0)
+
+    def test_all_time_sampling_strategies_avoid_endpoints(self):
+        for strategy in TIME_SAMPLING_STRATEGIES:
+            r = sample_time_by_strategy(
+                batch_size=160,
+                device=torch.device("cpu"),
+                path_family="linear",
+                clock_family="ft_beta",
+                clock_beta=0.3,
+                signal_scale_sq=1.0,
+                strategy=strategy,
+                mixed_lambda=0.5,
+                stratified_bins=16,
+                current_epoch=499,
+                total_epochs=500,
+            )
+            self.assertTrue(torch.all(r > 0.0), msg=strategy)
+            self.assertTrue(torch.all(r < 1.0), msg=strategy)
+
+    def test_stratified_sampling_covers_all_bins(self):
+        r = sample_time_by_strategy(
+            batch_size=160,
+            device=torch.device("cpu"),
+            path_family="linear",
+            clock_family="ft_beta",
+            clock_beta=0.3,
+            signal_scale_sq=1.0,
+            strategy="stratified",
+            stratified_bins=16,
+        )
+        counts = torch.bincount(torch.clamp((r * 16).long(), max=15), minlength=16)
+        self.assertTrue(torch.all(counts >= 5))
+
+    def test_mixed_lambda_preserves_nontrivial_front_mass(self):
+        r = sample_time_by_strategy(
+            batch_size=4096,
+            device=torch.device("cpu"),
+            path_family="linear",
+            clock_family="ft_beta",
+            clock_beta=0.3,
+            signal_scale_sq=1.0,
+            strategy="mixed_lambda",
+            mixed_lambda=0.5,
+        )
+        front_mass = float((r <= 0.5).to(torch.float32).mean().item())
+        self.assertGreaterEqual(front_mass, 0.25)
+
+    def test_curriculum_matches_uniform_at_epoch_zero_and_mixed_at_end(self):
+        strategy_id = infer_strategy_id("velocity", "curriculum")
+        self.assertEqual(strategy_id, "F")
+        model_output_type, strategy = validate_strategy_configuration("velocity", "curriculum")
+        self.assertEqual((model_output_type, strategy), ("velocity", "curriculum"))
+        torch.manual_seed(7)
+        uniform = sample_time_by_strategy(
+            batch_size=1024,
+            device=torch.device("cpu"),
+            path_family="linear",
+            clock_family="ft_beta",
+            clock_beta=0.3,
+            signal_scale_sq=1.0,
+            strategy="uniform",
+        )
+        torch.manual_seed(7)
+        r_start = sample_time_by_strategy(
+            batch_size=1024,
+            device=torch.device("cpu"),
+            path_family="linear",
+            clock_family="ft_beta",
+            clock_beta=0.3,
+            signal_scale_sq=1.0,
+            strategy="curriculum",
+            current_epoch=0,
+            total_epochs=500,
+        )
+        torch.manual_seed(11)
+        full_is = sample_time_by_strategy(
+            batch_size=1024,
+            device=torch.device("cpu"),
+            path_family="linear",
+            clock_family="ft_beta",
+            clock_beta=0.3,
+            signal_scale_sq=1.0,
+            strategy="mixed_lambda",
+            mixed_lambda=1.0,
+        )
+        torch.manual_seed(11)
+        r_end = sample_time_by_strategy(
+            batch_size=1024,
+            device=torch.device("cpu"),
+            path_family="linear",
+            clock_family="ft_beta",
+            clock_beta=0.3,
+            signal_scale_sq=1.0,
+            strategy="curriculum",
+            current_epoch=499,
+            total_epochs=500,
+        )
+        self.assertTrue(torch.allclose(r_start, uniform))
+        self.assertTrue(torch.allclose(r_end, full_is))
+
+    def test_low_beta_terminal_ds_dr_is_safe_at_solver_backoff(self):
+        clock = evaluate_clock(
+            r=torch.tensor([0.75], dtype=torch.float32),
+            clock_family="ft_beta",
+            clock_beta=0.3,
+            path_family="linear",
+            signal_scale_sq=1.0,
+        )
+        self.assertLess(float(clock.ds_dr.item()), 10.0)
+
+    def test_stratified_mixed_interval_sampling_avoids_endpoints(self):
+        r = sample_time_by_strategy(
+            batch_size=512,
+            device=torch.device("cpu"),
+            path_family="linear",
+            clock_family="ft_beta",
+            clock_beta=0.3,
+            signal_scale_sq=1.0,
+            strategy="stratified_mixed",
+            mixed_lambda=0.5,
+            stratified_bins=16,
+        )
+        self.assertTrue(torch.all(r > 0.0))
+        self.assertTrue(torch.all(r < 1.0))
 
     def test_model_output_conversion_helpers_are_inverses(self):
         ds_dr = torch.tensor([0.5, 2.0], dtype=torch.float32)

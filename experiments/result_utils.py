@@ -24,6 +24,11 @@ RESULT_FIELDS = [
     "value",
     "status",
     "artifact_group",
+    "strategy_id",
+    "model_output_type",
+    "time_sampling_strategy",
+    "mixed_lambda",
+    "stratified_bins",
 ]
 
 NUMERIC_FIELDS = {
@@ -38,6 +43,8 @@ NUMERIC_FIELDS = {
 
 OPTIONAL_NUMERIC_FIELDS = {
     "clock_param_value": float,
+    "mixed_lambda": float,
+    "stratified_bins": int,
 }
 METRIC_OUTPUTS = {
     "fid": ("fid",),
@@ -130,6 +137,7 @@ def filter_rows(
     artifact_group: Optional[str] = None,
     dataset: Optional[str] = None,
     path_family: Optional[str] = None,
+    strategy_id: Optional[str] = None,
 ) -> List[Dict[str, object]]:
     filtered = []
     for row in rows:
@@ -142,6 +150,8 @@ def filter_rows(
         if dataset is not None and row.get("dataset") != dataset:
             continue
         if path_family is not None and row.get("path_family") != path_family:
+            continue
+        if strategy_id is not None and row.get("strategy_id") != strategy_id:
             continue
         filtered.append(row)
     return filtered
@@ -170,6 +180,7 @@ def baseline_vs_best_beta(
         key = (
             row["dataset"],
             row["path_family"],
+            row.get("strategy_id", ""),
             row["solver"],
             row["checkpoint_epoch"],
             row["nfe"],
@@ -191,6 +202,7 @@ def baseline_vs_best_beta(
             {
                 "dataset": baseline["dataset"],
                 "path_family": baseline["path_family"],
+                "strategy_id": baseline.get("strategy_id", ""),
                 "solver": baseline["solver"],
                 "checkpoint_epoch": baseline["checkpoint_epoch"],
                 "nfe": baseline["nfe"],
@@ -207,7 +219,13 @@ def baseline_vs_best_beta(
         )
     return sorted(
         table,
-        key=lambda row: (row["dataset"], row["path_family"], row["checkpoint_epoch"], row["nfe"]),
+        key=lambda row: (
+            row["dataset"],
+            row["path_family"],
+            row.get("strategy_id", ""),
+            row["checkpoint_epoch"],
+            row["nfe"],
+        ),
     )
 
 
@@ -315,6 +333,7 @@ def resolve_best_beta_reference(
         artifact_group=reference.get("artifact_group"),
         dataset=reference.get("dataset"),
         path_family=reference.get("path_family"),
+        strategy_id=reference.get("strategy_id"),
     )
     solver = reference.get("solver")
     if solver is not None:
@@ -322,6 +341,16 @@ def resolve_best_beta_reference(
     checkpoint_epoch = reference.get("checkpoint_epoch")
     if checkpoint_epoch is not None:
         rows = [row for row in rows if row.get("checkpoint_epoch") == checkpoint_epoch]
+    model_output_type = reference.get("model_output_type")
+    if model_output_type is not None:
+        rows = [row for row in rows if row.get("model_output_type") == model_output_type]
+    time_sampling_strategy = reference.get("time_sampling_strategy")
+    if time_sampling_strategy is not None:
+        rows = [
+            row
+            for row in rows
+            if row.get("time_sampling_strategy") == time_sampling_strategy
+        ]
     clock_family = reference.get("clock_family")
     if clock_family is not None:
         if clock_family == "ft_beta" and reference.get("path_family") == "linear":

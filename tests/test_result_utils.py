@@ -20,7 +20,19 @@ from experiments.result_utils import (
 )
 
 
-def make_row(run_id, seed, clock_family, clock_param_value, value, nfe=10):
+def make_row(
+    run_id,
+    seed,
+    clock_family,
+    clock_param_value,
+    value,
+    nfe=10,
+    strategy_id='A',
+    model_output_type='velocity',
+    time_sampling_strategy='uniform',
+    mixed_lambda='',
+    stratified_bins='',
+):
     return {
         'run_id': run_id,
         'exp_name': f'exp_{clock_family}_{clock_param_value}',
@@ -41,6 +53,11 @@ def make_row(run_id, seed, clock_family, clock_param_value, value, nfe=10):
         'value': value,
         'status': 'completed',
         'artifact_group': 'ft_clock_linear_main',
+        'strategy_id': strategy_id,
+        'model_output_type': model_output_type,
+        'time_sampling_strategy': time_sampling_strategy,
+        'mixed_lambda': mixed_lambda,
+        'stratified_bins': stratified_bins,
     }
 
 

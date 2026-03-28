@@ -77,6 +77,10 @@ class CheckpointUtilsTest(unittest.TestCase):
                     'path_family': 'linear',
                     'clock_family': 'ft_beta',
                     'clock_beta': 0.5,
+                    'model_output_type': 'base_velocity',
+                    'time_sampling_strategy': 'ds_dr_sq',
+                    'mixed_lambda': 0.5,
+                    'stratified_bins': 16,
                 },
                 workspace_root=root,
             )
@@ -111,6 +115,10 @@ class CheckpointUtilsTest(unittest.TestCase):
                     'path_family': 'linear',
                     'clock_family': 'ft_beta',
                     'clock_beta': 0.5,
+                    'model_output_type': 'base_velocity',
+                    'time_sampling_strategy': 'ds_dr_sq',
+                    'mixed_lambda': 0.5,
+                    'stratified_bins': 16,
                 },
                 workspace_root=root,
             )
@@ -145,6 +153,10 @@ class CheckpointUtilsTest(unittest.TestCase):
                     'path_family': 'trig_vp',
                     'clock_family': 'ft_beta',
                     'clock_beta': 0.5,
+                    'model_output_type': 'base_velocity',
+                    'time_sampling_strategy': 'ds_dr_sq',
+                    'mixed_lambda': 0.5,
+                    'stratified_bins': 16,
                 },
                 workspace_root=root,
             )

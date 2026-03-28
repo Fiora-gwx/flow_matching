@@ -32,6 +32,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 LEGACY_CONFIG_KEYS = {"alpha", "use_ft_eqm", "use_nt_ft_fm", "importance_weighting"}
 LEGACY_CLOCK_FAMILIES = {"ft_linear_beta", "ft_vp_beta"}
+CURRICULUM_SIGNATURE = "warmup0.3_linear_to1"
 
 
 def load_config(config_path: Path) -> Dict:
@@ -128,6 +129,66 @@ def resolve_dynamic_spec_fields(spec: Dict, workspace_root: Optional[Path] = Non
     return resolved
 
 
+def _resolve_strategy_fields(spec: Dict) -> Dict:
+    model_output_type = str(spec.get("model_output_type", "velocity"))
+    time_sampling_strategy = str(spec.get("time_sampling_strategy", "uniform"))
+    mixed_lambda = float(spec.get("mixed_lambda", 0.5))
+    stratified_bins = int(spec.get("stratified_bins", 16))
+    curriculum_signature = str(
+        spec.get(
+            "curriculum_signature",
+            CURRICULUM_SIGNATURE if time_sampling_strategy == "curriculum" else "",
+        )
+    )
+    strategy_mapping = {
+        ("velocity", "uniform"): "A",
+        ("base_velocity", "ds_dr_sq"): "B",
+        ("velocity", "mixed_lambda"): "C",
+        ("velocity", "stratified"): "D",
+        ("velocity", "stratified_mixed"): "E",
+        ("velocity", "curriculum"): "F",
+    }
+    strategy_id = strategy_mapping.get((model_output_type, time_sampling_strategy))
+    if strategy_id is None:
+        raise ValueError(
+            "Unsupported ablation strategy semantics: "
+            f"model_output_type={model_output_type}, "
+            f"time_sampling_strategy={time_sampling_strategy}"
+        )
+    resolved = dict(spec)
+    resolved["model_output_type"] = model_output_type
+    resolved["time_sampling_strategy"] = time_sampling_strategy
+    resolved["mixed_lambda"] = mixed_lambda
+    resolved["stratified_bins"] = stratified_bins
+    resolved["curriculum_signature"] = curriculum_signature
+    provided_strategy_id = spec.get("strategy_id")
+    resolved["strategy_id"] = (
+        strategy_id if provided_strategy_id in {"", None} else str(provided_strategy_id)
+    )
+    return resolved
+
+
+def _row_float_or_default(row: Dict[str, object], field: str, default: float) -> float:
+    value = row.get(field, default)
+    return default if value in {"", None} else float(value)
+
+
+def _row_int_or_default(row: Dict[str, object], field: str, default: int) -> int:
+    value = row.get(field, default)
+    return default if value in {"", None} else int(value)
+
+
+def _row_strategy_fields(row: Dict[str, object]) -> Dict[str, object]:
+    normalized = dict(row)
+    normalized["model_output_type"] = row.get("model_output_type") or "velocity"
+    normalized["time_sampling_strategy"] = row.get("time_sampling_strategy") or (
+        "ds_dr_sq" if normalized["model_output_type"] == "base_velocity" else "uniform"
+    )
+    normalized["mixed_lambda"] = _row_float_or_default(row, "mixed_lambda", 0.5)
+    normalized["stratified_bins"] = _row_int_or_default(row, "stratified_bins", 16)
+    return _resolve_strategy_fields(normalized)
+
+
 class ExperimentManager:
     def __init__(self, config_path: Path):
         self.config_path = config_path
@@ -163,6 +224,10 @@ class ExperimentManager:
             f"--data_path {spec['data_path']}",
             f"--batch_size {spec['batch_size']}",
             f"--output_dir {output_dir}",
+            f"--model_output_type {spec.get('model_output_type', 'velocity')}",
+            f"--time_sampling_strategy {spec.get('time_sampling_strategy', 'uniform')}",
+            f"--mixed_lambda {spec.get('mixed_lambda', 0.5)}",
+            f"--stratified_bins {spec.get('stratified_bins', 16)}",
         ]
         if spec.get("use_ema", False):
             flags.append("--use_ema")
@@ -275,6 +340,11 @@ class ExperimentManager:
                     "value": float(value),
                     "status": "completed",
                     "artifact_group": spec.get("artifact_group", self.exp_group_name),
+                    "strategy_id": spec.get("strategy_id", ""),
+                    "model_output_type": spec.get("model_output_type", "velocity"),
+                    "time_sampling_strategy": spec.get("time_sampling_strategy", "uniform"),
+                    "mixed_lambda": spec.get("mixed_lambda", 0.5),
+                    "stratified_bins": spec.get("stratified_bins", 16),
                 }
             )
         return rows
@@ -293,6 +363,7 @@ class ExperimentManager:
         matching_rows = [
             row
             for row in rows
+            if _row_strategy_fields(row)
             if row.get("exp_name") == spec["name"]
             and row.get("dataset") == spec["dataset"]
             and row.get("seed") == spec.get("seed", 0)
@@ -306,6 +377,11 @@ class ExperimentManager:
             and row.get("nfe") == nfe
             and row.get("status") == "completed"
             and row.get("artifact_group") == spec.get("artifact_group", self.exp_group_name)
+            and _row_strategy_fields(row).get("strategy_id") == spec.get("strategy_id", "")
+            and _row_strategy_fields(row).get("model_output_type") == spec.get("model_output_type", "velocity")
+            and _row_strategy_fields(row).get("time_sampling_strategy") == spec.get("time_sampling_strategy", "uniform")
+            and float(_row_strategy_fields(row).get("mixed_lambda", 0.5)) == float(spec.get("mixed_lambda", 0.5))
+            and int(_row_strategy_fields(row).get("stratified_bins", 16)) == int(spec.get("stratified_bins", 16))
         ]
         return sorted({str(row["metric"]) for row in matching_rows})
 
@@ -344,6 +420,7 @@ class ExperimentManager:
             spec.setdefault("eval_epochs", [spec["epochs"] - 1])
             spec.setdefault("eval_nfes", [base_config.get("eval_nfe", 50)])
             spec.setdefault("artifact_group", self.exp_group_name)
+            spec = _resolve_strategy_fields(spec)
 
             exp_dir = self.base_dir / spec["dataset"] / spec["name"]
             exp_dir.mkdir(parents=True, exist_ok=True)

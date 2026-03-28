@@ -37,13 +37,28 @@ class LinearModel(DummyModel):
         return self.rate * x
 
 
+class RecordingModel(DummyModel):
+    def __init__(self):
+        super().__init__()
+        self.queried_times = []
+
+    def __call__(self, x, t, **kwargs):
+        self.nfe += 1
+        self.queried_times.append(t.detach().clone())
+        return torch.ones_like(x)
+
+
 class EndpointAdaptiveModel(DummyModel):
     def __init__(self):
         super().__init__()
         self.queried_times = []
 
-    def adapt_solver_time(self, t, step_size):
-        return t.clamp(min=1e-5, max=1.0 - 0.5 * float(step_size))
+    def adapt_solver_time(self, t, step_size, step_count=None):
+        del step_size
+        if step_count is None:
+            return t
+        sample_eps = 1.0 / float(step_count)
+        return t.clamp(min=sample_eps, max=1.0 - sample_eps)
 
     def __call__(self, x, t, **kwargs):
         self.nfe += 1
@@ -99,7 +114,7 @@ class FixedStepSolverTest(unittest.TestCase):
     def test_heun2_uses_adapted_terminal_stage_time(self):
         model = EndpointAdaptiveModel()
         x_init = torch.zeros(1, 1)
-        solve_fixed_budget(model, x_init, 'heun2', 4)
+        solve_fixed_budget(model, x_init, 'heun2', 8)
         queried_times = torch.cat(model.queried_times)
         self.assertTrue(torch.all(queried_times < 1.0))
         self.assertAlmostEqual(float(queried_times[-1]), 0.75, places=6)
@@ -107,10 +122,17 @@ class FixedStepSolverTest(unittest.TestCase):
     def test_rk3_uses_adapted_terminal_stage_time(self):
         model = EndpointAdaptiveModel()
         x_init = torch.zeros(1, 1)
-        solve_fixed_budget(model, x_init, 'rk3', 6)
+        solve_fixed_budget(model, x_init, 'rk3', 12)
         queried_times = torch.cat(model.queried_times)
         self.assertTrue(torch.all(queried_times < 1.0))
         self.assertAlmostEqual(float(queried_times[-1]), 0.75, places=6)
+
+    def test_velocity_model_without_adapt_hook_keeps_terminal_time(self):
+        model = RecordingModel()
+        x_init = torch.zeros(1, 1)
+        solve_fixed_budget(model, x_init, 'heun2', 8)
+        queried_times = torch.cat(model.queried_times)
+        self.assertAlmostEqual(float(queried_times[-1]), 1.0, places=6)
 
 
 if __name__ == '__main__':

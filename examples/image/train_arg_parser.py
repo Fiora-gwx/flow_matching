@@ -19,6 +19,15 @@ CLOCK_FAMILIES = [
 ]
 SAMPLING_SOLVERS = ["euler", "heun2", "rk3", "stork4"]
 SUPPORTED_METRICS = ["fid", "precision_recall", "inception_score"]
+MODEL_OUTPUT_TYPES = ["velocity", "base_velocity"]
+TIME_SAMPLING_STRATEGIES = [
+    "uniform",
+    "ds_dr_sq",
+    "mixed_lambda",
+    "stratified",
+    "stratified_mixed",
+    "curriculum",
+]
 
 
 def get_args_parser():
@@ -153,6 +162,30 @@ def get_args_parser():
         default=512,
         type=int,
         help="Number of synthetic samples used by analysis scripts.",
+    )
+    parser.add_argument(
+        "--model_output_type",
+        default="velocity",
+        choices=MODEL_OUTPUT_TYPES,
+        help="Whether the model predicts the true velocity or the base velocity.",
+    )
+    parser.add_argument(
+        "--time_sampling_strategy",
+        default="uniform",
+        choices=TIME_SAMPLING_STRATEGIES,
+        help="Training-time strategy for sampling the reparameterized time r.",
+    )
+    parser.add_argument(
+        "--mixed_lambda",
+        default=0.5,
+        type=float,
+        help="Mixture coefficient used by mixed_lambda and stratified_mixed strategies.",
+    )
+    parser.add_argument(
+        "--stratified_bins",
+        default=16,
+        type=int,
+        help="Number of equal-width bins used by stratified sampling strategies.",
     )
 
     parser.add_argument(

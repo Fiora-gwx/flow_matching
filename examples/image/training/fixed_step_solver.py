@@ -16,10 +16,15 @@ STEP_NFE_COST = {
 SHARED_FAIR_BUDGETS = frozenset({6, 12, 18, 24, 30, 48, 96})
 
 
-def _adapt_model_time(velocity_model, t: Tensor, step_size: float) -> Tensor:
+def _adapt_model_time(
+    velocity_model,
+    t: Tensor,
+    step_size: float,
+    step_count: int,
+) -> Tensor:
     adapt = getattr(velocity_model, "adapt_solver_time", None)
     if callable(adapt):
-        return adapt(t=t, step_size=step_size)
+        return adapt(t=t, step_size=step_size, step_count=step_count)
     return t
 
 
@@ -133,6 +138,7 @@ def solve_fixed_budget(
                     velocity_model=velocity_model,
                     t=t_start,
                     step_size=t_end_value - t_start_value,
+                    step_count=step_count,
                 ),
                 **model_extras,
             )
@@ -208,6 +214,7 @@ def solve_fixed_budget(
                     velocity_model=velocity_model,
                     t=t_start,
                     step_size=step_size,
+                    step_count=step_count,
                 ),
                 **model_extras,
             )
@@ -219,6 +226,7 @@ def solve_fixed_budget(
                     velocity_model=velocity_model,
                     t=t_start,
                     step_size=step_size,
+                    step_count=step_count,
                 ),
                 **model_extras,
             )
@@ -235,6 +243,7 @@ def solve_fixed_budget(
                     velocity_model=velocity_model,
                     t=t_end,
                     step_size=step_size,
+                    step_count=step_count,
                 ),
                 **model_extras,
             )
@@ -246,6 +255,7 @@ def solve_fixed_budget(
                     velocity_model=velocity_model,
                     t=t_start,
                     step_size=step_size,
+                    step_count=step_count,
                 ),
                 **model_extras,
             )
@@ -262,6 +272,7 @@ def solve_fixed_budget(
                     velocity_model=velocity_model,
                     t=t_mid,
                     step_size=step_size,
+                    step_count=step_count,
                 ),
                 **model_extras,
             )
@@ -278,6 +289,7 @@ def solve_fixed_budget(
                     velocity_model=velocity_model,
                     t=t_end,
                     step_size=step_size,
+                    step_count=step_count,
                 ),
                 **model_extras,
             )
