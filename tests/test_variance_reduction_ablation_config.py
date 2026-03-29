@@ -1,0 +1,27 @@
+import unittest
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+CONFIG_PATH = (
+    ROOT
+    / "experiments"
+    / "configs"
+    / "ft_clock"
+    / "variance_reduction_ablation.yaml"
+)
+
+
+class VarianceReductionAblationConfigTest(unittest.TestCase):
+    def test_stage1_ablation_excludes_rk3(self):
+        source = CONFIG_PATH.read_text(encoding="utf-8")
+        self.assertNotIn("sampling_solver: rk3", source)
+
+    def test_strategy_a_non_euler_solvers_reuse_euler_checkpoint(self):
+        source = CONFIG_PATH.read_text(encoding="utf-8")
+        self.assertEqual(source.count("source_name_template: linear_ft_beta_{clock_beta_tag}_strategy_A_euler"), 6)
+        self.assertEqual(source.count("checkpoint_from:"), 6)
+
+
+if __name__ == "__main__":
+    unittest.main()
