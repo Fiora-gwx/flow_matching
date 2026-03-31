@@ -588,8 +588,9 @@ def sample_strict_unit_interval(
     batch_size: int,
     device: torch.device,
     dtype: torch.dtype = torch.float32,
+    generator: Optional[torch.Generator] = None,
 ) -> Tensor:
-    r = torch.rand(batch_size, device=device, dtype=dtype)
+    r = torch.rand(batch_size, device=device, dtype=dtype, generator=generator)
     return clamp_time_inside_unit_interval(r * (1.0 - 2.0 * TIME_EPS) + TIME_EPS)
 
 
@@ -599,6 +600,7 @@ def _sample_uniform_in_interval(
     right: float,
     device: torch.device,
     dtype: torch.dtype,
+    generator: Optional[torch.Generator],
 ) -> Tensor:
     if batch_size <= 0:
         return torch.empty(0, device=device, dtype=dtype)
@@ -606,7 +608,12 @@ def _sample_uniform_in_interval(
     right = float(right)
     if not (0.0 <= left < right <= 1.0):
         raise ValueError(f"Invalid interval [{left}, {right}] for time sampling.")
-    samples = sample_strict_unit_interval(batch_size=batch_size, device=device, dtype=dtype)
+    samples = sample_strict_unit_interval(
+        batch_size=batch_size,
+        device=device,
+        dtype=dtype,
+        generator=generator,
+    )
     return left + (right - left) * samples
 
 
@@ -618,6 +625,7 @@ def _sample_from_importance_cdf(
     dtype: torch.dtype,
     cdf_left: float = 0.0,
     cdf_right: float = 1.0,
+    generator: Optional[torch.Generator] = None,
 ) -> Tensor:
     if batch_size <= 0:
         return torch.empty(0, device=device, dtype=dtype)
@@ -627,6 +635,7 @@ def _sample_from_importance_cdf(
         batch_size=batch_size,
         device=device,
         dtype=dtype,
+        generator=generator,
     )
     if cdf_left != 0.0 or cdf_right != 1.0:
         uniform_samples = cdf_left + (cdf_right - cdf_left) * uniform_samples
@@ -646,9 +655,15 @@ def sample_importance_weighted_time(
     clock_beta: Optional[float],
     signal_scale_sq: Optional[float],
     dtype: torch.dtype = torch.float32,
+    generator: Optional[torch.Generator] = None,
 ) -> Tensor:
     if clock_family == "uniform":
-        return sample_strict_unit_interval(batch_size=batch_size, device=device, dtype=dtype)
+        return sample_strict_unit_interval(
+            batch_size=batch_size,
+            device=device,
+            dtype=dtype,
+            generator=generator,
+        )
 
     r_grid, cdf = _build_clock_importance_cdf(
         clock_family=clock_family,
@@ -664,6 +679,7 @@ def sample_importance_weighted_time(
         cdf=cdf,
         device=device,
         dtype=dtype,
+        generator=generator,
     )
 
 
@@ -677,6 +693,7 @@ def _sample_importance_weighted_time_in_interval(
     signal_scale_sq: Optional[float],
     device: torch.device,
     dtype: torch.dtype,
+    generator: Optional[torch.Generator],
 ) -> Tensor:
     if batch_size <= 0:
         return torch.empty(0, device=device, dtype=dtype)
@@ -687,6 +704,7 @@ def _sample_importance_weighted_time_in_interval(
             right=right,
             device=device,
             dtype=dtype,
+            generator=generator,
         )
     r_grid, cdf = _build_clock_importance_cdf(
         clock_family=clock_family,
@@ -711,6 +729,7 @@ def _sample_importance_weighted_time_in_interval(
             right=right,
             device=device,
             dtype=dtype,
+            generator=generator,
         )
     return _sample_from_importance_cdf(
         batch_size=batch_size,
@@ -720,6 +739,7 @@ def _sample_importance_weighted_time_in_interval(
         dtype=dtype,
         cdf_left=cdf_left,
         cdf_right=cdf_right,
+        generator=generator,
     )
 
 
@@ -732,6 +752,7 @@ def _sample_mixed_lambda_time(
     signal_scale_sq: Optional[float],
     mixed_lambda: float,
     dtype: torch.dtype,
+    generator: Optional[torch.Generator],
 ) -> Tensor:
     mixed_lambda = float(min(max(mixed_lambda, 0.0), 1.0))
     if mixed_lambda <= 0.0:
@@ -739,6 +760,7 @@ def _sample_mixed_lambda_time(
             batch_size=batch_size,
             device=device,
             dtype=dtype,
+            generator=generator,
         )
     if mixed_lambda >= 1.0:
         return sample_importance_weighted_time(
@@ -749,11 +771,13 @@ def _sample_mixed_lambda_time(
             clock_beta=clock_beta,
             signal_scale_sq=signal_scale_sq,
             dtype=dtype,
+            generator=generator,
         )
     uniform_samples = sample_strict_unit_interval(
         batch_size=batch_size,
         device=device,
         dtype=dtype,
+        generator=generator,
     )
     importance_samples = sample_importance_weighted_time(
         batch_size=batch_size,
@@ -763,8 +787,9 @@ def _sample_mixed_lambda_time(
         clock_beta=clock_beta,
         signal_scale_sq=signal_scale_sq,
         dtype=dtype,
+        generator=generator,
     )
-    selector = torch.rand(batch_size, device=device) < mixed_lambda
+    selector = torch.rand(batch_size, device=device, generator=generator) < mixed_lambda
     return torch.where(selector, importance_samples, uniform_samples)
 
 
@@ -773,6 +798,7 @@ def _sample_stratified_time(
     device: torch.device,
     stratified_bins: int,
     dtype: torch.dtype,
+    generator: Optional[torch.Generator],
 ) -> Tensor:
     if stratified_bins <= 0:
         raise ValueError(f"stratified_bins must be positive. Got {stratified_bins}.")
@@ -789,10 +815,11 @@ def _sample_stratified_time(
                 right=right,
                 device=device,
                 dtype=dtype,
+                generator=generator,
             )
         )
     stacked = torch.cat(samples, dim=0)
-    return stacked[torch.randperm(stacked.shape[0], device=device)]
+    return stacked[torch.randperm(stacked.shape[0], device=device, generator=generator)]
 
 
 def _sample_stratified_mixed_time(
@@ -805,6 +832,7 @@ def _sample_stratified_mixed_time(
     mixed_lambda: float,
     stratified_bins: int,
     dtype: torch.dtype,
+    generator: Optional[torch.Generator],
 ) -> Tensor:
     if stratified_bins <= 0:
         raise ValueError(f"stratified_bins must be positive. Got {stratified_bins}.")
@@ -821,6 +849,7 @@ def _sample_stratified_mixed_time(
             right=right,
             device=device,
             dtype=dtype,
+            generator=generator,
         )
         importance_samples = _sample_importance_weighted_time_in_interval(
             batch_size=count,
@@ -832,11 +861,12 @@ def _sample_stratified_mixed_time(
             signal_scale_sq=signal_scale_sq,
             device=device,
             dtype=dtype,
+            generator=generator,
         )
-        selector = torch.rand(count, device=device) < mixed_lambda
+        selector = torch.rand(count, device=device, generator=generator) < mixed_lambda
         samples.append(torch.where(selector, importance_samples, uniform_samples))
     stacked = torch.cat(samples, dim=0)
-    return stacked[torch.randperm(stacked.shape[0], device=device)]
+    return stacked[torch.randperm(stacked.shape[0], device=device, generator=generator)]
 
 
 def sample_time_by_strategy(
@@ -852,10 +882,16 @@ def sample_time_by_strategy(
     current_epoch: Optional[int] = None,
     total_epochs: Optional[int] = None,
     dtype: torch.dtype = torch.float32,
+    generator: Optional[torch.Generator] = None,
 ) -> Tensor:
     resolved_strategy = normalize_time_sampling_strategy(strategy)
     if resolved_strategy == "uniform":
-        return sample_strict_unit_interval(batch_size=batch_size, device=device, dtype=dtype)
+        return sample_strict_unit_interval(
+            batch_size=batch_size,
+            device=device,
+            dtype=dtype,
+            generator=generator,
+        )
     if resolved_strategy == "ds_dr_sq":
         return sample_importance_weighted_time(
             batch_size=batch_size,
@@ -865,6 +901,7 @@ def sample_time_by_strategy(
             clock_beta=clock_beta,
             signal_scale_sq=signal_scale_sq,
             dtype=dtype,
+            generator=generator,
         )
     if resolved_strategy == "mixed_lambda":
         return _sample_mixed_lambda_time(
@@ -876,6 +913,7 @@ def sample_time_by_strategy(
             signal_scale_sq=signal_scale_sq,
             mixed_lambda=mixed_lambda,
             dtype=dtype,
+            generator=generator,
         )
     if resolved_strategy == "stratified":
         return _sample_stratified_time(
@@ -883,6 +921,7 @@ def sample_time_by_strategy(
             device=device,
             stratified_bins=stratified_bins,
             dtype=dtype,
+            generator=generator,
         )
     if resolved_strategy == "stratified_mixed":
         return _sample_stratified_mixed_time(
@@ -895,6 +934,7 @@ def sample_time_by_strategy(
             mixed_lambda=mixed_lambda,
             stratified_bins=stratified_bins,
             dtype=dtype,
+            generator=generator,
         )
     if resolved_strategy == "curriculum":
         curriculum_lambda = resolve_curriculum_lambda(
@@ -910,6 +950,7 @@ def sample_time_by_strategy(
             signal_scale_sq=signal_scale_sq,
             mixed_lambda=curriculum_lambda,
             dtype=dtype,
+            generator=generator,
         )
     raise AssertionError(f"Unhandled time sampling strategy {resolved_strategy}.")
 

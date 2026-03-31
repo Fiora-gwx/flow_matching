@@ -28,6 +28,15 @@ MASK_TOKEN = 256
 PRINT_FREQUENCY = 50
 
 
+def _make_generator(device: torch.device, seed: int) -> torch.Generator:
+    if device.type == "cuda":
+        generator = torch.Generator(device=device)
+    else:
+        generator = torch.Generator()
+    generator.manual_seed(int(seed))
+    return generator
+
+
 def train_one_epoch(
     model: torch.nn.Module,
     data_loader: Iterable,
@@ -51,6 +60,11 @@ def train_one_epoch(
     else:
         path = None
 
+    base_seed = int(torch.initial_seed()) + int(epoch) * 1000003
+    label_generator = _make_generator(device=device, seed=base_seed + 11)
+    time_generator = _make_generator(device=device, seed=base_seed + 23)
+    noise_generator = _make_generator(device=device, seed=base_seed + 37)
+
     for data_iter_step, (samples, labels) in enumerate(data_loader):
         if data_iter_step % accum_iter == 0:
             optimizer.zero_grad()
@@ -61,14 +75,14 @@ def train_one_epoch(
         samples = samples.to(device, non_blocking=True)
         labels = labels.to(device, non_blocking=True)
 
-        if torch.rand(1) < args.class_drop_prob:
+        if torch.rand(1, device=device, generator=label_generator).item() < args.class_drop_prob:
             conditioning = {}
         else:
             conditioning = {"label": labels}
 
         if args.discrete_flow_matching:
             samples = (samples * 255.0).to(torch.long)
-            t = torch.rand(samples.shape[0], device=device)
+            t = torch.rand(samples.shape[0], device=device, generator=time_generator)
             x_0 = torch.full_like(samples, fill_value=MASK_TOKEN)
             path_sample = path.sample(t=t, x_0=x_0, x_1=samples)
             logits = model(path_sample.x_t, t=t, extra=conditioning)
@@ -77,7 +91,12 @@ def train_one_epoch(
             ).mean()
         else:
             samples = samples * 2.0 - 1.0
-            noise = torch.randn_like(samples)
+            noise = torch.randn(
+                samples.shape,
+                device=device,
+                dtype=samples.dtype,
+                generator=noise_generator,
+            )
             r = sample_time_by_strategy(
                 batch_size=samples.shape[0],
                 device=device,
@@ -90,6 +109,7 @@ def train_one_epoch(
                 stratified_bins=getattr(args, "stratified_bins", 16),
                 current_epoch=epoch,
                 total_epochs=getattr(args, "epochs", None),
+                generator=time_generator,
             )
             continuous_batch = build_continuous_batch(
                 x_1=samples,

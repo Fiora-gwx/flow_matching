@@ -134,6 +134,36 @@ class FixedStepSolverTest(unittest.TestCase):
         queried_times = torch.cat(model.queried_times)
         self.assertAlmostEqual(float(queried_times[-1]), 1.0, places=6)
 
+    def test_euler_accepts_nonuniform_time_grid(self):
+        model = RecordingModel()
+        x_init = torch.zeros(1, 1)
+        time_grid = torch.tensor([0.0, 0.1, 0.4, 1.0], dtype=torch.float32)
+        result = solve_fixed_budget(
+            model,
+            x_init,
+            'euler',
+            3,
+            time_grid=time_grid,
+        )
+        queried_times = torch.cat(model.queried_times)
+        self.assertTrue(torch.allclose(result.time_grid, time_grid))
+        self.assertTrue(torch.allclose(queried_times, time_grid[:-1]))
+
+    def test_stork4_accepts_nonuniform_time_grid(self):
+        model = DummyModel()
+        x_init = torch.zeros(1, 1)
+        time_grid = torch.tensor([0.0, 0.05, 0.25, 1.0], dtype=torch.float32)
+        result = solve_fixed_budget(
+            model,
+            x_init,
+            'stork4',
+            3,
+            time_grid=time_grid,
+        )
+        self.assertTrue(torch.allclose(result.time_grid, time_grid))
+        self.assertEqual(result.step_count, 3)
+        self.assertGreater(result.solver_stats['virtual_stage_count'], 0)
+
 
 if __name__ == '__main__':
     unittest.main()

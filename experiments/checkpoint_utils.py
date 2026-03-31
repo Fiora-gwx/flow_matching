@@ -28,6 +28,14 @@ def load_checkpoint_args(checkpoint_path: Path) -> Dict[str, object]:
     return {} if payload is None else payload
 
 
+def checkpoint_matches_spec(
+    checkpoint_path: Path,
+    spec: Dict[str, object],
+) -> bool:
+    checkpoint_args = _load_checkpoint_args(checkpoint_path)
+    return _is_semantically_compatible(spec, checkpoint_args)
+
+
 def _float_matches(expected: object, observed: object, tol: float = 1e-8) -> bool:
     if expected is None:
         return True

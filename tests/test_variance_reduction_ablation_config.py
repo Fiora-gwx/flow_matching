@@ -13,6 +13,16 @@ CONFIG_PATH = (
 
 
 class VarianceReductionAblationConfigTest(unittest.TestCase):
+    def test_stage1_ablation_keeps_legacy_baseline_conditioning(self):
+        source = CONFIG_PATH.read_text(encoding="utf-8")
+        self.assertIn("cfg_scale: 0.2", source)
+        self.assertIn("class_drop_prob: 0.2", source)
+
+    def test_stage1_ablation_uses_two_gpus_with_accumulation_to_preserve_effective_batch(self):
+        source = CONFIG_PATH.read_text(encoding="utf-8")
+        self.assertIn("num_gpus: 2", source)
+        self.assertIn("accum_iter: 2", source)
+
     def test_stage1_ablation_excludes_rk3(self):
         source = CONFIG_PATH.read_text(encoding="utf-8")
         self.assertNotIn("sampling_solver: rk3", source)

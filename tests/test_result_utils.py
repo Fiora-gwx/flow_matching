@@ -9,6 +9,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from experiments.result_utils import (
+    BASE_RESULT_FIELDS,
     RESULT_FIELDS,
     aggregate_seed_rows,
     append_result_rows,
@@ -154,6 +155,22 @@ class ResultUtilsTest(unittest.TestCase):
             rows = csv_path.read_text(encoding='utf-8').splitlines()
             self.assertEqual(rows[0], ','.join(RESULT_FIELDS))
             self.assertEqual(len(rows), 2)
+
+    def test_validate_results_schema_accepts_base_header(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            csv_path = Path(tmpdir) / 'results.csv'
+            csv_path.write_text(','.join(BASE_RESULT_FIELDS) + '\n', encoding='utf-8')
+            validate_results_schema(csv_path)
+
+    def test_append_solver_aware_rows_to_base_schema_requires_new_file(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            csv_path = Path(tmpdir) / 'results.csv'
+            csv_path.write_text(','.join(BASE_RESULT_FIELDS) + '\n', encoding='utf-8')
+            row = dict(self.rows[0])
+            row['solver_aware_clock_mode'] = 'training_free'
+            row['node_family'] = 'solver_aware'
+            with self.assertRaises(ValueError):
+                append_result_rows(csv_path, [row])
 
 
 if __name__ == '__main__':

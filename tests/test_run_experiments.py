@@ -224,6 +224,88 @@ class RunExperimentsTest(unittest.TestCase):
             self.assertIn('--mixed_lambda 0.7', cmd)
             self.assertIn('--stratified_bins 16', cmd)
 
+    def test_build_train_cmd_preserves_accum_iter(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            config_path = workspace / 'config.json'
+            config_path.write_text(json.dumps({
+                'experiment_name': 'demo_group',
+                'base_config': {},
+                'experiments': [],
+            }), encoding='utf-8')
+            cwd = os.getcwd()
+            os.chdir(workspace)
+            try:
+                manager = ExperimentManager(config_path)
+                cmd = manager.build_train_cmd(
+                    {
+                        'dataset': 'cifar10',
+                        'data_path': './data/cifar10',
+                        'batch_size': 128,
+                        'epochs': 2,
+                        'seed': 0,
+                        'num_gpus': 2,
+                        'accum_iter': 2,
+                        'path_family': 'linear',
+                        'clock_family': 'ft_beta',
+                        'clock_beta': 0.3,
+                        'sampling_solver': 'heun2',
+                        'model_output_type': 'velocity',
+                        'time_sampling_strategy': 'uniform',
+                    },
+                    workspace / 'out',
+                )
+            finally:
+                os.chdir(cwd)
+            self.assertIn('--accum_iter 2', cmd)
+
+    def test_build_eval_cmd_includes_solver_aware_flags(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            config_path = workspace / 'config.json'
+            config_path.write_text(json.dumps({
+                'experiment_name': 'demo_group',
+                'base_config': {},
+                'experiments': [],
+            }), encoding='utf-8')
+            cwd = os.getcwd()
+            os.chdir(workspace)
+            try:
+                manager = ExperimentManager(config_path)
+                cmd = manager.build_eval_cmd(
+                    {
+                        'dataset': 'cifar10',
+                        'data_path': './data/cifar10',
+                        'batch_size': 8,
+                        'epochs': 2,
+                        'seed': 0,
+                        'num_gpus': 1,
+                        'path_family': 'linear',
+                        'clock_family': 'uniform',
+                        'sampling_solver': 'stork4',
+                        'model_output_type': 'base_velocity',
+                        'time_sampling_strategy': 'ds_dr_sq',
+                        'metrics': ['fid'],
+                        'solver_aware_clock_mode': 'training_free',
+                        'solver_aware_target_solver': 'stork4',
+                        'solver_aware_k': 0,
+                        'solver_aware_monitor_estimator': 'auto',
+                        'solver_aware_monitor_grid_size': 65,
+                        'solver_aware_monitor_batch_size': 64,
+                        'solver_aware_eps': 1e-6,
+                        'solver_aware_use_nodes': True,
+                    },
+                    workspace / 'out',
+                    workspace / 'checkpoint.pth',
+                    12,
+                )
+            finally:
+                os.chdir(cwd)
+            self.assertIn('--solver_aware_clock_mode training_free', cmd)
+            self.assertIn('--solver_aware_target_solver stork4', cmd)
+            self.assertIn('--solver_aware_use_nodes', cmd)
+            self.assertIn('--solver_aware_monitor_estimator auto', cmd)
+
     def test_experiment_manager_resumes_training_when_checkpoint_exists(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace = Path(tmpdir)
@@ -257,6 +339,17 @@ class RunExperimentsTest(unittest.TestCase):
                 checkpoint = manager.base_dir / 'cifar10' / 'demo_ft' / 'checkpoint.pth'
                 checkpoint.parent.mkdir(parents=True, exist_ok=True)
                 checkpoint.touch()
+                (checkpoint.parent / 'args.json').write_text(
+                    json.dumps(
+                        {
+                            'path_family': 'linear',
+                            'clock_family': 'uniform',
+                            'model_output_type': 'velocity',
+                            'time_sampling_strategy': 'uniform',
+                        }
+                    ),
+                    encoding='utf-8',
+                )
                 manager.state['demo_ft:train'] = 'failed'
                 manager._save_state()
                 seen_resume = {'value': False}
@@ -316,6 +409,17 @@ class RunExperimentsTest(unittest.TestCase):
                 checkpoint = manager.base_dir / 'cifar10' / 'demo_ft' / 'checkpoint.pth'
                 checkpoint.parent.mkdir(parents=True, exist_ok=True)
                 checkpoint.touch()
+                (checkpoint.parent / 'args.json').write_text(
+                    json.dumps(
+                        {
+                            'path_family': 'linear',
+                            'clock_family': 'uniform',
+                            'model_output_type': 'velocity',
+                            'time_sampling_strategy': 'uniform',
+                        }
+                    ),
+                    encoding='utf-8',
+                )
                 manager.state['demo_ft:train'] = 'completed'
                 manager.state['demo_ft:ep1:nfe10'] = 'completed'
                 manager._save_state()
@@ -368,6 +472,101 @@ class RunExperimentsTest(unittest.TestCase):
             rows = load_result_rows(workspace / 'experiments' / 'results' / 'demo_group' / 'results.csv')
             metric_names = sorted(row['metric'] for row in rows)
             self.assertEqual(metric_names, ['fid', 'is_mean', 'is_std'])
+
+    def test_experiment_manager_ignores_stale_local_checkpoint_with_mismatched_semantics(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            config_path = workspace / 'config.json'
+            config_path.write_text(json.dumps({
+                'experiment_name': 'demo_group',
+                'base_config': {
+                    'dataset': 'cifar10',
+                    'data_path': './data/cifar10',
+                    'epochs': 2,
+                    'batch_size': 8,
+                    'num_gpus': 1,
+                    'path_family': 'linear',
+                    'sampling_solver': 'heun2',
+                    'metrics': ['fid'],
+                    'eval_epochs': [1],
+                    'eval_nfes': [10],
+                },
+                'experiments': [
+                    {
+                        'name': 'demo_ft',
+                        'clock_family': 'ft_beta',
+                        'clock_beta': 0.5,
+                        'model_output_type': 'velocity',
+                        'time_sampling_strategy': 'uniform',
+                    }
+                ],
+            }), encoding='utf-8')
+
+            cwd = os.getcwd()
+            os.chdir(workspace)
+            try:
+                manager = ExperimentManager(config_path)
+                checkpoint = manager.base_dir / 'cifar10' / 'demo_ft' / 'checkpoint.pth'
+                checkpoint.parent.mkdir(parents=True, exist_ok=True)
+                checkpoint.touch()
+                (checkpoint.parent / 'args.json').write_text(
+                    json.dumps(
+                        {
+                            'path_family': 'linear',
+                            'clock_family': 'ft_beta',
+                            'clock_beta': 0.5,
+                            'clock_semantics_tag': 'ft_global_v2_linear_closed_form',
+                            'model_output_type': 'velocity',
+                            'time_sampling_strategy': 'mixed_lambda',
+                            'mixed_lambda': 0.5,
+                        }
+                    ),
+                    encoding='utf-8',
+                )
+                manager.state['demo_ft:train'] = 'completed'
+                manager._save_state()
+                seen_commands = []
+
+                def fake_run_command(cmd, log_file, retries=0):
+                    seen_commands.append(cmd)
+                    tokens = shlex.split(cmd)
+                    output_dir = Path(tokens[tokens.index('--output_dir') + 1])
+                    output_dir.mkdir(parents=True, exist_ok=True)
+                    if '--eval_only' not in tokens:
+                        self.assertNotIn('--resume', tokens)
+                        (output_dir / 'checkpoint.pth').touch()
+                        (output_dir / 'args.json').write_text(
+                            json.dumps(
+                                {
+                                    'path_family': 'linear',
+                                    'clock_family': 'ft_beta',
+                                    'clock_beta': 0.5,
+                                    'clock_semantics_tag': 'ft_global_v2_linear_closed_form',
+                                    'model_output_type': 'velocity',
+                                    'time_sampling_strategy': 'uniform',
+                                }
+                            ),
+                            encoding='utf-8',
+                        )
+                    return True
+
+                with mock.patch('experiments.run_experiments.run_command', side_effect=fake_run_command):
+                    with mock.patch('experiments.run_experiments.extract_eval_stats', return_value={
+                        'nfe': 10.0,
+                        'step_count': 5.0,
+                        'real_samples': 50000.0,
+                        'synthetic_samples': 50000.0,
+                        'fid': 9.5,
+                    }):
+                        manager.run_all()
+            finally:
+                os.chdir(cwd)
+
+            self.assertEqual(len(seen_commands), 2)
+            self.assertNotIn('--eval_only', seen_commands[0])
+            rows = load_result_rows(workspace / 'experiments' / 'results' / 'demo_group' / 'results.csv')
+            self.assertEqual(rows[0]['strategy_id'], 'A')
+            self.assertEqual(rows[0]['time_sampling_strategy'], 'uniform')
 
     def test_experiment_manager_reuses_external_checkpoint_without_training(self):
         with tempfile.TemporaryDirectory() as tmpdir:

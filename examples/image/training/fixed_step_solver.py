@@ -4,6 +4,7 @@ from typing import Dict, Optional, Tuple
 import torch
 from torch import Tensor
 
+from training.nonuniform_nodes import resolve_time_grid
 from training.stork_solver import STORKState, stork4_step
 
 
@@ -104,16 +105,16 @@ def solve_fixed_budget(
     solver_name: str,
     nfe_budget: int,
     return_trajectory: bool = False,
+    time_grid: Optional[Tensor] = None,
     **model_extras,
 ) -> FixedStepSample:
     if solver_name == "stork4":
         step_count = nfe_budget
-        time_grid = torch.linspace(
-            0.0,
-            1.0,
-            step_count + 1,
+        resolved_time_grid = resolve_time_grid(
+            step_count=step_count,
             device=x_init.device,
             dtype=x_init.dtype,
+            time_grid=time_grid,
         )
         x_t = x_init
         states = [x_init.clone()] if return_trajectory else None
@@ -124,8 +125,8 @@ def solve_fixed_budget(
             velocity_model.reset_nfe_counter()
 
         for step_index in range(step_count):
-            t_start_value = float(time_grid[step_index].item())
-            t_end_value = float(time_grid[step_index + 1].item())
+            t_start_value = float(resolved_time_grid[step_index].item())
+            t_end_value = float(resolved_time_grid[step_index + 1].item())
             t_start = torch.full(
                 (x_t.shape[0],),
                 t_start_value,
@@ -175,7 +176,7 @@ def solve_fixed_budget(
             sample=x_t,
             nfe=nfe,
             step_count=step_count,
-            time_grid=time_grid,
+            time_grid=resolved_time_grid,
             step_methods=step_methods,
             trajectory=trajectory,
             deltas=deltas,
@@ -184,14 +185,12 @@ def solve_fixed_budget(
 
     step_methods = build_step_methods(solver_name=solver_name, nfe_budget=nfe_budget)
     step_count = len(step_methods)
-    time_grid = torch.linspace(
-        0.0,
-        1.0,
-        step_count + 1,
+    resolved_time_grid = resolve_time_grid(
+        step_count=step_count,
         device=x_init.device,
         dtype=x_init.dtype,
+        time_grid=time_grid,
     )
-    dt = 1.0 / step_count
     x_t = x_init
     states = [x_init.clone()] if return_trajectory else None
 
@@ -201,12 +200,13 @@ def solve_fixed_budget(
     for step_index, step_method in enumerate(step_methods):
         t_start = torch.full(
             (x_t.shape[0],),
-            float(time_grid[step_index].item()),
+            float(resolved_time_grid[step_index].item()),
             device=x_t.device,
             dtype=x_t.dtype,
         )
-        t_end_value = float(time_grid[step_index + 1].item())
-        step_size = t_end_value - float(time_grid[step_index].item())
+        t_start_value = float(resolved_time_grid[step_index].item())
+        t_end_value = float(resolved_time_grid[step_index + 1].item())
+        step_size = t_end_value - t_start_value
         if step_method == "euler":
             k1 = velocity_model(
                 x_t,
@@ -218,7 +218,7 @@ def solve_fixed_budget(
                 ),
                 **model_extras,
             )
-            x_t = x_t + dt * k1
+            x_t = x_t + step_size * k1
         elif step_method == "heun2":
             k1 = velocity_model(
                 x_t,
@@ -230,7 +230,7 @@ def solve_fixed_budget(
                 ),
                 **model_extras,
             )
-            x_predict = x_t + dt * k1
+            x_predict = x_t + step_size * k1
             t_end = torch.full(
                 (x_t.shape[0],),
                 t_end_value,
@@ -247,7 +247,7 @@ def solve_fixed_budget(
                 ),
                 **model_extras,
             )
-            x_t = x_t + 0.5 * dt * (k1 + k2)
+            x_t = x_t + 0.5 * step_size * (k1 + k2)
         elif step_method == "rk3":
             k1 = velocity_model(
                 x_t,
@@ -261,11 +261,11 @@ def solve_fixed_budget(
             )
             t_mid = torch.full(
                 (x_t.shape[0],),
-                float(time_grid[step_index].item() + 0.5 * dt),
+                float(t_start_value + 0.5 * step_size),
                 device=x_t.device,
                 dtype=x_t.dtype,
             )
-            x_mid = x_t + 0.5 * dt * k1
+            x_mid = x_t + 0.5 * step_size * k1
             k2 = velocity_model(
                 x_mid,
                 _adapt_model_time(
@@ -282,7 +282,7 @@ def solve_fixed_budget(
                 device=x_t.device,
                 dtype=x_t.dtype,
             )
-            x_end = x_t - dt * k1 + 2.0 * dt * k2
+            x_end = x_t - step_size * k1 + 2.0 * step_size * k2
             k3 = velocity_model(
                 x_end,
                 _adapt_model_time(
@@ -293,7 +293,7 @@ def solve_fixed_budget(
                 ),
                 **model_extras,
             )
-            x_t = x_t + dt * ((1.0 / 6.0) * k1 + (2.0 / 3.0) * k2 + (1.0 / 6.0) * k3)
+            x_t = x_t + step_size * ((1.0 / 6.0) * k1 + (2.0 / 3.0) * k2 + (1.0 / 6.0) * k3)
         else:
             raise AssertionError(f"Unhandled step_method={step_method}.")
 
@@ -323,7 +323,7 @@ def solve_fixed_budget(
         sample=x_t,
         nfe=nfe,
         step_count=step_count,
-        time_grid=time_grid,
+        time_grid=resolved_time_grid,
         step_methods=step_methods,
         trajectory=trajectory,
         deltas=deltas,

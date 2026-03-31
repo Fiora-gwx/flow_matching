@@ -4,10 +4,11 @@ base_config:
   data_path: ./data/cifar10
   epochs: 500
   batch_size: 128
-  num_gpus: 4
+  num_gpus: 2
+  accum_iter: 2
   path_family: linear
-  cfg_scale: 0.0
-  class_drop_prob: 1.0
+  cfg_scale: 0.2
+  class_drop_prob: 0.2
   metrics: [fid]
   eval_epochs: [499]
   eval_nfes: [4, 8, 16, 32, 100]

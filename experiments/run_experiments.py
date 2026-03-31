@@ -14,7 +14,12 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from experiments.checkpoint_utils import find_checkpoint, resolve_reused_checkpoint
+from experiments.checkpoint_utils import (
+    checkpoint_matches_spec,
+    find_checkpoint,
+    load_checkpoint_args,
+    resolve_reused_checkpoint,
+)
 from experiments.result_utils import (
     append_result_rows,
     ensure_results_file,
@@ -33,6 +38,20 @@ logger = logging.getLogger(__name__)
 LEGACY_CONFIG_KEYS = {"alpha", "use_ft_eqm", "use_nt_ft_fm", "importance_weighting"}
 LEGACY_CLOCK_FAMILIES = {"ft_linear_beta", "ft_vp_beta"}
 CURRICULUM_SIGNATURE = "warmup0.3_linear_to1"
+SOLVER_AWARE_DEFAULTS = {
+    "solver_aware_clock_mode": "off",
+    "solver_aware_target_solver": "",
+    "solver_aware_monitor_solver": "",
+    "solver_aware_k": 0,
+    "solver_aware_monitor_estimator": "",
+    "solver_aware_eps": None,
+    "solver_aware_use_nodes": False,
+    "node_family": "uniform",
+    "monitor_source_checkpoint": "",
+    "monitor_grid_size": None,
+    "solver_aware_monitor_batch_size": None,
+    "solver_aware_theorem_backed": "",
+}
 
 
 def load_config(config_path: Path) -> Dict:
@@ -189,6 +208,96 @@ def _row_strategy_fields(row: Dict[str, object]) -> Dict[str, object]:
     return _resolve_strategy_fields(normalized)
 
 
+def _checkpoint_semantics_for_results(
+    checkpoint_path: Optional[Path],
+    spec: Dict[str, object],
+) -> Dict[str, object]:
+    if checkpoint_path is None:
+        return dict(spec)
+
+    checkpoint_args = load_checkpoint_args(checkpoint_path)
+    if not checkpoint_args:
+        return dict(spec)
+
+    effective = dict(spec)
+    for field in (
+        "path_family",
+        "clock_family",
+        "clock_beta",
+        "model_output_type",
+        "time_sampling_strategy",
+        "mixed_lambda",
+        "stratified_bins",
+        "strategy_id",
+        "curriculum_signature",
+        "clock_semantics_tag",
+    ):
+        if checkpoint_args.get(field) is not None:
+            effective[field] = checkpoint_args[field]
+    return _resolve_strategy_fields(effective)
+
+
+def _resolve_solver_aware_result_fields(
+    spec: Dict[str, object],
+    checkpoint_path: Optional[Path],
+) -> Dict[str, object]:
+    mode = str(spec.get("solver_aware_clock_mode", "off"))
+    use_nodes = bool(spec.get("solver_aware_use_nodes", False))
+    target_solver = str(spec.get("solver_aware_target_solver", spec.get("sampling_solver", "")))
+    if mode == "off" or not use_nodes:
+        return dict(SOLVER_AWARE_DEFAULTS)
+
+    monitor_solver = target_solver
+    theorem_backed = ""
+    if target_solver == "stork4":
+        monitor_solver = "heun2"
+        theorem_backed = "false"
+    elif target_solver in {"euler", "heun2"}:
+        theorem_backed = "true"
+
+    return {
+        "solver_aware_clock_mode": mode,
+        "solver_aware_target_solver": target_solver,
+        "solver_aware_monitor_solver": monitor_solver,
+        "solver_aware_k": int(spec.get("solver_aware_k", 0)),
+        "solver_aware_monitor_estimator": str(spec.get("solver_aware_monitor_estimator", "auto")),
+        "solver_aware_eps": spec.get("solver_aware_eps"),
+        "solver_aware_use_nodes": "true" if use_nodes else "false",
+        "node_family": "solver_aware",
+        "monitor_source_checkpoint": str(
+            checkpoint_path
+            or spec.get("solver_aware_checkpoint_path")
+            or ""
+        ),
+        "monitor_grid_size": spec.get("solver_aware_monitor_grid_size"),
+        "solver_aware_monitor_batch_size": spec.get("solver_aware_monitor_batch_size"),
+        "solver_aware_theorem_backed": theorem_backed,
+    }
+
+
+def _solver_aware_fields_match(row: Dict[str, object], spec: Dict[str, object]) -> bool:
+    expected = _resolve_solver_aware_result_fields(spec=spec, checkpoint_path=None)
+    for field, expected_value in expected.items():
+        observed = row.get(field, SOLVER_AWARE_DEFAULTS.get(field, ""))
+        if observed in {"", None}:
+            observed = SOLVER_AWARE_DEFAULTS.get(field, "")
+        if expected_value in {"", None}:
+            if observed not in {"", None}:
+                return False
+            continue
+        if field in {"solver_aware_k", "monitor_grid_size", "solver_aware_monitor_batch_size"}:
+            if int(observed) != int(expected_value):
+                return False
+            continue
+        if field == "solver_aware_eps":
+            if float(observed) != float(expected_value):
+                return False
+            continue
+        if str(observed) != str(expected_value):
+            return False
+    return True
+
+
 class ExperimentManager:
     def __init__(self, config_path: Path):
         self.config_path = config_path
@@ -263,6 +372,42 @@ class ExperimentManager:
             flags.append(f"--class_drop_prob {spec['class_drop_prob']}")
         if spec.get("fid_samples") is not None:
             flags.append(f"--fid_samples {spec['fid_samples']}")
+        if spec.get("solver_aware_clock_mode") not in {None, "", "off"}:
+            flags.append(f"--solver_aware_clock_mode {spec['solver_aware_clock_mode']}")
+            flags.append(
+                f"--solver_aware_target_solver {spec.get('solver_aware_target_solver', spec.get('sampling_solver', 'euler'))}"
+            )
+            flags.append(f"--solver_aware_k {spec.get('solver_aware_k', 0)}")
+            flags.append(
+                f"--solver_aware_monitor_estimator {spec.get('solver_aware_monitor_estimator', 'auto')}"
+            )
+            if spec.get("solver_aware_monitor_grid_size") is not None:
+                flags.append(
+                    f"--solver_aware_monitor_grid_size {spec['solver_aware_monitor_grid_size']}"
+                )
+            if spec.get("solver_aware_monitor_batch_size") is not None:
+                flags.append(
+                    f"--solver_aware_monitor_batch_size {spec['solver_aware_monitor_batch_size']}"
+                )
+            if spec.get("solver_aware_eps") is not None:
+                flags.append(f"--solver_aware_eps {spec['solver_aware_eps']}")
+            if spec.get("solver_aware_cache_path") not in {None, ""}:
+                flags.append(f"--solver_aware_cache_path {spec['solver_aware_cache_path']}")
+            if spec.get("solver_aware_use_nodes", False):
+                flags.append("--solver_aware_use_nodes")
+            if spec.get("solver_aware_checkpoint_path") not in {None, ""}:
+                flags.append(
+                    f"--solver_aware_checkpoint_path {spec['solver_aware_checkpoint_path']}"
+                )
+            if spec.get("solver_aware_checkpoint_from_experiment") not in {None, ""}:
+                flags.append(
+                    "--solver_aware_checkpoint_from_experiment "
+                    + str(spec["solver_aware_checkpoint_from_experiment"])
+                )
+            if spec.get("solver_aware_checkpoint_epoch") is not None:
+                flags.append(
+                    f"--solver_aware_checkpoint_epoch {spec['solver_aware_checkpoint_epoch']}"
+                )
         return flags
 
     def build_train_cmd(
@@ -279,6 +424,8 @@ class ExperimentManager:
                 f"--seed {spec.get('seed', 0)}",
             ]
         )
+        if spec.get("accum_iter") is not None:
+            flags.append(f"--accum_iter {spec['accum_iter']}")
         if resume_checkpoint is not None:
             flags.append(f"--resume {resume_checkpoint}")
         flags.append(f"--eval_frequency {spec.get('eval_frequency', -1)}")
@@ -310,11 +457,26 @@ class ExperimentManager:
             flags.append("--compute_fid")
         return f"{self._launcher(spec.get('num_gpus', 1))} examples/image/train.py " + " ".join(flags)
 
-    def _result_rows(self, spec: Dict, epoch: int, nfe: int, stats: Dict[str, float]) -> List[Dict[str, object]]:
+    def _result_rows(
+        self,
+        spec: Dict,
+        epoch: int,
+        nfe: int,
+        stats: Dict[str, float],
+        checkpoint_path: Optional[Path] = None,
+    ) -> List[Dict[str, object]]:
         rows = []
+        effective_spec = _checkpoint_semantics_for_results(
+            checkpoint_path=checkpoint_path,
+            spec=spec,
+        )
+        solver_aware_fields = _resolve_solver_aware_result_fields(
+            spec=spec,
+            checkpoint_path=checkpoint_path,
+        )
         clock_param_name, clock_param_value = infer_clock_parameter(
-            spec.get("clock_family", "uniform"),
-            spec.get("clock_beta"),
+            effective_spec.get("clock_family", "uniform"),
+            effective_spec.get("clock_beta"),
         )
         for metric_name, value in stats.items():
             if metric_name in {"nfe", "step_count", "real_samples", "synthetic_samples"}:
@@ -327,8 +489,8 @@ class ExperimentManager:
                     "seed": spec.get("seed", 0),
                     "stage": "eval",
                     "checkpoint_epoch": epoch,
-                    "path_family": spec.get("path_family", "linear"),
-                    "clock_family": spec.get("clock_family", "uniform"),
+                    "path_family": effective_spec.get("path_family", "linear"),
+                    "clock_family": effective_spec.get("clock_family", "uniform"),
                     "clock_param_name": clock_param_name,
                     "clock_param_value": clock_param_value,
                     "solver": spec.get("sampling_solver", "heun2"),
@@ -340,11 +502,12 @@ class ExperimentManager:
                     "value": float(value),
                     "status": "completed",
                     "artifact_group": spec.get("artifact_group", self.exp_group_name),
-                    "strategy_id": spec.get("strategy_id", ""),
-                    "model_output_type": spec.get("model_output_type", "velocity"),
-                    "time_sampling_strategy": spec.get("time_sampling_strategy", "uniform"),
-                    "mixed_lambda": spec.get("mixed_lambda", 0.5),
-                    "stratified_bins": spec.get("stratified_bins", 16),
+                    "strategy_id": effective_spec.get("strategy_id", ""),
+                    "model_output_type": effective_spec.get("model_output_type", "velocity"),
+                    "time_sampling_strategy": effective_spec.get("time_sampling_strategy", "uniform"),
+                    "mixed_lambda": effective_spec.get("mixed_lambda", 0.5),
+                    "stratified_bins": effective_spec.get("stratified_bins", 16),
+                    **solver_aware_fields,
                 }
             )
         return rows
@@ -382,6 +545,7 @@ class ExperimentManager:
             and _row_strategy_fields(row).get("time_sampling_strategy") == spec.get("time_sampling_strategy", "uniform")
             and float(_row_strategy_fields(row).get("mixed_lambda", 0.5)) == float(spec.get("mixed_lambda", 0.5))
             and int(_row_strategy_fields(row).get("stratified_bins", 16)) == int(spec.get("stratified_bins", 16))
+            and _solver_aware_fields_match(row=row, spec=spec)
         ]
         return sorted({str(row["metric"]) for row in matching_rows})
 
@@ -447,10 +611,26 @@ class ExperimentManager:
                         spec["checkpoint_from"],
                     )
             checkpoint = local_checkpoint
+            local_checkpoint_compatible = False
+            if local_checkpoint.exists():
+                local_checkpoint_compatible = checkpoint_matches_spec(
+                    checkpoint_path=local_checkpoint,
+                    spec=spec,
+                )
+                if not local_checkpoint_compatible:
+                    logger.warning(
+                        "Ignoring stale local checkpoint for %s because its saved args do not match the current spec: %s",
+                        spec["name"],
+                        local_checkpoint,
+                    )
 
-            if local_checkpoint.exists() and self.state.get(train_key) == "completed":
+            if (
+                local_checkpoint.exists()
+                and local_checkpoint_compatible
+                and self.state.get(train_key) == "completed"
+            ):
                 checkpoint = local_checkpoint
-            elif local_checkpoint.exists():
+            elif local_checkpoint.exists() and local_checkpoint_compatible:
                 self.state[train_key] = "running"
                 self._save_state()
                 success = run_command(
@@ -467,10 +647,16 @@ class ExperimentManager:
                 checkpoint = reused_checkpoint
                 self.state[train_key] = "completed"
                 self._save_state()
-            elif self.state.get(train_key) != "completed" or not local_checkpoint.exists():
+            elif (
+                self.state.get(train_key) != "completed"
+                or not local_checkpoint.exists()
+                or not local_checkpoint_compatible
+            ):
                 self.state[train_key] = "running"
                 self._save_state()
-                resume_checkpoint = local_checkpoint if local_checkpoint.exists() else None
+                resume_checkpoint = (
+                    local_checkpoint if local_checkpoint.exists() and local_checkpoint_compatible else None
+                )
                 success = run_command(
                     self.build_train_cmd(spec, exp_dir, resume_checkpoint=resume_checkpoint),
                     train_log,
@@ -527,7 +713,13 @@ class ExperimentManager:
                         self.state[eval_key] = "failed_no_eval_stats"
                         self._save_state()
                         continue
-                    new_rows = self._result_rows(spec, epoch, nfe, stats)
+                    new_rows = self._result_rows(
+                        spec,
+                        epoch,
+                        nfe,
+                        stats,
+                        checkpoint_path=checkpoint_for_eval,
+                    )
                     append_result_rows(self.results_csv, new_rows)
                     existing_rows.extend(new_rows)
                     self.state[eval_key] = "completed"

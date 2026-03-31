@@ -4,7 +4,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
-RESULT_FIELDS = [
+BASE_RESULT_FIELDS = [
     "run_id",
     "exp_name",
     "dataset",
@@ -30,6 +30,21 @@ RESULT_FIELDS = [
     "mixed_lambda",
     "stratified_bins",
 ]
+SOLVER_AWARE_RESULT_FIELDS = [
+    "solver_aware_clock_mode",
+    "solver_aware_target_solver",
+    "solver_aware_monitor_solver",
+    "solver_aware_k",
+    "solver_aware_monitor_estimator",
+    "solver_aware_eps",
+    "solver_aware_use_nodes",
+    "node_family",
+    "monitor_source_checkpoint",
+    "monitor_grid_size",
+    "solver_aware_monitor_batch_size",
+    "solver_aware_theorem_backed",
+]
+RESULT_FIELDS = BASE_RESULT_FIELDS + SOLVER_AWARE_RESULT_FIELDS
 
 NUMERIC_FIELDS = {
     "seed": int,
@@ -45,6 +60,10 @@ OPTIONAL_NUMERIC_FIELDS = {
     "clock_param_value": float,
     "mixed_lambda": float,
     "stratified_bins": int,
+    "solver_aware_k": int,
+    "solver_aware_eps": float,
+    "monitor_grid_size": int,
+    "solver_aware_monitor_batch_size": int,
 }
 METRIC_OUTPUTS = {
     "fid": ("fid",),
@@ -77,10 +96,11 @@ def validate_results_schema(csv_path: Path) -> None:
     header = _read_header(csv_path)
     if not header:
         return
-    if header != RESULT_FIELDS:
+    accepted_headers = {tuple(BASE_RESULT_FIELDS), tuple(RESULT_FIELDS)}
+    if tuple(header) not in accepted_headers:
         raise ValueError(
             f"Result schema mismatch in {csv_path}. "
-            f"Expected header {RESULT_FIELDS}, got {header}. "
+            f"Expected header {BASE_RESULT_FIELDS} or {RESULT_FIELDS}, got {header}. "
             "Migrate or remove the legacy results.csv before writing new FT-clock results."
         )
 
@@ -97,11 +117,20 @@ def ensure_results_file(csv_path: Path) -> None:
 
 
 def append_result_rows(csv_path: Path, rows: Iterable[Dict[str, object]]) -> None:
+    rows = list(rows)
     ensure_results_file(csv_path)
-    with open(csv_path, "a", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=RESULT_FIELDS)
+    fieldnames = _read_header(csv_path) or RESULT_FIELDS
+    if fieldnames == BASE_RESULT_FIELDS:
         for row in rows:
-            writer.writerow({field: row.get(field, "") for field in RESULT_FIELDS})
+            if any(row.get(field) not in {"", None, False} for field in SOLVER_AWARE_RESULT_FIELDS):
+                raise ValueError(
+                    f"Cannot append solver-aware rows to legacy-schema CSV {csv_path}. "
+                    "Use a fresh artifact_group/results.csv so the extended schema can be written."
+                )
+    with open(csv_path, "a", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        for row in rows:
+            writer.writerow({field: row.get(field, "") for field in fieldnames})
 
 
 def metric_output_names(metric_name: str) -> Tuple[str, ...]:
@@ -118,6 +147,8 @@ def _coerce_row(row: Dict[str, str]) -> Dict[str, object]:
             result[field] = caster(row[field])
         else:
             result[field] = None
+    for field in SOLVER_AWARE_RESULT_FIELDS:
+        result.setdefault(field, "")
     return result
 
 

@@ -30,13 +30,14 @@ from training.continuous_runtime import (
     model_output_to_velocity,
 )
 from training.eval_utils import iter_batches_until_target
-from training.fixed_step_solver import solve_fixed_budget
+from training.fixed_step_solver import build_step_methods, solve_fixed_budget
 from training.metric_utils import (
     compute_precision_recall,
     extract_inception_features,
     prepare_inception_input,
     requested_metrics,
 )
+from training.solver_aware.fixed_point import maybe_build_solver_aware_artifacts
 from training.train_loop import MASK_TOKEN
 
 try:
@@ -102,13 +103,13 @@ class CFGScaledModel(ModelWrapper):
         t = torch.zeros(x.shape[0], device=x.device) + t
 
         if cfg_scale != 0.0:
-            with torch.cuda.amp.autocast(), torch.no_grad():
+            with torch.cuda.amp.autocast():
                 conditional = self.model(x, t, extra={"label": label})
                 condition_free = self.model(x, t, extra={})
             raw_result = (1.0 + cfg_scale) * conditional - cfg_scale * condition_free
             self.nfe_counter += 2
         else:
-            with torch.cuda.amp.autocast(), torch.no_grad():
+            with torch.cuda.amp.autocast():
                 raw_result = self.model(x, t, extra={"label": label})
             self.nfe_counter += 1
         if is_discrete:
@@ -136,6 +137,34 @@ class CFGScaledModel(ModelWrapper):
 
     def get_nfe(self) -> int:
         return self.nfe_counter
+
+
+def _solver_step_count(solver_name: str, nfe_budget: int) -> int:
+    if solver_name == "stork4":
+        return int(nfe_budget)
+    return len(build_step_methods(solver_name=solver_name, nfe_budget=nfe_budget))
+
+
+def _build_monitor_loader(args: Namespace, data_loader: Iterable):
+    dataset = getattr(data_loader, "dataset", None)
+    if dataset is None or not distributed_mode.is_dist_avail_and_initialized():
+        return data_loader
+    return torch.utils.data.DataLoader(
+        dataset,
+        batch_size=max(1, int(args.solver_aware_monitor_batch_size)),
+        shuffle=False,
+        num_workers=0,
+        pin_memory=bool(getattr(args, "pin_mem", True)),
+        drop_last=False,
+    )
+
+
+def _broadcast_tensor(tensor: torch.Tensor, device: torch.device) -> torch.Tensor:
+    if not distributed_mode.is_dist_avail_and_initialized():
+        return tensor.to(device=device)
+    broadcast = tensor.to(device=device)
+    torch.distributed.broadcast(broadcast, src=0)
+    return broadcast
 
 
 def _build_fid_metric(device: torch.device):
@@ -208,6 +237,65 @@ def eval_model(
     if args.output_dir:
         (Path(args.output_dir) / "snapshots").mkdir(parents=True, exist_ok=True)
 
+    solver_aware_artifacts = None
+    solver_aware_time_grid = None
+    if (
+        not args.discrete_flow_matching
+        and getattr(args, "solver_aware_clock_mode", "off") != "off"
+        and getattr(args, "solver_aware_use_nodes", False)
+    ):
+        step_count = _solver_step_count(
+            solver_name=args.sampling_solver,
+            nfe_budget=args.eval_nfe,
+        )
+        if distributed_mode.is_main_process():
+            monitor_loader = _build_monitor_loader(args=args, data_loader=data_loader)
+            with torch.enable_grad():
+                solver_aware_artifacts = maybe_build_solver_aware_artifacts(
+                    mode=args.solver_aware_clock_mode,
+                    k=args.solver_aware_k,
+                    use_nodes=args.solver_aware_use_nodes,
+                    velocity_model=cfg_scaled_model,
+                    data_loader=monitor_loader,
+                    device=device,
+                    path_family=args.path_family,
+                    clock_family=args.clock_family,
+                    target_solver=args.solver_aware_target_solver,
+                    estimator=args.solver_aware_monitor_estimator,
+                    grid_size=args.solver_aware_monitor_grid_size,
+                    batch_size=args.solver_aware_monitor_batch_size,
+                    eps=args.solver_aware_eps,
+                    cfg_scale=args.cfg_scale,
+                    step_count=step_count,
+                    checkpoint_source=str(
+                        getattr(args, "solver_aware_monitor_source_checkpoint", "")
+                        or getattr(args, "resume", "")
+                    ),
+                    seed=int(getattr(args, "seed", 0)),
+                    cache_path=args.solver_aware_cache_path,
+                    output_dir=Path(args.output_dir) if args.output_dir else None,
+                )
+            if solver_aware_artifacts is not None:
+                solver_aware_time_grid = solver_aware_artifacts.nodes.to(device=device, dtype=torch.float32)
+        if distributed_mode.is_dist_avail_and_initialized():
+            has_nodes = torch.tensor(
+                [1 if distributed_mode.is_main_process() and solver_aware_time_grid is not None else 0],
+                device=device,
+                dtype=torch.int64,
+            )
+            torch.distributed.broadcast(has_nodes, src=0)
+            if int(has_nodes.item()) == 1:
+                if not distributed_mode.is_main_process():
+                    solver_aware_time_grid = torch.empty(
+                        step_count + 1,
+                        device=device,
+                        dtype=torch.float32,
+                    )
+                solver_aware_time_grid = _broadcast_tensor(
+                    solver_aware_time_grid,
+                    device=device,
+                )
+
     num_synthetic = 0
     num_real = 0
     snapshots_saved = False
@@ -259,6 +347,7 @@ def eval_model(
                 solver_name=args.sampling_solver,
                 nfe_budget=args.eval_nfe,
                 return_trajectory=False,
+                time_grid=solver_aware_time_grid,
                 label=labels,
                 cfg_scale=args.cfg_scale,
             )

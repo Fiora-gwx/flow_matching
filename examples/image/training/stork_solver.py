@@ -90,6 +90,13 @@ def stork4_step(
     t_end: float,
     state: STORKState,
 ) -> Tensor:
+    """Advance one STORK4 super-step on an arbitrary local interval [t_start, t_end].
+
+    Phase-1 only claims non-uniform node support plus a first-order Taylor
+    virtual-stage approximation. The actual network evaluation is the cached
+    model_output at t_start; all internal stages reuse the current local step
+    size h_n = t_end - t_start.
+    """
     step_dt = float(t_end - t_start)
     if step_dt <= 0.0:
         raise ValueError(f"stork4 requires a positive step size. Got t_start={t_start}, t_end={t_end}.")

@@ -12,6 +12,7 @@ import os
 import sys
 import time
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 import torch
@@ -35,6 +36,7 @@ from training.load_and_save import load_model, save_model
 from training.train_loop import train_one_epoch
 
 logger = logging.getLogger(__name__)
+WORKSPACE_ROOT = Path(__file__).resolve().parents[2]
 
 
 def build_dataset(args, transform):
@@ -71,6 +73,67 @@ def should_save_checkpoint(args, epoch: int) -> bool:
         or (epoch + 1) == args.epochs
         or (args.eval_frequency > 0 and (epoch + 1) % args.eval_frequency == 0)
     )
+
+
+def _find_checkpoint_from_directory(
+    exp_dir: Path,
+    epoch: Optional[int],
+) -> Optional[Path]:
+    if epoch is not None:
+        candidates = [
+            exp_dir / f"checkpoint-{epoch}.pth",
+            exp_dir / f"checkpoint{epoch}.pth",
+            exp_dir / f"checkpoint{epoch:04d}.pth",
+        ]
+        for candidate in candidates:
+            if candidate.exists():
+                return candidate
+    latest = exp_dir / "checkpoint.pth"
+    if latest.exists():
+        return latest
+    return None
+
+
+def _resolve_solver_aware_checkpoint_from_experiment(
+    reference: str,
+    dataset: str,
+    epoch: int,
+) -> Optional[Path]:
+    tokens = [token.strip() for token in str(reference).split(":") if token.strip()]
+    if len(tokens) == 2:
+        artifact_group, exp_name = tokens
+        resolved_dataset = dataset
+    elif len(tokens) == 3:
+        artifact_group, resolved_dataset, exp_name = tokens
+    else:
+        raise ValueError(
+            "solver_aware_checkpoint_from_experiment must have the form "
+            "'artifact_group:exp_name' or 'artifact_group:dataset:exp_name'."
+        )
+    exp_dir = WORKSPACE_ROOT / "experiments" / "results" / artifact_group / resolved_dataset / exp_name
+    resolved_epoch = None if epoch < 0 else int(epoch)
+    return _find_checkpoint_from_directory(exp_dir=exp_dir, epoch=resolved_epoch)
+
+
+def _resolve_solver_aware_checkpoint(args) -> Optional[Path]:
+    explicit_path = str(getattr(args, "solver_aware_checkpoint_path", "") or "").strip()
+    experiment_reference = str(
+        getattr(args, "solver_aware_checkpoint_from_experiment", "") or ""
+    ).strip()
+    checkpoint_epoch = int(getattr(args, "solver_aware_checkpoint_epoch", -1))
+
+    if explicit_path:
+        checkpoint_path = Path(explicit_path)
+        if not checkpoint_path.is_absolute():
+            checkpoint_path = Path.cwd() / checkpoint_path
+        return checkpoint_path if checkpoint_path.exists() else None
+    if experiment_reference:
+        return _resolve_solver_aware_checkpoint_from_experiment(
+            reference=experiment_reference,
+            dataset=str(args.dataset),
+            epoch=checkpoint_epoch,
+        )
+    return None
 
 
 def main(args):
@@ -187,6 +250,31 @@ def main(args):
 
     logger.info(f"Optimizer: {optimizer}")
     logger.info(f"Learning-Rate Schedule: {lr_schedule}")
+
+    if (
+        args.eval_only
+        and getattr(args, "solver_aware_clock_mode", "off") != "off"
+    ):
+        resolved_solver_aware_checkpoint = _resolve_solver_aware_checkpoint(args)
+        if args.resume and resolved_solver_aware_checkpoint is not None:
+            resume_path = Path(str(args.resume)).expanduser().resolve()
+            if resume_path != resolved_solver_aware_checkpoint.resolve():
+                raise ValueError(
+                    "solver-aware eval received two different checkpoint sources: "
+                    f"--resume={resume_path} and "
+                    f"--solver_aware checkpoint={resolved_solver_aware_checkpoint}."
+                )
+        elif not args.resume and resolved_solver_aware_checkpoint is not None:
+            args.resume = str(resolved_solver_aware_checkpoint)
+        args.solver_aware_monitor_source_checkpoint = str(
+            resolved_solver_aware_checkpoint or args.resume or ""
+        )
+        if getattr(args, "solver_aware_use_nodes", False) and not args.resume:
+            raise ValueError(
+                "solver-aware training-free evaluation requires a checkpoint. "
+                "Provide --resume, --solver_aware_checkpoint_path, or "
+                "--solver_aware_checkpoint_from_experiment."
+            )
 
     loss_scaler = NativeScaler()
     load_model(

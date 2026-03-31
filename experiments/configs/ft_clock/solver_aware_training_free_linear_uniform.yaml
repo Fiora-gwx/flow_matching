@@ -1,0 +1,63 @@
+experiment_name: ft_clock_solver_aware_training_free_linear_uniform
+base_config:
+  dataset: cifar10
+  data_path: ./data/cifar10
+  epochs: 500
+  batch_size: 128
+  num_gpus: 4
+  path_family: linear
+  clock_family: uniform
+  model_output_type: base_velocity
+  time_sampling_strategy: ds_dr_sq
+  cfg_scale: 0.0
+  class_drop_prob: 1.0
+  metrics: [fid]
+  eval_epochs: [499]
+  eval_nfes: [6, 12, 18, 24, 30, 48, 96]
+  checkpoint_from:
+    artifact_group: ft_clock_linear_main_uparam
+    source_exp_name: linear_uniform
+    checkpoint_epoch: 499
+
+experiments:
+  - name: linear_uniform_euler_baseline
+    sampling_solver: euler
+
+  - name: linear_uniform_euler_solver_aware
+    sampling_solver: euler
+    solver_aware_clock_mode: training_free
+    solver_aware_target_solver: euler
+    solver_aware_k: 0
+    solver_aware_monitor_estimator: auto
+    solver_aware_monitor_grid_size: 65
+    solver_aware_monitor_batch_size: 64
+    solver_aware_eps: 1.0e-6
+    solver_aware_use_nodes: true
+
+  - name: linear_uniform_heun2_baseline
+    sampling_solver: heun2
+
+  - name: linear_uniform_heun2_solver_aware
+    sampling_solver: heun2
+    solver_aware_clock_mode: training_free
+    solver_aware_target_solver: heun2
+    solver_aware_k: 0
+    solver_aware_monitor_estimator: auto
+    solver_aware_monitor_grid_size: 65
+    solver_aware_monitor_batch_size: 64
+    solver_aware_eps: 1.0e-6
+    solver_aware_use_nodes: true
+
+  - name: linear_uniform_stork4_baseline
+    sampling_solver: stork4
+
+  - name: linear_uniform_stork4_solver_aware
+    sampling_solver: stork4
+    solver_aware_clock_mode: training_free
+    solver_aware_target_solver: stork4
+    solver_aware_k: 0
+    solver_aware_monitor_estimator: auto
+    solver_aware_monitor_grid_size: 65
+    solver_aware_monitor_batch_size: 64
+    solver_aware_eps: 1.0e-6
+    solver_aware_use_nodes: true

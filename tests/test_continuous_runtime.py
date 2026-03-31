@@ -272,6 +272,38 @@ class ContinuousRuntimeTest(unittest.TestCase):
         )
         self.assertTrue(torch.allclose(recovered, base_velocity))
 
+    def test_time_sampling_with_explicit_generator_is_stable_under_global_rng_noise(self):
+        generator_a = torch.Generator().manual_seed(1234)
+        samples_a = sample_time_by_strategy(
+            batch_size=1024,
+            device=torch.device("cpu"),
+            path_family="linear",
+            clock_family="ft_beta",
+            clock_beta=0.5,
+            signal_scale_sq=1.0,
+            strategy="mixed_lambda",
+            mixed_lambda=0.5,
+            generator=generator_a,
+        )
+
+        torch.manual_seed(999)
+        _ = torch.rand(4096)
+        _ = torch.randn(4096)
+
+        generator_b = torch.Generator().manual_seed(1234)
+        samples_b = sample_time_by_strategy(
+            batch_size=1024,
+            device=torch.device("cpu"),
+            path_family="linear",
+            clock_family="ft_beta",
+            clock_beta=0.5,
+            signal_scale_sq=1.0,
+            strategy="mixed_lambda",
+            mixed_lambda=0.5,
+            generator=generator_b,
+        )
+        self.assertTrue(torch.allclose(samples_a, samples_b))
+
 
 if __name__ == '__main__':
     unittest.main()

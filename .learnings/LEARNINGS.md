@@ -68,6 +68,29 @@ Split train and eval transforms, route `data_loader_eval` through the determinis
 
 ---
 
+## [LRN-20260329-001] correction
+
+**Logged**: 2026-03-29T00:00:00+08:00
+**Priority**: high
+**Status**: pending
+**Area**: config
+
+### Summary
+When comparing current FT-clock baselines against early git-history runs, check parser defaults first; older solver-sensitivity baselines used different conditioning defaults than the current ablation config.
+
+### Details
+The earliest `solver_sensitivity` and `linear_main` configs did not explicitly set `class_drop_prob` or `cfg_scale`, so they inherited parser defaults from the old training code: `class_drop_prob=0.2` and `cfg_scale=0.2`. The newer ablation configs had been set to `class_drop_prob=1.0` and `cfg_scale=0.0`, which silently changed the baseline from a lightly conditioned CFG-trained model into a fully unconditional one. That difference is large enough to dominate FID comparisons and should not be confused with FT-clock endpoint handling or the strict-open-interval time sampler.
+
+### Suggested Action
+Pin legacy baseline configs explicitly to `class_drop_prob=0.2` and `cfg_scale=0.2` whenever the goal is an apples-to-apples comparison against the earliest velocity/uniform FT-clock experiments.
+
+### Metadata
+- Source: user_feedback
+- Related Files: examples/image/train_arg_parser.py, experiments/configs/ft_clock/variance_reduction_ablation.yaml, experiments/configs/ft_clock/variance_reduction_ablation_followup.yaml
+- Tags: baseline, config, cfg, conditioning, regression
+
+---
+
 ## [LRN-20260328-001] correction
 
 **Logged**: 2026-03-28T00:00:00+08:00

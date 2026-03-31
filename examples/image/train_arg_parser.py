@@ -28,6 +28,9 @@ TIME_SAMPLING_STRATEGIES = [
     "stratified_mixed",
     "curriculum",
 ]
+SOLVER_AWARE_CLOCK_MODES = ["off", "training_free", "fixed_point"]
+SOLVER_AWARE_TARGET_SOLVERS = ["euler", "heun2", "stork4"]
+SOLVER_AWARE_MONITOR_ESTIMATORS = ["auto", "jvp", "fd"]
 
 
 def get_args_parser():
@@ -119,6 +122,97 @@ def get_args_parser():
         default=50,
         type=int,
         help="Evaluation NFE budget counted as real network forward calls.",
+    )
+    parser.add_argument(
+        "--solver_aware_clock_mode",
+        default="off",
+        choices=SOLVER_AWARE_CLOCK_MODES,
+        help=(
+            "Parallel solver-aware clock branch. "
+            "off keeps the legacy FT-clock path unchanged; "
+            "training_free estimates a solver-specific monitor from a checkpoint "
+            "without retraining; fixed_point reserves the future damped fixed-point interface."
+        ),
+    )
+    parser.add_argument(
+        "--solver_aware_target_solver",
+        default="euler",
+        choices=SOLVER_AWARE_TARGET_SOLVERS,
+        help=(
+            "Solver whose local truncation error proxy defines the solver-aware monitor. "
+            "Euler uses L_u u, Heun2 uses L_u^2 u, and STORK4 currently uses a documented phase-1 heuristic."
+        ),
+    )
+    parser.add_argument(
+        "--solver_aware_k",
+        default=0,
+        type=int,
+        help=(
+            "Fixed-point iteration count. k=0 is the training-free path; "
+            "future k>=1 will enable damped fixed-point retraining/finetuning."
+        ),
+    )
+    parser.add_argument(
+        "--solver_aware_monitor_estimator",
+        default="auto",
+        choices=SOLVER_AWARE_MONITOR_ESTIMATORS,
+        help=(
+            "Estimator for solver-aware material derivatives. "
+            "auto picks the recommended default per solver."
+        ),
+    )
+    parser.add_argument(
+        "--solver_aware_monitor_grid_size",
+        default=65,
+        type=int,
+        help="Number of s-grid points used to estimate Q(s) and build the solver-aware clock.",
+    )
+    parser.add_argument(
+        "--solver_aware_monitor_batch_size",
+        default=64,
+        type=int,
+        help="Number of path samples used per monitor grid point.",
+    )
+    parser.add_argument(
+        "--solver_aware_eps",
+        default=1e-6,
+        type=float,
+        help="Numerical epsilon added inside solver-aware monitors before density construction.",
+    )
+    parser.add_argument(
+        "--solver_aware_cache_path",
+        default="none",
+        type=str,
+        help=(
+            "Optional cache file for solver-aware monitor artifacts. "
+            "Use 'none' to disable disk caching."
+        ),
+    )
+    parser.add_argument(
+        "--solver_aware_use_nodes",
+        action="store_true",
+        help="Use solver-aware non-uniform nodes during sampling. Default keeps the legacy uniform grid.",
+    )
+    parser.add_argument(
+        "--solver_aware_checkpoint_path",
+        default="",
+        type=str,
+        help="Optional explicit checkpoint path used by solver-aware training-free evaluation.",
+    )
+    parser.add_argument(
+        "--solver_aware_checkpoint_from_experiment",
+        default="",
+        type=str,
+        help=(
+            "Optional experiment reference of the form 'artifact_group:exp_name' "
+            "or 'artifact_group:dataset:exp_name' for resolving a checkpoint automatically."
+        ),
+    )
+    parser.add_argument(
+        "--solver_aware_checkpoint_epoch",
+        default=-1,
+        type=int,
+        help="Optional checkpoint epoch used with --solver_aware_checkpoint_from_experiment. -1 selects the latest checkpoint.",
     )
     parser.add_argument(
         "--metrics",
