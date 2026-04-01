@@ -57,6 +57,7 @@ class SolverAwareProfile:
     ell_values: Optional[Tensor]
     g_values: Optional[Tensor]
     s_grid: Tensor
+    profile_source: str = "live"
     used_uniform_fallback: bool = False
     floor_mass: float = 0.0
     min_feasible_step_count: int = 0
@@ -516,6 +517,7 @@ def _merge_profile(
         ell_values=None if propagation is None else propagation.ell_values,
         g_values=None if propagation is None else propagation.g_values,
         s_grid=q_e_monitor.s_grid,
+        profile_source="live",
         used_uniform_fallback=False,
         floor_mass=0.0,
         min_feasible_step_count=0,
@@ -574,6 +576,7 @@ def _materialize_solver_aware_artifacts(
         ell_values=profile.ell_values,
         g_values=profile.g_values,
         s_grid=profile.s_grid,
+        profile_source=profile.profile_source,
         used_uniform_fallback=bool(clock.used_uniform_fallback),
         floor_mass=float(clock.floor_mass),
         min_feasible_step_count=int(clock.min_feasible_step_count),
@@ -622,10 +625,16 @@ def _curve_summary(values: Tensor) -> Dict[str, float]:
     }
 
 
+def _tail(values: Tensor, count: int = 8) -> list[float]:
+    tensor = values.detach().to(dtype=torch.float64).cpu()
+    return [float(value) for value in tensor[-count:].tolist()]
+
+
 def _build_node_json_payload(
     artifacts: SolverAwareArtifacts,
     diagnostics: Dict[str, float],
 ) -> Dict[str, object]:
+    s_grid_values = artifacts.s_grid.detach().cpu().tolist()
     r_values = artifacts.r_grid.detach().cpu().tolist()
     node_values = artifacts.nodes.detach().cpu().tolist()
     step_values = artifacts.step_sizes.detach().cpu().tolist()
@@ -633,11 +642,22 @@ def _build_node_json_payload(
     return {
         "step_count": int(artifacts.step_count),
         "eta": None if artifacts.eta is None else float(artifacts.eta),
+        "profile_source": artifacts.profile_source,
+        "constrained_floor_active": bool(
+            not artifacts.legacy_unconstrained and not artifacts.used_uniform_fallback
+        ),
         "used_uniform_fallback": bool(artifacts.used_uniform_fallback),
         "floor_mass": float(artifacts.floor_mass),
         "min_feasible_step_count": int(artifacts.min_feasible_step_count),
+        "min_density_minus_floor": float(diagnostics.get("min_density_minus_floor", float("nan"))),
+        "s_grid": [float(value) for value in s_grid_values],
         "rho_floor": [float(value) for value in rho_floor_values],
         "rho_floor_summary": _curve_summary(artifacts.rho_floor),
+        "unconstrained_weight": [
+            float(value) for value in artifacts.unconstrained_weight.detach().cpu().tolist()
+        ],
+        "final_density": [float(value) for value in artifacts.density.detach().cpu().tolist()],
+        "phi": [float(value) for value in artifacts.phi.detach().cpu().tolist()],
         "r_grid": [float(value) for value in r_values],
         "nodes": [float(value) for value in node_values],
         "step_sizes": [float(value) for value in step_values],
@@ -741,6 +761,7 @@ def maybe_build_solver_aware_profile(
         )
         if profile is not None:
             profile.cache_path = str(resolved_cache_path)
+            profile.profile_source = "cache"
             logger.info(
                 "Loaded solver-aware constrained profile from cache %s",
                 resolved_cache_path,
@@ -840,6 +861,12 @@ def maybe_build_solver_aware_profile(
                 signature=signature,
                 artifacts=profile,
             )
+        profile.profile_source = "live"
+        logger.info(
+            "Built solver-aware constrained profile live for %s from checkpoint %s.",
+            target_solver,
+            checkpoint_source,
+        )
 
     logger.info("Solver-aware note: %s", profile.notes)
     if output_dir is not None:
@@ -856,6 +883,7 @@ def maybe_build_solver_aware_profile(
                     "notes": profile.notes,
                     "checkpoint_source": profile.checkpoint_source,
                     "cache_path": profile.cache_path,
+                    "profile_source": profile.profile_source,
                     "grid_size": profile.grid_size,
                     "batch_size": profile.batch_size,
                     "eps": profile.eps,
@@ -965,30 +993,58 @@ def maybe_build_solver_aware_artifacts(
         profile=profile,
         step_count=step_count,
     )
+    logger.info(
+        "Materialized solver-aware nodes live for %s at step_count=%d using profile source %s.",
+        artifacts.target_solver,
+        int(step_count),
+        artifacts.profile_source,
+    )
     if output_dir is not None:
         output_dir.mkdir(parents=True, exist_ok=True)
         diagnostics = _node_diagnostics(
             step_sizes=artifacts.step_sizes,
             step_count=artifacts.step_count,
         )
+        min_density_minus_floor = float(
+            (artifacts.density.detach().to(dtype=torch.float64) - artifacts.rho_floor.detach().to(dtype=torch.float64))
+            .min()
+            .item()
+        )
         rho_floor_summary = _curve_summary(artifacts.rho_floor)
         diagnostics.update(
             {
+                "constrained_floor_active": bool(
+                    not artifacts.legacy_unconstrained and not artifacts.used_uniform_fallback
+                ),
                 "used_uniform_fallback": bool(artifacts.used_uniform_fallback),
                 "floor_mass": float(artifacts.floor_mass),
                 "min_feasible_step_count": int(artifacts.min_feasible_step_count),
+                "min_density_minus_floor": float(min_density_minus_floor),
             }
         )
         logger.info(
-            "Solver-aware diagnostics for %s at step_count=%d: eta=%s, floor_mass=%.6f, "
-            "rho_floor[min=%.6f, mean=%.6f, max=%.6f].",
+            "Solver-aware diagnostics for %s at step_count=%d: floor_active=%s, eta=%s, "
+            "floor_mass=%.6f, min(final_density-rho_floor)=%.6e, "
+            "rho_floor[min=%.6f, mean=%.6f, max=%.6f], "
+            "max_step=%.6f, max_step_over_uniform=%.6f.",
             artifacts.target_solver,
             int(artifacts.step_count),
+            str(bool(diagnostics["constrained_floor_active"])).lower(),
             "none" if artifacts.eta is None else f"{float(artifacts.eta):.6f}",
             float(artifacts.floor_mass),
+            float(min_density_minus_floor),
             float(rho_floor_summary["min"]),
             float(rho_floor_summary["mean"]),
             float(rho_floor_summary["max"]),
+            float(diagnostics["max_step"]),
+            float(diagnostics["max_step_over_uniform"]),
+        )
+        logger.info(
+            "Solver-aware tails for %s at step_count=%d: rho_floor_tail=%s, final_density_tail=%s.",
+            artifacts.target_solver,
+            int(artifacts.step_count),
+            _tail(artifacts.rho_floor),
+            _tail(artifacts.density),
         )
         if artifacts.used_uniform_fallback:
             logger.warning(
@@ -1020,6 +1076,7 @@ def maybe_build_solver_aware_artifacts(
                     "notes": artifacts.notes,
                     "checkpoint_source": artifacts.checkpoint_source,
                     "cache_path": artifacts.cache_path,
+                    "profile_source": artifacts.profile_source,
                     "grid_size": artifacts.grid_size,
                     "batch_size": artifacts.batch_size,
                     "eps": artifacts.eps,
@@ -1028,9 +1085,11 @@ def maybe_build_solver_aware_artifacts(
                     "floor_eps": artifacts.floor_eps,
                     "compute_qh_for_euler": artifacts.compute_qh_for_euler,
                     "legacy_unconstrained": artifacts.legacy_unconstrained,
+                    "constrained_floor_active": diagnostics["constrained_floor_active"],
                     "used_uniform_fallback": artifacts.used_uniform_fallback,
                     "floor_mass": artifacts.floor_mass,
                     "min_feasible_step_count": artifacts.min_feasible_step_count,
+                    "min_density_minus_floor": min_density_minus_floor,
                     "rho_floor_summary": rho_floor_summary,
                     "use_propagation": artifacts.use_propagation,
                     "g_mode": artifacts.g_mode,

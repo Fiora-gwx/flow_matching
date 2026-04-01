@@ -3,7 +3,10 @@ import unittest
 try:
     import torch
 
-    from examples.image.training.solver_aware.clock import build_solver_aware_clock_profile
+    from examples.image.training.solver_aware.clock import (
+        build_density_from_constrained_problem,
+        build_solver_aware_clock_profile,
+    )
 except ModuleNotFoundError:  # pragma: no cover - depends on local runtime.
     torch = None
 
@@ -32,6 +35,24 @@ class SolverAwareClockTest(unittest.TestCase):
         self.assertFalse(profile.used_uniform_fallback)
         self.assertAlmostEqual(profile.eta, 1.0 / 4.2, places=5)
         self.assertAlmostEqual(profile.floor_mass, 0.7, places=4)
+        self.assertGreaterEqual(
+            float((profile.density - profile.rho_floor).min().item()),
+            -1.0e-6,
+        )
+
+    def test_constrained_density_never_scales_below_floor(self):
+        s_grid = torch.tensor([0.0, 0.5, 1.0], dtype=torch.float64)
+        rho_floor = torch.full((3,), 0.5, dtype=torch.float64)
+        unconstrained_weight = torch.tensor([1.0e-12, 1.0e9, 1.0e-12], dtype=torch.float64)
+
+        density = build_density_from_constrained_problem(
+            s_grid=s_grid,
+            unconstrained_weight=unconstrained_weight,
+            rho_floor=rho_floor,
+            legacy_unconstrained=False,
+        )
+
+        self.assertGreaterEqual(float((density - rho_floor).min().item()), -1.0e-6)
 
     def test_constrained_profile_falls_back_to_uniform_when_floor_is_infeasible(self):
         s_grid = torch.linspace(0.0, 1.0, 5, dtype=torch.float32)

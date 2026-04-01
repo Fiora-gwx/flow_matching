@@ -8,6 +8,8 @@ from torch import Tensor
 EPS = 1e-12
 BISECTION_TOL = 1e-8
 BISECTION_STEPS = 80
+MASS_TOL = 1e-6
+DENSITY_FLOOR_TOL = 1e-6
 ADAPTIVE_ETA_DELTA = 0.3
 ADAPTIVE_ETA_CAP = 0.95
 
@@ -208,35 +210,82 @@ def build_density_from_constrained_problem(
         return unconstrained_weight / normalization
 
     floor_mass = float(_integrate_on_grid(rho_floor, s_grid).item())
-    if floor_mass >= 1.0 - 1e-6:
-        density = rho_floor
-        normalization = _integrate_on_grid(density, s_grid).clamp(min=EPS)
-        return density / normalization
+    if floor_mass >= 1.0 - MASS_TOL:
+        return rho_floor.clone()
 
     lower = torch.zeros((), device=s_grid.device, dtype=unconstrained_weight.dtype)
     upper = torch.ones((), device=s_grid.device, dtype=unconstrained_weight.dtype)
 
+    def _density(scale: Tensor) -> Tensor:
+        return torch.maximum(rho_floor, scale * unconstrained_weight)
+
     def _mass(scale: Tensor) -> Tensor:
-        density = torch.maximum(rho_floor, scale * unconstrained_weight)
-        return _integrate_on_grid(density, s_grid)
+        return _integrate_on_grid(_density(scale), s_grid)
 
     while float(_mass(upper).item()) < 1.0:
         upper = upper * 2.0
         if float(upper.item()) > 1e12:
             raise ValueError("Failed to bracket the constrained normalization constant c_N.")
 
+    best_density = rho_floor.clone()
+    best_mass_gap = abs(floor_mass - 1.0)
     for _ in range(BISECTION_STEPS):
         midpoint = 0.5 * (lower + upper)
-        if float(_mass(midpoint).item()) < 1.0:
+        midpoint_density = _density(midpoint)
+        midpoint_mass = float(_integrate_on_grid(midpoint_density, s_grid).item())
+        midpoint_gap = abs(midpoint_mass - 1.0)
+        if midpoint_gap < best_mass_gap:
+            best_density = midpoint_density
+            best_mass_gap = midpoint_gap
+        if midpoint_mass < 1.0:
             lower = midpoint
         else:
             upper = midpoint
+        if midpoint_gap <= MASS_TOL:
+            break
         if float((upper - lower).abs().item()) <= BISECTION_TOL:
             break
 
-    density = torch.maximum(rho_floor, upper * unconstrained_weight)
-    normalization = _integrate_on_grid(density, s_grid).clamp(min=EPS)
-    return density / normalization
+    normalization = _integrate_on_grid(best_density, s_grid).clamp(min=EPS)
+    if float(normalization.item()) < 1.0 - MASS_TOL:
+        return best_density / normalization
+    return best_density
+
+
+def _assert_density_respects_floor(
+    *,
+    final_density: Tensor,
+    rho_floor: Tensor,
+    s_grid: Tensor,
+    unconstrained_weight: Tensor,
+    floor_active: bool,
+    tol: float = DENSITY_FLOOR_TOL,
+) -> float:
+    if not bool(floor_active):
+        return float("nan")
+    diff = final_density - rho_floor
+    min_diff = float(diff.min().item())
+    if min_diff >= -float(tol):
+        return min_diff
+    violation_count = min(5, int(diff.numel()))
+    worst_values, worst_indices = torch.topk(-diff, k=violation_count)
+    details = []
+    for rank, (value, index) in enumerate(zip(worst_values.tolist(), worst_indices.tolist())):
+        details.append(
+            {
+                "rank": int(rank),
+                "index": int(index),
+                "s": float(s_grid[index].item()),
+                "rho_floor": float(rho_floor[index].item()),
+                "unconstrained_weight": float(unconstrained_weight[index].item()),
+                "final_density": float(final_density[index].item()),
+                "violation": -float(value),
+            }
+        )
+    raise AssertionError(
+        "Constrained solver-aware density violated the admissible floor: "
+        f"min(final_density-rho_floor)={min_diff:.6e}, worst={details}"
+    )
 
 
 def build_solver_aware_clock_profile(
@@ -380,6 +429,7 @@ def build_solver_aware_clock_profile(
     used_uniform_fallback = bool(
         not legacy_unconstrained and floor_mass > 1.0 + 1e-6
     )
+    floor_active = bool(not legacy_unconstrained and not used_uniform_fallback)
 
     if used_uniform_fallback:
         density = torch.ones_like(unconstrained_weight, dtype=torch.float64)
@@ -391,6 +441,13 @@ def build_solver_aware_clock_profile(
             rho_floor=rho_floor,
             legacy_unconstrained=legacy_unconstrained,
         )
+    _assert_density_respects_floor(
+        final_density=density,
+        rho_floor=rho_floor,
+        s_grid=s_grid.to(dtype=torch.float64),
+        unconstrained_weight=unconstrained_weight,
+        floor_active=floor_active,
+    )
 
     trapezoids = 0.5 * (density[1:] + density[:-1]) * (s_grid[1:] - s_grid[:-1]).to(dtype=density.dtype)
     phi = torch.zeros_like(s_grid, dtype=density.dtype)
