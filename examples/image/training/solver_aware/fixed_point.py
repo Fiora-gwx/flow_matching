@@ -57,6 +57,9 @@ class SolverAwareProfile:
     ell_values: Optional[Tensor]
     g_values: Optional[Tensor]
     s_grid: Tensor
+    used_uniform_fallback: bool = False
+    floor_mass: float = 0.0
+    min_feasible_step_count: int = 0
 
     def to_dict(self) -> Dict[str, object]:
         payload = asdict(self)
@@ -513,6 +516,9 @@ def _merge_profile(
         ell_values=None if propagation is None else propagation.ell_values,
         g_values=None if propagation is None else propagation.g_values,
         s_grid=q_e_monitor.s_grid,
+        used_uniform_fallback=False,
+        floor_mass=0.0,
+        min_feasible_step_count=0,
     )
 
 
@@ -568,6 +574,9 @@ def _materialize_solver_aware_artifacts(
         ell_values=profile.ell_values,
         g_values=profile.g_values,
         s_grid=profile.s_grid,
+        used_uniform_fallback=bool(clock.used_uniform_fallback),
+        floor_mass=float(clock.floor_mass),
+        min_feasible_step_count=int(clock.min_feasible_step_count),
         q_smoothed=clock.q_smoothed,
         q_h_smoothed=clock.q_h_smoothed,
         rho_floor=clock.rho_floor,
