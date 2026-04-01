@@ -158,12 +158,14 @@ def estimate_jacobian_spectral_envelope(
     pool_radius: int,
     safety_factor: float,
 ) -> PropagationArtifacts:
-    """Estimate ell(s) and G(s) for propagation-aware solver-aware clocks.
+    """Estimate ell(s) and G(s) for constrained propagation-aware clocks.
 
-    The propagation-aware construction augments the local monitor with
+    The constrained propagation-aware construction augments the local monitor with
     G(s)=exp(int_s^1 ell(t)dt), where ell(s) upper-bounds ||J_x u(z,s)||_2 along
     the path ensemble. We estimate ||J_x u||_2 by power iteration using JVP/VJP
     products on a fixed reference batch to keep ell(s) continuous across s.
+    The resulting G(s) is then combined with the admissible floor through the
+    constrained density rho_N*(s)=max{rho_floor_N(s), c_N w(s)}.
     """
     if float(safety_factor) < 1.0:
         raise ValueError(

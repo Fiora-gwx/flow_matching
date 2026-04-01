@@ -280,6 +280,11 @@ def eval_model(
                     grid_size=args.solver_aware_monitor_grid_size,
                     batch_size=args.solver_aware_monitor_batch_size,
                     eps=args.solver_aware_eps,
+                    eta=float(getattr(args, "solver_aware_eta", 0.25)),
+                    floor_mode=str(getattr(args, "solver_aware_floor_mode", "pointwise")),
+                    floor_eps=float(getattr(args, "solver_aware_floor_eps", 1e-6)),
+                    compute_qh_for_euler=bool(getattr(args, "solver_aware_compute_qh_for_euler", True)),
+                    legacy_unconstrained=bool(getattr(args, "solver_aware_legacy_unconstrained", False)),
                     cfg_scale=args.cfg_scale,
                     step_count=step_count,
                     checkpoint_source=str(

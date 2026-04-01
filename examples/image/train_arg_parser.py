@@ -31,6 +31,7 @@ TIME_SAMPLING_STRATEGIES = [
 SOLVER_AWARE_CLOCK_MODES = ["off", "training_free", "fixed_point"]
 SOLVER_AWARE_TARGET_SOLVERS = ["euler", "heun2", "stork4"]
 SOLVER_AWARE_MONITOR_ESTIMATORS = ["auto", "jvp", "fd"]
+SOLVER_AWARE_FLOOR_MODES = ["pointwise", "constant"]
 SOLVER_AWARE_G_MODES = ["none", "jacobian_envelope"]
 SOLVER_AWARE_G_ESTIMATORS = ["spectral_max", "spectral_maxpool", "spectral_q95"]
 
@@ -130,10 +131,11 @@ def get_args_parser():
         default="off",
         choices=SOLVER_AWARE_CLOCK_MODES,
         help=(
-            "Parallel solver-aware clock branch. "
+            "Parallel solver-aware constrained clock branch. "
             "off keeps the legacy FT-clock path unchanged; "
-            "training_free estimates a solver-specific monitor from a checkpoint "
-            "without retraining; fixed_point reserves the future damped fixed-point interface."
+            "training_free estimates solver-aware constrained clocks from a checkpoint "
+            "without retraining; fixed_point performs continuation finetuning under the "
+            "same constrained formulation."
         ),
     )
     parser.add_argument(
@@ -142,7 +144,8 @@ def get_args_parser():
         choices=SOLVER_AWARE_TARGET_SOLVERS,
         help=(
             "Solver whose local truncation error proxy defines the solver-aware monitor. "
-            "Euler uses L_u u, Heun2 uses L_u^2 u, and STORK4 currently uses a documented phase-1 heuristic."
+            "Euler uses L_u u, Heun2 uses L_u^2 u, and STORK4 currently uses a constrained "
+            "proxy built on the Heun2 monitor."
         ),
     )
     parser.add_argument(
@@ -182,6 +185,48 @@ def get_args_parser():
         help="Numerical epsilon added inside solver-aware monitors before density construction.",
     )
     parser.add_argument(
+        "--solver_aware_eta",
+        default=0.25,
+        type=float,
+        help=(
+            "Admissibility tolerance eta used in the constrained floor "
+            "rho_floor_N(s)=B(s)/(3 eta N A(s))."
+        ),
+    )
+    parser.add_argument(
+        "--solver_aware_floor_mode",
+        default="pointwise",
+        choices=SOLVER_AWARE_FLOOR_MODES,
+        help=(
+            "How the admissible floor rho_floor is constructed from monitor proxies. "
+            "pointwise uses the full s-dependent floor; constant uses the global worst-case floor."
+        ),
+    )
+    parser.add_argument(
+        "--solver_aware_floor_eps",
+        default=1e-6,
+        type=float,
+        help="Numerical epsilon used inside the constrained admissible floor ratio.",
+    )
+    parser.add_argument(
+        "--solver_aware_compute_qh_for_euler",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Whether Euler constrained clocks should also estimate Q_H(s) so the admissible "
+            "floor can be built from sqrt((Q_H+eps)/(Q_E+eps))."
+        ),
+    )
+    parser.add_argument(
+        "--solver_aware_legacy_unconstrained",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Deprecated debug-only path that re-enables the old unconstrained solver-aware density. "
+            "The constrained formulation is now the default main method."
+        ),
+    )
+    parser.add_argument(
         "--solver_aware_cache_path",
         default="none",
         type=str,
@@ -200,7 +245,7 @@ def get_args_parser():
         action="store_true",
         help=(
             "Augment solver-aware densities with a propagation envelope G(s). "
-            "When disabled, the existing monitor-only solver-aware clock is used."
+            "When disabled, the constrained monitor-only solver-aware clock is used."
         ),
     )
     parser.add_argument(

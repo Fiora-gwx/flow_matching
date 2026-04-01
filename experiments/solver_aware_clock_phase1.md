@@ -1,5 +1,11 @@
 # Solver-Aware Clock Phase-1
 
+> Deprecated note:
+> This document records the old unconstrained phase-1 solver-aware path.
+> The repository main path now uses the constrained formulation documented in
+> `experiments/solver_aware_constrained_clock.md`. The unconstrained path only
+> remains as a deprecated debug mode.
+
 ## 1. 原理
 
 我们在现有 FT-Clock / finite-time contraction 主线之外，新增一条并行的 solver-aware clock 支路。当前阶段只实现 `k=0` 的 training-free 版本：

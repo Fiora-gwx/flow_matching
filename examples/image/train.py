@@ -31,9 +31,12 @@ from training.continuous_runtime import (
 )
 from training.data_transform import get_eval_transform, get_train_transform
 from training.eval_loop import CFGScaledModel, eval_model
+from training.fixed_step_solver import build_step_methods
 from training.grad_scaler import NativeScalerWithGradNormCount as NativeScaler
 from training.load_and_save import load_model, save_model
-from training.solver_aware.fixed_point import maybe_build_solver_aware_profile
+from training.solver_aware.fixed_point import (
+    maybe_build_solver_aware_artifacts,
+)
 from training.train_loop import train_one_epoch
 
 logger = logging.getLogger(__name__)
@@ -187,6 +190,12 @@ def _is_fixed_point_finetune(args) -> bool:
         and str(getattr(args, "solver_aware_clock_mode", "off")) == "fixed_point"
         and int(getattr(args, "solver_aware_k", 0)) > 0
     )
+
+
+def _solver_aware_step_count_for_nfe(solver_name: str, nfe_budget: int) -> int:
+    if solver_name == "stork4":
+        return int(nfe_budget)
+    return len(build_step_methods(solver_name=solver_name, nfe_budget=int(nfe_budget)))
 
 
 def _build_solver_aware_monitor_loader(args, dataset_eval):
@@ -354,8 +363,15 @@ def main(args):
             for param_group in optimizer.param_groups:
                 param_group["lr"] = finetune_lr
         lr_schedule = _build_lr_schedule(optimizer=optimizer, args=args)
-        args.solver_aware_training_profile_path = _fixed_point_profile_path(args)
+        profile_cache_path = _fixed_point_profile_path(args)
+        args.solver_aware_training_profile_path = str(
+            (Path(args.output_dir) / "solver_aware_artifacts.pt").resolve()
+        )
         g_cache_path = _fixed_point_g_cache_path(args)
+        training_step_count = _solver_aware_step_count_for_nfe(
+            solver_name=args.solver_aware_target_solver,
+            nfe_budget=int(getattr(args, "eval_nfe", 50)),
+        )
         if distributed_mode.is_main_process():
             monitor_loader = _build_solver_aware_monitor_loader(
                 args=args,
@@ -371,9 +387,10 @@ def main(args):
             )
             solver_aware_monitor_model.train(False)
             with torch.enable_grad():
-                maybe_build_solver_aware_profile(
+                maybe_build_solver_aware_artifacts(
                     mode=args.solver_aware_clock_mode,
                     k=args.solver_aware_k,
+                    use_nodes=True,
                     velocity_model=solver_aware_monitor_model,
                     data_loader=monitor_loader,
                     device=device,
@@ -384,10 +401,16 @@ def main(args):
                     grid_size=args.solver_aware_monitor_grid_size,
                     batch_size=args.solver_aware_monitor_batch_size,
                     eps=args.solver_aware_eps,
+                    eta=float(getattr(args, "solver_aware_eta", 0.25)),
+                    floor_mode=str(getattr(args, "solver_aware_floor_mode", "pointwise")),
+                    floor_eps=float(getattr(args, "solver_aware_floor_eps", 1e-6)),
+                    compute_qh_for_euler=bool(getattr(args, "solver_aware_compute_qh_for_euler", True)),
+                    legacy_unconstrained=bool(getattr(args, "solver_aware_legacy_unconstrained", False)),
                     cfg_scale=args.cfg_scale,
+                    step_count=training_step_count,
                     checkpoint_source=str(args.resume),
                     seed=int(getattr(args, "seed", 0)),
-                    cache_path=args.solver_aware_training_profile_path,
+                    cache_path=profile_cache_path,
                     use_propagation=bool(getattr(args, "solver_aware_use_propagation", False)),
                     g_mode=str(getattr(args, "solver_aware_g_mode", "none")),
                     g_estimator=str(getattr(args, "solver_aware_g_estimator", "spectral_max")),
@@ -400,8 +423,10 @@ def main(args):
         if args.distributed:
             torch.distributed.barrier()
         logger.info(
-            "Fixed-point finetuning uses solver-aware profile %s with lr %.2e for %d continuation epochs.",
+            "Fixed-point finetuning uses constrained solver-aware artifacts %s "
+            "(target step_count=%d) with lr %.2e for %d continuation epochs.",
             args.solver_aware_training_profile_path,
+            training_step_count,
             finetune_lr,
             int(getattr(args, "solver_aware_finetune_epochs", 0)),
         )

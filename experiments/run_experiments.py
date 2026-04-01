@@ -46,6 +46,11 @@ SOLVER_AWARE_DEFAULTS = {
     "solver_aware_k": 0,
     "solver_aware_monitor_estimator": "",
     "solver_aware_eps": None,
+    "solver_aware_eta": None,
+    "solver_aware_floor_mode": "",
+    "solver_aware_floor_eps": None,
+    "solver_aware_compute_qh_for_euler": "",
+    "solver_aware_legacy_unconstrained": "",
     "solver_aware_use_nodes": False,
     "solver_aware_use_propagation": False,
     "solver_aware_g_mode": "",
@@ -261,9 +266,11 @@ def _resolve_solver_aware_result_fields(
     if target_solver == "stork4":
         monitor_solver = "heun2"
         theorem_backed = "false"
-    elif target_solver in {"euler", "heun2"}:
+    elif target_solver == "euler":
         theorem_backed = "true"
-    if use_propagation:
+    elif target_solver == "heun2":
+        theorem_backed = "false"
+    if spec.get("solver_aware_legacy_unconstrained", False):
         theorem_backed = "false"
 
     return {
@@ -273,6 +280,15 @@ def _resolve_solver_aware_result_fields(
         "solver_aware_k": int(spec.get("solver_aware_k", 0)),
         "solver_aware_monitor_estimator": str(spec.get("solver_aware_monitor_estimator", "auto")),
         "solver_aware_eps": spec.get("solver_aware_eps"),
+        "solver_aware_eta": spec.get("solver_aware_eta"),
+        "solver_aware_floor_mode": str(spec.get("solver_aware_floor_mode", "pointwise")),
+        "solver_aware_floor_eps": spec.get("solver_aware_floor_eps"),
+        "solver_aware_compute_qh_for_euler": (
+            "true" if spec.get("solver_aware_compute_qh_for_euler", True) else "false"
+        ),
+        "solver_aware_legacy_unconstrained": (
+            "true" if spec.get("solver_aware_legacy_unconstrained", False) else "false"
+        ),
         "solver_aware_use_nodes": "true" if use_nodes else "false",
         "solver_aware_use_propagation": "true" if use_propagation else "false",
         "solver_aware_g_mode": g_mode if use_propagation else "",
@@ -312,7 +328,12 @@ def _solver_aware_fields_match(row: Dict[str, object], spec: Dict[str, object]) 
             if int(observed) != int(expected_value):
                 return False
             continue
-        if field in {"solver_aware_eps", "solver_aware_g_safety_factor"}:
+        if field in {
+            "solver_aware_eps",
+            "solver_aware_eta",
+            "solver_aware_floor_eps",
+            "solver_aware_g_safety_factor",
+        }:
             if float(observed) != float(expected_value):
                 return False
             continue
@@ -415,6 +436,18 @@ class ExperimentManager:
                 )
             if spec.get("solver_aware_eps") is not None:
                 flags.append(f"--solver_aware_eps {spec['solver_aware_eps']}")
+            if spec.get("solver_aware_eta") is not None:
+                flags.append(f"--solver_aware_eta {spec['solver_aware_eta']}")
+            if spec.get("solver_aware_floor_mode") not in {None, ""}:
+                flags.append(f"--solver_aware_floor_mode {spec['solver_aware_floor_mode']}")
+            if spec.get("solver_aware_floor_eps") is not None:
+                flags.append(f"--solver_aware_floor_eps {spec['solver_aware_floor_eps']}")
+            if spec.get("solver_aware_compute_qh_for_euler", True):
+                flags.append("--solver_aware_compute_qh_for_euler")
+            else:
+                flags.append("--no-solver_aware_compute_qh_for_euler")
+            if spec.get("solver_aware_legacy_unconstrained", False):
+                flags.append("--solver_aware_legacy_unconstrained")
             if spec.get("solver_aware_cache_path") not in {None, ""}:
                 flags.append(f"--solver_aware_cache_path {spec['solver_aware_cache_path']}")
             if spec.get("solver_aware_use_nodes", False):
@@ -732,7 +765,7 @@ class ExperimentManager:
         for experiment in experiments:
             spec = merge_dicts(base_config, experiment)
             assert_no_legacy_keys(spec)
-            spec = resolve_dynamic_spec_fields(spec, workspace_root=Path.cwd())
+            spec = resolve_dynamic_spec_fields(spec, workspace_root=ROOT)
             spec.setdefault("dataset", base_config.get("dataset", "cifar10"))
             spec.setdefault("data_path", base_config.get("data_path", "./data/cifar10"))
             spec.setdefault("epochs", base_config.get("epochs", 500))

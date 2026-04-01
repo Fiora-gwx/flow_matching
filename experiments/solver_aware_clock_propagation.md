@@ -1,5 +1,11 @@
 # Propagation-Aware Solver-Aware Clock
 
+> Deprecated note:
+> This document records the older unconstrained propagation-aware path.
+> The repository main path now uses the constrained formulation documented in
+> `experiments/solver_aware_constrained_clock.md`. The unconstrained path only
+> remains as a deprecated debug mode.
+
 ## 1. 原理
 
 在现有 solver-aware 支路上，我们继续保留局部截断误差 monitor：

@@ -294,6 +294,11 @@ class RunExperimentsTest(unittest.TestCase):
                         'solver_aware_target_solver': 'euler',
                         'solver_aware_k': 2,
                         'solver_aware_use_nodes': True,
+                        'solver_aware_eta': 0.25,
+                        'solver_aware_floor_mode': 'pointwise',
+                        'solver_aware_floor_eps': 1e-6,
+                        'solver_aware_compute_qh_for_euler': True,
+                        'solver_aware_legacy_unconstrained': False,
                         'solver_aware_use_propagation': True,
                         'solver_aware_g_mode': 'jacobian_envelope',
                         'solver_aware_g_estimator': 'spectral_max',
@@ -309,19 +314,28 @@ class RunExperimentsTest(unittest.TestCase):
             finally:
                 os.chdir(cwd)
             self.assertIn('--solver_aware_use_propagation', cmd)
+            self.assertIn('--solver_aware_eta 0.25', cmd)
+            self.assertIn('--solver_aware_floor_mode pointwise', cmd)
+            self.assertIn('--solver_aware_floor_eps 1e-06', cmd)
+            self.assertIn('--solver_aware_compute_qh_for_euler', cmd)
             self.assertIn('--solver_aware_g_mode jacobian_envelope', cmd)
             self.assertIn('--solver_aware_g_estimator spectral_max', cmd)
             self.assertIn('--solver_aware_finetune_epochs 5', cmd)
             self.assertIn('--solver_aware_finetune_lr 1e-05', cmd)
             self.assertIn('--solver_aware_finetune_resume_from_previous', cmd)
 
-    def test_propagation_aware_rows_are_marked_non_theorem_backed(self):
+    def test_constrained_euler_rows_are_marked_theorem_backed(self):
         fields = _resolve_solver_aware_result_fields(
             spec={
                 'sampling_solver': 'euler',
                 'solver_aware_clock_mode': 'training_free',
                 'solver_aware_target_solver': 'euler',
                 'solver_aware_use_nodes': True,
+                'solver_aware_eta': 0.25,
+                'solver_aware_floor_mode': 'pointwise',
+                'solver_aware_floor_eps': 1e-6,
+                'solver_aware_compute_qh_for_euler': True,
+                'solver_aware_legacy_unconstrained': False,
                 'solver_aware_use_propagation': True,
                 'solver_aware_g_mode': 'jacobian_envelope',
                 'solver_aware_g_estimator': 'spectral_max',
@@ -334,7 +348,7 @@ class RunExperimentsTest(unittest.TestCase):
             },
             checkpoint_path=None,
         )
-        self.assertEqual(fields['solver_aware_theorem_backed'], 'false')
+        self.assertEqual(fields['solver_aware_theorem_backed'], 'true')
 
     def test_build_eval_cmd_includes_solver_aware_flags(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -370,6 +384,11 @@ class RunExperimentsTest(unittest.TestCase):
                         'solver_aware_monitor_grid_size': 65,
                         'solver_aware_monitor_batch_size': 64,
                         'solver_aware_eps': 1e-6,
+                        'solver_aware_eta': 0.25,
+                        'solver_aware_floor_mode': 'pointwise',
+                        'solver_aware_floor_eps': 1e-6,
+                        'solver_aware_compute_qh_for_euler': True,
+                        'solver_aware_legacy_unconstrained': False,
                         'solver_aware_use_nodes': True,
                     },
                     workspace / 'out',
@@ -380,6 +399,10 @@ class RunExperimentsTest(unittest.TestCase):
                 os.chdir(cwd)
             self.assertIn('--solver_aware_clock_mode training_free', cmd)
             self.assertIn('--solver_aware_target_solver stork4', cmd)
+            self.assertIn('--solver_aware_eta 0.25', cmd)
+            self.assertIn('--solver_aware_floor_mode pointwise', cmd)
+            self.assertIn('--solver_aware_floor_eps 1e-06', cmd)
+            self.assertIn('--solver_aware_compute_qh_for_euler', cmd)
             self.assertIn('--solver_aware_use_nodes', cmd)
             self.assertIn('--solver_aware_monitor_estimator auto', cmd)
 

@@ -91,7 +91,7 @@ def plot_fid_curves(
     for axis, solver in zip(axes[0], solvers):
         for node_family, label, color in (
             ("uniform", "uniform baseline", "#1f77b4"),
-            ("solver_aware", "solver-aware / propagation-aware", "#d62728"),
+            ("solver_aware", "constrained solver-aware / propagation-aware", "#d62728"),
         ):
             series_rows = sorted(grouped[solver][node_family], key=lambda row: int(row["nfe"]))
             if not series_rows:
@@ -160,9 +160,23 @@ def plot_solver_artifact(
     s_grid = artifact["s_grid"].cpu()
     q_values = artifact["q_values"].cpu()
     q_smoothed = artifact["q_smoothed"].cpu()
+    q_h_values = artifact.get("q_h_values")
+    q_h_smoothed = artifact.get("q_h_smoothed")
+    if isinstance(q_h_values, torch.Tensor):
+        q_h_values = q_h_values.cpu()
+    else:
+        q_h_values = None
+    if isinstance(q_h_smoothed, torch.Tensor):
+        q_h_smoothed = q_h_smoothed.cpu()
+    else:
+        q_h_smoothed = None
+    rho_floor = artifact["rho_floor"].cpu()
+    unconstrained_weight = artifact["unconstrained_weight"].cpu()
+    density = artifact.get("final_density", artifact["density"]).cpu()
     phi = artifact["phi"].cpu()
     r_grid = artifact["r_grid"].cpu()
     nodes = artifact["nodes"].cpu()
+    step_sizes = artifact["step_sizes"].cpu()
     ell_values = artifact.get("ell_values")
     g_values = artifact.get("g_values")
     has_propagation = isinstance(ell_values, torch.Tensor) and isinstance(g_values, torch.Tensor)
@@ -171,47 +185,77 @@ def plot_solver_artifact(
         g_values = g_values.cpu()
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    panel_count = 5 if has_propagation else 3
-    fig, axes = plt.subplots(1, panel_count, figsize=(5.0 * panel_count, 4.2))
-
-    axes[0].plot(s_grid, q_values, color="#9c755f", linewidth=1.8, label="Q(s)")
-    axes[0].plot(s_grid, q_smoothed, color="#2ca02c", linewidth=2.2, label="smoothed Q(s)")
-    axes[0].set_title(f"{solver}: monitor")
-    axes[0].set_xlabel("s")
-    axes[0].set_ylabel("monitor value")
-    axes[0].grid(alpha=0.25, linestyle="--", linewidth=0.8)
-    axes[0].legend(frameon=False)
-
-    axis_offset = 1
+    plot_specs = [
+        ("Q_E(s)", lambda axis: (
+            axis.plot(s_grid, q_values, color="#9c755f", linewidth=1.6, label="raw"),
+            axis.plot(s_grid, q_smoothed, color="#2ca02c", linewidth=2.0, label="smoothed"),
+            axis.set_ylabel("Q_E"),
+            axis.legend(frameon=False),
+        )),
+    ]
+    if q_h_values is not None and q_h_smoothed is not None:
+        plot_specs.append(
+            ("Q_H(s)", lambda axis: (
+                axis.plot(s_grid, q_h_values, color="#8c564b", linewidth=1.6, label="raw"),
+                axis.plot(s_grid, q_h_smoothed, color="#17becf", linewidth=2.0, label="smoothed"),
+                axis.set_ylabel("Q_H"),
+                axis.legend(frameon=False),
+            ))
+        )
     if has_propagation:
-        axes[1].plot(s_grid, ell_values, color="#ff7f0e", linewidth=2.0)
-        axes[1].set_title(f"{solver}: ell(s)")
-        axes[1].set_xlabel("s")
-        axes[1].set_ylabel("spectral envelope")
-        axes[1].grid(alpha=0.25, linestyle="--", linewidth=0.8)
+        plot_specs.append(
+            ("G(s)", lambda axis: (
+                axis.plot(s_grid, g_values, color="#9467bd", linewidth=2.0),
+                axis.set_ylabel("G"),
+            ))
+        )
+    plot_specs.extend(
+        [
+            ("rho_floor(s)", lambda axis: (
+                axis.plot(s_grid, rho_floor, color="#ff7f0e", linewidth=2.0),
+                axis.set_ylabel("rho_floor"),
+            )),
+            ("weight(s)", lambda axis: (
+                axis.plot(s_grid, unconstrained_weight, color="#bcbd22", linewidth=2.0),
+                axis.set_ylabel("unconstrained weight"),
+            )),
+            ("density(s)", lambda axis: (
+                axis.plot(s_grid, density, color="#d62728", linewidth=2.0),
+                axis.set_ylabel("constrained density"),
+            )),
+            ("phi(s)", lambda axis: (
+                axis.plot(s_grid, phi, color="#1f77b4", linewidth=2.0),
+                axis.plot([0.0, 1.0], [0.0, 1.0], color="#7f7f7f", linestyle="--", linewidth=1.0),
+                axis.set_ylabel("r = phi(s)"),
+            )),
+            ("nodes", lambda axis: (
+                axis.plot(r_grid, nodes, color="#d62728", linewidth=2.0),
+                axis.scatter(r_grid, nodes, color="#d62728", s=18),
+                axis.plot([0.0, 1.0], [0.0, 1.0], color="#7f7f7f", linestyle="--", linewidth=1.0),
+                axis.set_xlabel("r-grid"),
+                axis.set_ylabel("s_n"),
+            )),
+            ("step sizes", lambda axis: (
+                axis.step(r_grid, step_sizes, where="mid", color="#1f77b4", linewidth=2.0),
+                axis.scatter(r_grid, step_sizes, color="#1f77b4", s=18),
+                axis.set_xlabel("r-grid"),
+                axis.set_ylabel("Δs_n"),
+            )),
+        ]
+    )
 
-        axes[2].plot(s_grid, g_values, color="#9467bd", linewidth=2.0)
-        axes[2].set_title(f"{solver}: G(s)")
-        axes[2].set_xlabel("s")
-        axes[2].set_ylabel("propagation factor")
-        axes[2].grid(alpha=0.25, linestyle="--", linewidth=0.8)
-        axis_offset = 3
-
-    axes[axis_offset].plot(s_grid, phi, color="#1f77b4", linewidth=2.2)
-    axes[axis_offset].plot([0.0, 1.0], [0.0, 1.0], color="#7f7f7f", linestyle="--", linewidth=1.0)
-    axes[axis_offset].set_title(f"{solver}: phi(s)")
-    axes[axis_offset].set_xlabel("s")
-    axes[axis_offset].set_ylabel("r = phi(s)")
-    axes[axis_offset].grid(alpha=0.25, linestyle="--", linewidth=0.8)
-
-    axes[axis_offset + 1].plot(r_grid, nodes, color="#d62728", linewidth=2.0)
-    axes[axis_offset + 1].scatter(r_grid, nodes, color="#d62728", s=18)
-    axes[axis_offset + 1].plot([0.0, 1.0], [0.0, 1.0], color="#7f7f7f", linestyle="--", linewidth=1.0)
-    axes[axis_offset + 1].set_title(f"{solver}: nodes")
-    axes[axis_offset + 1].set_xlabel("r-grid")
-    axes[axis_offset + 1].set_ylabel("s_n = psi(n / N)")
-    axes[axis_offset + 1].grid(alpha=0.25, linestyle="--", linewidth=0.8)
-
+    panel_count = len(plot_specs)
+    ncols = min(3, panel_count)
+    nrows = (panel_count + ncols - 1) // ncols
+    fig, axes = plt.subplots(nrows, ncols, figsize=(5.2 * ncols, 4.2 * nrows), squeeze=False)
+    flat_axes = list(axes.flat)
+    for axis, (title, plotter) in zip(flat_axes, plot_specs):
+        plotter(axis)
+        axis.set_title(f"{solver}: {title}")
+        axis.set_xlabel("s" if title not in {"nodes", "step sizes"} else axis.get_xlabel())
+        axis.grid(alpha=0.25, linestyle="--", linewidth=0.8)
+    for axis in flat_axes[len(plot_specs):]:
+        axis.axis("off")
     fig.tight_layout()
     fig.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close(fig)
@@ -249,7 +293,10 @@ def write_summary(
         propagation = str(improved_rows[0].get("solver_aware_use_propagation", "false"))
         g_mode = str(improved_rows[0].get("solver_aware_g_mode", ""))
         g_estimator = str(improved_rows[0].get("solver_aware_g_estimator", ""))
-        status = "theorem-backed" if theorem_backed == "true" else "heuristic / non-strict"
+        eta = str(improved_rows[0].get("solver_aware_eta", ""))
+        floor_mode = str(improved_rows[0].get("solver_aware_floor_mode", ""))
+        legacy = str(improved_rows[0].get("solver_aware_legacy_unconstrained", "false"))
+        status = "constrained theorem-backed proxy" if theorem_backed == "true" else "constrained proxy extension"
         lines.append(f"## {solver}")
         if checkpoint_sources:
             lines.append(f"- checkpoint: `{checkpoint_sources[0]}`")
@@ -257,6 +304,7 @@ def write_summary(
         lines.append(f"- baseline NFE: {baseline_nfes}")
         lines.append(f"- solver-aware NFE: {[int(row['nfe']) for row in improved_rows]}")
         lines.append(f"- propagation: `{propagation}` / mode `{g_mode}` / estimator `{g_estimator}`")
+        lines.append(f"- constrained: `eta={eta}` / floor_mode `{floor_mode}` / legacy `{legacy}`")
         lines.append(f"- status: {status}")
         lines.append("")
 

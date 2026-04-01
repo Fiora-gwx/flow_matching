@@ -241,8 +241,11 @@ def compute_euler_monitor(
     """Estimate the Euler monitor Q_E(s) = E||L_u u(z, s)||^2 on a path sample grid.
 
     The material derivative is L_u = partial_s + u · grad_x. Euler's local
-    truncation error is controlled by L_u u, so the optimal error-proxy density
-    satisfies rho_E(s) propto (Q_E(s) + eps)^(1/4).
+    truncation error is controlled by L_u u, so Q_E(s) supplies the main
+    constrained weight in the new admissible formulation. Together with Q_H(s),
+    it defines the Euler floor proxy
+
+        rho_floor_N(s) ≈ (1 / (3 eta N)) * sqrt((Q_H(s)+eps)/(Q_E(s)+eps)).
     """
     resolved_estimator = _resolve_estimator(target_solver="euler", estimator=estimator)
     microbatch_size = _resolve_monitor_microbatch_size(
@@ -315,7 +318,8 @@ def compute_euler_monitor(
         theorem_backed=True,
         notes=(
             "Euler local truncation error is controlled by L_u u, so the monitor uses "
-            "Q_E(s) = E||L_u u||^2 and rho_E(s) propto (Q_E(s)+eps)^(1/4)."
+            "Q_E(s)=E||L_u u||^2. In the constrained solver-aware formulation Q_E(s) "
+            "provides the admissible weight while Q_H(s) provides the floor proxy."
         ),
     )
 
@@ -334,8 +338,9 @@ def compute_heun2_monitor(
     """Estimate the Heun2 monitor Q_H(s) = E||L_u^2 u(z, s)||^2 on a path sample grid.
 
     Heun2 / explicit trapezoid has leading local truncation error controlled by
-    L_u^2 u. The phase-1 density therefore uses rho_H(s) propto (Q_H(s) + eps)^(1/6).
-    The default estimator follows the requested phase-1 design:
+    L_u^2 u. In the constrained framework Q_H(s) supplies the primary Heun2
+    weight and also acts as the numerator of the Euler admissible floor proxy.
+    The default estimator follows the requested design:
     - auto/fd: along-flow finite differences.
     - jvp: nested JVP evaluation of L_u(L_u u).
     """
@@ -452,6 +457,7 @@ def compute_heun2_monitor(
         theorem_backed=True,
         notes=(
             "Heun2 local truncation error is controlled by L_u^2 u, so the monitor uses "
-            "Q_H(s) = E||L_u^2 u||^2 and rho_H(s) propto (Q_H(s)+eps)^(1/6)."
+            "Q_H(s)=E||L_u^2 u||^2. In the constrained extension Q_H(s) feeds the "
+            "primary weight and the Euler-style admissible floor proxy."
         ),
     )
