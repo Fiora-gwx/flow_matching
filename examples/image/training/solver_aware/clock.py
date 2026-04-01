@@ -13,9 +13,11 @@ class SolverAwareClockProfile:
     s_grid: Tensor
     q_raw: Tensor
     q_smoothed: Tensor
+    g_values: Optional[Tensor]
     density: Tensor
     phi: Tensor
     density_exponent: float
+    propagation_exponent: float
     smoothing_window: int
 
 
@@ -98,17 +100,50 @@ def build_solver_aware_nodes(
     return r_grid, nodes
 
 
+def build_density_from_monitor(
+    q_smoothed: Tensor,
+    density_exponent: float,
+    eps: float,
+) -> Tensor:
+    return torch.pow(q_smoothed + float(eps), float(density_exponent))
+
+
+def build_density_from_monitor_and_propagation(
+    q_smoothed: Tensor,
+    g_values: Tensor,
+    density_exponent: float,
+    propagation_exponent: float,
+    eps: float,
+) -> Tensor:
+    monitor_density = build_density_from_monitor(
+        q_smoothed=q_smoothed,
+        density_exponent=density_exponent,
+        eps=eps,
+    )
+    return monitor_density * torch.pow(
+        g_values.clamp(min=EPS),
+        float(propagation_exponent),
+    )
+
+
 def build_solver_aware_clock_profile(
     s_grid: Tensor,
     q_values: Tensor,
     density_exponent: float,
     eps: float,
+    g_values: Optional[Tensor] = None,
+    propagation_exponent: float = 0.0,
     smoothing_window: Optional[int] = None,
 ) -> SolverAwareClockProfile:
     """Build a monotone solver-aware clock from a squared monitor curve Q(s).
 
-    For a solver with leading local error order p+1, the phase-1 density uses
+    For the monitor-only branch, the density uses
     m(s) = (Q(s) + eps)^gamma, where gamma = 1/4 for Euler and 1/6 for Heun2.
+
+    For the propagation-aware branch we multiply by G(s)^eta:
+    - Euler: rho_E(s) propto G(s)^(1/2) * (Q_E(s) + eps)^(1/4)
+    - Heun2: rho_H(s) propto G(s)^(1/3) * (Q_H(s) + eps)^(1/6)
+
     The cumulative clock is phi(s) = int_0^s m(u) du / int_0^1 m(u) du and the
     sampling nodes are then produced by s_n = psi(n / N) with psi = phi^{-1}.
     """
@@ -126,7 +161,23 @@ def build_solver_aware_clock_profile(
     )
     q_raw = q_values.to(dtype=torch.float64)
     q_smoothed = _moving_average(q_raw.clamp(min=0.0), window=smoothing_window)
-    density = torch.pow(q_smoothed + float(eps), float(density_exponent))
+    density = build_density_from_monitor(
+        q_smoothed=q_smoothed,
+        density_exponent=density_exponent,
+        eps=eps,
+    )
+    g_tensor = None
+    if g_values is not None:
+        if g_values.ndim != 1 or g_values.numel() != s_grid.numel():
+            raise ValueError("g_values must be one-dimensional and aligned with s_grid.")
+        g_tensor = g_values.to(dtype=torch.float64).clamp(min=EPS)
+        density = build_density_from_monitor_and_propagation(
+            q_smoothed=q_smoothed,
+            g_values=g_tensor,
+            density_exponent=density_exponent,
+            propagation_exponent=propagation_exponent,
+            eps=eps,
+        )
 
     ds = s_grid[1:] - s_grid[:-1]
     if torch.any(ds <= 0.0):
@@ -135,16 +186,20 @@ def build_solver_aware_clock_profile(
     trapezoids = 0.5 * (density[1:] + density[:-1]) * ds.to(dtype=density.dtype)
     phi = torch.zeros_like(s_grid, dtype=density.dtype)
     phi[1:] = torch.cumsum(trapezoids, dim=0)
-    phi = phi / phi[-1].clamp(min=EPS)
+    normalization = phi[-1].clamp(min=EPS)
+    phi = phi / normalization
+    density = density / normalization
     phi = _strictly_monotone(phi)
 
     return SolverAwareClockProfile(
         s_grid=s_grid,
         q_raw=q_raw.to(dtype=s_grid.dtype),
         q_smoothed=q_smoothed.to(dtype=s_grid.dtype),
+        g_values=None if g_tensor is None else g_tensor.to(dtype=s_grid.dtype),
         density=density.to(dtype=s_grid.dtype),
         phi=phi.to(dtype=s_grid.dtype),
         density_exponent=float(density_exponent),
+        propagation_exponent=float(propagation_exponent),
         smoothing_window=int(smoothing_window),
     )
 
@@ -155,6 +210,8 @@ def build_solver_aware_clock(
     density_exponent: float,
     eps: float,
     node_count: int,
+    g_values: Optional[Tensor] = None,
+    propagation_exponent: float = 0.0,
     smoothing_window: Optional[int] = None,
 ) -> SolverAwareClockArtifacts:
     profile = build_solver_aware_clock_profile(
@@ -162,6 +219,8 @@ def build_solver_aware_clock(
         q_values=q_values,
         density_exponent=density_exponent,
         eps=eps,
+        g_values=g_values,
+        propagation_exponent=propagation_exponent,
         smoothing_window=smoothing_window,
     )
     if node_count < 2:
@@ -175,9 +234,11 @@ def build_solver_aware_clock(
         s_grid=profile.s_grid,
         q_raw=profile.q_raw,
         q_smoothed=profile.q_smoothed,
+        g_values=profile.g_values,
         density=profile.density,
         phi=profile.phi,
         density_exponent=profile.density_exponent,
+        propagation_exponent=profile.propagation_exponent,
         smoothing_window=profile.smoothing_window,
         r_grid=r_grid,
         nodes=nodes,

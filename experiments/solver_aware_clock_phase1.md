@@ -121,6 +121,6 @@ phase-1 配置文件：
 
 ## 6. 当前限制
 
-- 当前 phase-1 只实现 training-free `k=0`，`fixed_point + k>=1` 会明确报 `NotImplementedError`。
-- STORK4 只完成了 non-uniform node support + benchmark pipeline；它的 monitor 仍是 Heun2 proxy heuristic。
-- solver-aware monitor 估计默认在评估前做一次共享构造，并缓存为 `solver_aware_artifacts.pt/json`。
+- STORK4 仍然只完成了 non-uniform node support + benchmark pipeline；它的 monitor 仍是 Heun2 proxy heuristic。
+- propagation-aware 扩展与 fixed-point continuation 的新实现，见 `experiments/solver_aware_clock_propagation.md`。
+- solver-aware monitor / propagation profile 默认会在评估前做一次共享构造，并缓存为 `solver_aware_profile.pt` / `solver_aware_artifacts.pt`。

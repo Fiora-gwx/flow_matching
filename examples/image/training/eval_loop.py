@@ -288,6 +288,13 @@ def eval_model(
                     ),
                     seed=int(getattr(args, "seed", 0)),
                     cache_path=args.solver_aware_cache_path,
+                    use_propagation=bool(getattr(args, "solver_aware_use_propagation", False)),
+                    g_mode=str(getattr(args, "solver_aware_g_mode", "none")),
+                    g_estimator=str(getattr(args, "solver_aware_g_estimator", "spectral_max")),
+                    g_power_iters=int(getattr(args, "solver_aware_g_power_iters", 2)),
+                    g_pool_radius=int(getattr(args, "solver_aware_g_pool_radius", 2)),
+                    g_safety_factor=float(getattr(args, "solver_aware_g_safety_factor", 1.0)),
+                    g_cache_path=str(getattr(args, "solver_aware_g_cache_path", "none")),
                     output_dir=Path(args.output_dir) if args.output_dir else None,
                 )
             if solver_aware_artifacts is not None:

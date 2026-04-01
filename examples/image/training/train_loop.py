@@ -37,6 +37,11 @@ def _make_generator(device: torch.device, seed: int) -> torch.Generator:
     return generator
 
 
+def _train_autocast_context(device: torch.device):
+    device_type = "cuda" if device.type == "cuda" else "cpu"
+    return torch.amp.autocast(device_type=device_type, enabled=(device.type == "cuda"))
+
+
 def train_one_epoch(
     model: torch.nn.Module,
     data_loader: Iterable,
@@ -64,6 +69,9 @@ def train_one_epoch(
     label_generator = _make_generator(device=device, seed=base_seed + 11)
     time_generator = _make_generator(device=device, seed=base_seed + 23)
     noise_generator = _make_generator(device=device, seed=base_seed + 37)
+    solver_aware_profile_path = str(
+        getattr(args, "solver_aware_training_profile_path", "") or ""
+    ).strip()
 
     for data_iter_step, (samples, labels) in enumerate(data_loader):
         if data_iter_step % accum_iter == 0:
@@ -105,6 +113,7 @@ def train_one_epoch(
                 clock_beta=args.clock_beta,
                 signal_scale_sq=args.signal_scale_sq,
                 strategy=getattr(args, "time_sampling_strategy", "uniform"),
+                solver_aware_profile_path=solver_aware_profile_path,
                 mixed_lambda=getattr(args, "mixed_lambda", 0.5),
                 stratified_bins=getattr(args, "stratified_bins", 16),
                 current_epoch=epoch,
@@ -119,8 +128,9 @@ def train_one_epoch(
                 clock_family=args.clock_family,
                 clock_beta=args.clock_beta,
                 signal_scale_sq=args.signal_scale_sq,
+                solver_aware_profile_path=solver_aware_profile_path,
             )
-            with torch.cuda.amp.autocast():
+            with _train_autocast_context(device=device):
                 pred = model(continuous_batch.x_t, continuous_batch.r, extra=conditioning)
                 if getattr(args, "model_output_type", "velocity") == "base_velocity":
                     target = continuous_batch.base_velocity

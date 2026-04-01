@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Dict, Optional, Tuple
 
 import torch
@@ -35,6 +36,8 @@ _CLOCK_IMPORTANCE_CDF_CACHE: Dict[
     Tuple[str, str, float, float, str, str],
     Tuple[Tensor, Tensor],
 ] = {}
+_SOLVER_AWARE_PROFILE_CACHE: Dict[Tuple[str, str, str], Dict[str, Tensor]] = {}
+_SOLVER_AWARE_IMPORTANCE_CDF_CACHE: Dict[Tuple[str, str, str], Tuple[Tensor, Tensor]] = {}
 
 
 @dataclass
@@ -240,6 +243,81 @@ def _interpolate_monotone_lookup(
     return interpolated.reshape_as(x)
 
 
+def _normalize_solver_aware_profile_path(profile_path: Optional[str]) -> Optional[str]:
+    if profile_path in {None, "", "none", "None"}:
+        return None
+    return str(Path(str(profile_path)).expanduser().resolve())
+
+
+def _solver_aware_profile_cache_key(
+    profile_path: str,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> Tuple[str, str, str]:
+    return (str(profile_path), str(device), str(dtype))
+
+
+def _load_solver_aware_profile(
+    profile_path: str,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> Dict[str, Tensor]:
+    normalized_path = _normalize_solver_aware_profile_path(profile_path)
+    if normalized_path is None:
+        raise ValueError("solver-aware profile path is required for arbitrary-clock evaluation.")
+    cache_key = _solver_aware_profile_cache_key(
+        profile_path=normalized_path,
+        device=device,
+        dtype=dtype,
+    )
+    cached = _SOLVER_AWARE_PROFILE_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    payload = torch.load(normalized_path, map_location="cpu")
+    if isinstance(payload, dict) and "artifacts" in payload:
+        payload = payload["artifacts"]
+    required_fields = ("s_grid", "phi", "density")
+    missing_fields = [field for field in required_fields if field not in payload]
+    if missing_fields:
+        raise ValueError(
+            f"Solver-aware profile {normalized_path} is missing required fields: {missing_fields}"
+        )
+    resolved = {
+        key: value.to(device=device, dtype=dtype)
+        for key, value in payload.items()
+        if isinstance(value, Tensor)
+    }
+    _SOLVER_AWARE_PROFILE_CACHE[cache_key] = resolved
+    return resolved
+
+
+def evaluate_solver_aware_clock(
+    r: Tensor,
+    solver_aware_profile_path: str,
+) -> ClockOutput:
+    profile = _load_solver_aware_profile(
+        profile_path=solver_aware_profile_path,
+        device=r.device,
+        dtype=r.dtype,
+    )
+    s_grid = profile["s_grid"]
+    phi_grid = profile["phi"]
+    density_grid = profile["density"].clamp(min=EPS)
+    s = _interpolate_monotone_inverse(
+        r=r,
+        s_grid=s_grid,
+        r_grid=phi_grid,
+    )
+    density = _interpolate_monotone_lookup(
+        x=s,
+        x_grid=s_grid,
+        y_grid=density_grid,
+    ).clamp(min=EPS)
+    ds_dr = torch.reciprocal(density)
+    return _with_exact_endpoints(r=r, s=s, ds_dr=ds_dr)
+
+
 def _clock_importance_cache_key(
     clock_family: str,
     path_family: str,
@@ -301,6 +379,42 @@ def _build_clock_importance_cdf(
     cdf[-1] = 1.0
 
     _CLOCK_IMPORTANCE_CDF_CACHE[cache_key] = (r_grid, cdf)
+    return r_grid, cdf
+
+
+def _build_solver_aware_importance_cdf(
+    solver_aware_profile_path: str,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> Tuple[Tensor, Tensor]:
+    normalized_path = _normalize_solver_aware_profile_path(solver_aware_profile_path)
+    if normalized_path is None:
+        raise ValueError("solver-aware profile path is required for arbitrary-clock importance sampling.")
+    cache_key = _solver_aware_profile_cache_key(
+        profile_path=normalized_path,
+        device=device,
+        dtype=dtype,
+    )
+    cached = _SOLVER_AWARE_IMPORTANCE_CDF_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    profile = _load_solver_aware_profile(
+        profile_path=normalized_path,
+        device=device,
+        dtype=dtype,
+    )
+    r_grid = profile["phi"].clamp(0.0, 1.0)
+    density = profile["density"].clamp(min=EPS)
+    importance_density = torch.reciprocal(density).square().clamp(min=EPS)
+    increments = 0.5 * (importance_density[1:] + importance_density[:-1]) * (
+        r_grid[1:] - r_grid[:-1]
+    )
+    cdf = torch.zeros_like(r_grid)
+    cdf[1:] = torch.cumsum(increments, dim=0)
+    cdf = cdf / cdf[-1].clamp(min=EPS)
+    cdf[-1] = 1.0
+    _SOLVER_AWARE_IMPORTANCE_CDF_CACHE[cache_key] = (r_grid, cdf)
     return r_grid, cdf
 
 
@@ -654,9 +768,25 @@ def sample_importance_weighted_time(
     clock_family: str,
     clock_beta: Optional[float],
     signal_scale_sq: Optional[float],
+    solver_aware_profile_path: Optional[str] = None,
     dtype: torch.dtype = torch.float32,
     generator: Optional[torch.Generator] = None,
 ) -> Tensor:
+    normalized_profile_path = _normalize_solver_aware_profile_path(solver_aware_profile_path)
+    if normalized_profile_path is not None:
+        r_grid, cdf = _build_solver_aware_importance_cdf(
+            solver_aware_profile_path=normalized_profile_path,
+            device=device,
+            dtype=dtype,
+        )
+        return _sample_from_importance_cdf(
+            batch_size=batch_size,
+            r_grid=r_grid,
+            cdf=cdf,
+            device=device,
+            dtype=dtype,
+            generator=generator,
+        )
     if clock_family == "uniform":
         return sample_strict_unit_interval(
             batch_size=batch_size,
@@ -691,12 +821,47 @@ def _sample_importance_weighted_time_in_interval(
     clock_family: str,
     clock_beta: Optional[float],
     signal_scale_sq: Optional[float],
+    solver_aware_profile_path: Optional[str],
     device: torch.device,
     dtype: torch.dtype,
     generator: Optional[torch.Generator],
 ) -> Tensor:
     if batch_size <= 0:
         return torch.empty(0, device=device, dtype=dtype)
+    normalized_profile_path = _normalize_solver_aware_profile_path(solver_aware_profile_path)
+    if normalized_profile_path is not None:
+        r_grid, cdf = _build_solver_aware_importance_cdf(
+            solver_aware_profile_path=normalized_profile_path,
+            device=device,
+            dtype=dtype,
+        )
+        interval = torch.tensor([left, right], device=device, dtype=dtype)
+        cdf_interval = _interpolate_monotone_lookup(
+            x=interval,
+            x_grid=r_grid,
+            y_grid=cdf,
+        )
+        cdf_left = float(cdf_interval[0].item())
+        cdf_right = float(cdf_interval[1].item())
+        if cdf_right <= cdf_left + EPS:
+            return _sample_uniform_in_interval(
+                batch_size=batch_size,
+                left=left,
+                right=right,
+                device=device,
+                dtype=dtype,
+                generator=generator,
+            )
+        return _sample_from_importance_cdf(
+            batch_size=batch_size,
+            r_grid=r_grid,
+            cdf=cdf,
+            device=device,
+            dtype=dtype,
+            cdf_left=cdf_left,
+            cdf_right=cdf_right,
+            generator=generator,
+        )
     if clock_family == "uniform":
         return _sample_uniform_in_interval(
             batch_size=batch_size,
@@ -750,6 +915,7 @@ def _sample_mixed_lambda_time(
     clock_family: str,
     clock_beta: Optional[float],
     signal_scale_sq: Optional[float],
+    solver_aware_profile_path: Optional[str],
     mixed_lambda: float,
     dtype: torch.dtype,
     generator: Optional[torch.Generator],
@@ -770,6 +936,7 @@ def _sample_mixed_lambda_time(
             clock_family=clock_family,
             clock_beta=clock_beta,
             signal_scale_sq=signal_scale_sq,
+            solver_aware_profile_path=solver_aware_profile_path,
             dtype=dtype,
             generator=generator,
         )
@@ -786,6 +953,7 @@ def _sample_mixed_lambda_time(
         clock_family=clock_family,
         clock_beta=clock_beta,
         signal_scale_sq=signal_scale_sq,
+        solver_aware_profile_path=solver_aware_profile_path,
         dtype=dtype,
         generator=generator,
     )
@@ -829,6 +997,7 @@ def _sample_stratified_mixed_time(
     clock_family: str,
     clock_beta: Optional[float],
     signal_scale_sq: Optional[float],
+    solver_aware_profile_path: Optional[str],
     mixed_lambda: float,
     stratified_bins: int,
     dtype: torch.dtype,
@@ -859,6 +1028,7 @@ def _sample_stratified_mixed_time(
             clock_family=clock_family,
             clock_beta=clock_beta,
             signal_scale_sq=signal_scale_sq,
+            solver_aware_profile_path=solver_aware_profile_path,
             device=device,
             dtype=dtype,
             generator=generator,
@@ -877,6 +1047,7 @@ def sample_time_by_strategy(
     clock_beta: Optional[float],
     signal_scale_sq: Optional[float],
     strategy: Optional[str],
+    solver_aware_profile_path: Optional[str] = None,
     mixed_lambda: float = 0.5,
     stratified_bins: int = 16,
     current_epoch: Optional[int] = None,
@@ -900,6 +1071,7 @@ def sample_time_by_strategy(
             clock_family=clock_family,
             clock_beta=clock_beta,
             signal_scale_sq=signal_scale_sq,
+            solver_aware_profile_path=solver_aware_profile_path,
             dtype=dtype,
             generator=generator,
         )
@@ -911,6 +1083,7 @@ def sample_time_by_strategy(
             clock_family=clock_family,
             clock_beta=clock_beta,
             signal_scale_sq=signal_scale_sq,
+            solver_aware_profile_path=solver_aware_profile_path,
             mixed_lambda=mixed_lambda,
             dtype=dtype,
             generator=generator,
@@ -931,6 +1104,7 @@ def sample_time_by_strategy(
             clock_family=clock_family,
             clock_beta=clock_beta,
             signal_scale_sq=signal_scale_sq,
+            solver_aware_profile_path=solver_aware_profile_path,
             mixed_lambda=mixed_lambda,
             stratified_bins=stratified_bins,
             dtype=dtype,
@@ -948,6 +1122,7 @@ def sample_time_by_strategy(
             clock_family=clock_family,
             clock_beta=clock_beta,
             signal_scale_sq=signal_scale_sq,
+            solver_aware_profile_path=solver_aware_profile_path,
             mixed_lambda=curriculum_lambda,
             dtype=dtype,
             generator=generator,
@@ -963,14 +1138,22 @@ def build_continuous_batch(
     clock_family: str,
     clock_beta: Optional[float],
     signal_scale_sq: Optional[float],
+    solver_aware_profile_path: Optional[str] = None,
 ) -> ContinuousPathBatch:
-    clock = evaluate_clock(
-        r=r,
-        clock_family=clock_family,
-        clock_beta=clock_beta,
-        path_family=path_family,
-        signal_scale_sq=signal_scale_sq,
-    )
+    normalized_profile_path = _normalize_solver_aware_profile_path(solver_aware_profile_path)
+    if normalized_profile_path is not None:
+        clock = evaluate_solver_aware_clock(
+            r=r,
+            solver_aware_profile_path=normalized_profile_path,
+        )
+    else:
+        clock = evaluate_clock(
+            r=r,
+            clock_family=clock_family,
+            clock_beta=clock_beta,
+            path_family=path_family,
+            signal_scale_sq=signal_scale_sq,
+        )
     path = evaluate_path(s=clock.s, path_family=path_family)
 
     alpha = expand_like(path.alpha, x_1)

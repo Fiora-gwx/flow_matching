@@ -30,9 +30,10 @@ from training.continuous_runtime import (
     validate_strategy_configuration,
 )
 from training.data_transform import get_eval_transform, get_train_transform
-from training.eval_loop import eval_model
+from training.eval_loop import CFGScaledModel, eval_model
 from training.grad_scaler import NativeScalerWithGradNormCount as NativeScaler
 from training.load_and_save import load_model, save_model
+from training.solver_aware.fixed_point import maybe_build_solver_aware_profile
 from training.train_loop import train_one_epoch
 
 logger = logging.getLogger(__name__)
@@ -136,6 +137,69 @@ def _resolve_solver_aware_checkpoint(args) -> Optional[Path]:
     return None
 
 
+def _build_optimizer(model_without_ddp, args, lr: Optional[float] = None):
+    return torch.optim.AdamW(
+        model_without_ddp.parameters(),
+        lr=float(args.lr if lr is None else lr),
+        betas=args.optimizer_betas,
+    )
+
+
+def _build_lr_schedule(optimizer, args):
+    if args.decay_lr:
+        return torch.optim.lr_scheduler.LinearLR(
+            optimizer,
+            total_iters=args.epochs,
+            start_factor=1.0,
+            end_factor=1e-8 / optimizer.param_groups[0]["lr"],
+        )
+    return torch.optim.lr_scheduler.ConstantLR(
+        optimizer,
+        total_iters=args.epochs,
+        factor=1.0,
+    )
+
+
+def _fixed_point_profile_path(args) -> str:
+    explicit_path = str(getattr(args, "solver_aware_cache_path", "") or "").strip()
+    if explicit_path and explicit_path not in {"none", "None"}:
+        return str(Path(explicit_path).expanduser().resolve())
+    monitor_solver = "heun2" if args.solver_aware_target_solver == "stork4" else args.solver_aware_target_solver
+    suffix = "_propagation" if bool(getattr(args, "solver_aware_use_propagation", False)) else ""
+    return str(
+        (Path(args.output_dir).parent / f"solver_aware_profile_{args.solver_aware_target_solver}_{monitor_solver}{suffix}.pt").resolve()
+    )
+
+
+def _fixed_point_g_cache_path(args) -> str:
+    explicit_path = str(getattr(args, "solver_aware_g_cache_path", "") or "").strip()
+    if explicit_path and explicit_path not in {"none", "None"}:
+        return str(Path(explicit_path).expanduser().resolve())
+    monitor_solver = "heun2" if args.solver_aware_target_solver == "stork4" else args.solver_aware_target_solver
+    return str(
+        (Path(args.output_dir).parent / f"solver_aware_propagation_{args.solver_aware_target_solver}_{monitor_solver}.pt").resolve()
+    )
+
+
+def _is_fixed_point_finetune(args) -> bool:
+    return (
+        not bool(getattr(args, "eval_only", False))
+        and str(getattr(args, "solver_aware_clock_mode", "off")) == "fixed_point"
+        and int(getattr(args, "solver_aware_k", 0)) > 0
+    )
+
+
+def _build_solver_aware_monitor_loader(args, dataset_eval):
+    return torch.utils.data.DataLoader(
+        dataset_eval,
+        batch_size=max(1, int(args.solver_aware_monitor_batch_size)),
+        shuffle=False,
+        num_workers=0,
+        pin_memory=bool(getattr(args, "pin_mem", True)),
+        drop_last=False,
+    )
+
+
 def main(args):
     logging.basicConfig(
         level=logging.INFO,
@@ -233,20 +297,8 @@ def main(args):
         )
         model_without_ddp = model.module
 
-    optimizer = torch.optim.AdamW(
-        model_without_ddp.parameters(), lr=args.lr, betas=args.optimizer_betas
-    )
-    if args.decay_lr:
-        lr_schedule = torch.optim.lr_scheduler.LinearLR(
-            optimizer,
-            total_iters=args.epochs,
-            start_factor=1.0,
-            end_factor=1e-8 / args.lr,
-        )
-    else:
-        lr_schedule = torch.optim.lr_scheduler.ConstantLR(
-            optimizer, total_iters=args.epochs, factor=1.0
-        )
+    optimizer = _build_optimizer(model_without_ddp=model_without_ddp, args=args)
+    lr_schedule = _build_lr_schedule(optimizer=optimizer, args=args)
 
     logger.info(f"Optimizer: {optimizer}")
     logger.info(f"Learning-Rate Schedule: {lr_schedule}")
@@ -284,6 +336,75 @@ def main(args):
         loss_scaler=loss_scaler,
         lr_schedule=lr_schedule,
     )
+    args.solver_aware_training_profile_path = ""
+    if _is_fixed_point_finetune(args):
+        if not args.resume:
+            raise ValueError(
+                "solver_aware_clock_mode=fixed_point requires --resume so continuation finetuning starts from an existing checkpoint."
+            )
+        finetune_lr = float(getattr(args, "solver_aware_finetune_lr", args.lr))
+        if bool(getattr(args, "solver_aware_finetune_reset_optimizer", False)):
+            optimizer = _build_optimizer(
+                model_without_ddp=model_without_ddp,
+                args=args,
+                lr=finetune_lr,
+            )
+            loss_scaler = NativeScaler()
+        else:
+            for param_group in optimizer.param_groups:
+                param_group["lr"] = finetune_lr
+        lr_schedule = _build_lr_schedule(optimizer=optimizer, args=args)
+        args.solver_aware_training_profile_path = _fixed_point_profile_path(args)
+        g_cache_path = _fixed_point_g_cache_path(args)
+        if distributed_mode.is_main_process():
+            monitor_loader = _build_solver_aware_monitor_loader(
+                args=args,
+                dataset_eval=dataset_eval,
+            )
+            solver_aware_monitor_model = CFGScaledModel(
+                model=model_without_ddp,
+                path_family=args.path_family,
+                clock_family=args.clock_family,
+                clock_beta=args.clock_beta,
+                signal_scale_sq=getattr(args, "signal_scale_sq", None),
+                model_output_type=getattr(args, "model_output_type", "velocity"),
+            )
+            solver_aware_monitor_model.train(False)
+            with torch.enable_grad():
+                maybe_build_solver_aware_profile(
+                    mode=args.solver_aware_clock_mode,
+                    k=args.solver_aware_k,
+                    velocity_model=solver_aware_monitor_model,
+                    data_loader=monitor_loader,
+                    device=device,
+                    path_family=args.path_family,
+                    clock_family=args.clock_family,
+                    target_solver=args.solver_aware_target_solver,
+                    estimator=args.solver_aware_monitor_estimator,
+                    grid_size=args.solver_aware_monitor_grid_size,
+                    batch_size=args.solver_aware_monitor_batch_size,
+                    eps=args.solver_aware_eps,
+                    cfg_scale=args.cfg_scale,
+                    checkpoint_source=str(args.resume),
+                    seed=int(getattr(args, "seed", 0)),
+                    cache_path=args.solver_aware_training_profile_path,
+                    use_propagation=bool(getattr(args, "solver_aware_use_propagation", False)),
+                    g_mode=str(getattr(args, "solver_aware_g_mode", "none")),
+                    g_estimator=str(getattr(args, "solver_aware_g_estimator", "spectral_max")),
+                    g_power_iters=int(getattr(args, "solver_aware_g_power_iters", 2)),
+                    g_pool_radius=int(getattr(args, "solver_aware_g_pool_radius", 2)),
+                    g_safety_factor=float(getattr(args, "solver_aware_g_safety_factor", 1.0)),
+                    g_cache_path=g_cache_path,
+                    output_dir=Path(args.output_dir) if args.output_dir else None,
+                )
+        if args.distributed:
+            torch.distributed.barrier()
+        logger.info(
+            "Fixed-point finetuning uses solver-aware profile %s with lr %.2e for %d continuation epochs.",
+            args.solver_aware_training_profile_path,
+            finetune_lr,
+            int(getattr(args, "solver_aware_finetune_epochs", 0)),
+        )
     if distributed_mode.is_main_process():
         args_filepath = Path(args.output_dir) / "args.json"
         logger.info(f"Saving args to {args_filepath}")

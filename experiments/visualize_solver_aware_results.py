@@ -3,7 +3,7 @@ import argparse
 import sys
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Tuple
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -20,7 +20,7 @@ from experiments.result_utils import aggregate_seed_rows, load_result_rows
 
 def _filter_completed_fid_rows(
     rows: Sequence[Dict[str, object]],
-    artifact_group: Optional[str],
+    artifact_group: Optional[str] = None,
 ) -> List[Dict[str, object]]:
     filtered = []
     for row in rows:
@@ -32,6 +32,36 @@ def _filter_completed_fid_rows(
             continue
         filtered.append(row)
     return filtered
+
+
+def _solver_signature(row: Dict[str, object]) -> Tuple[object, ...]:
+    return (
+        row.get("dataset"),
+        row.get("path_family"),
+        row.get("solver"),
+        row.get("strategy_id"),
+        row.get("model_output_type"),
+        row.get("time_sampling_strategy"),
+        row.get("mixed_lambda"),
+        row.get("stratified_bins"),
+    )
+
+
+def _collect_plot_rows(
+    solver_aware_rows: Sequence[Dict[str, object]],
+    baseline_rows: Sequence[Dict[str, object]],
+) -> List[Dict[str, object]]:
+    signatures = {_solver_signature(row) for row in solver_aware_rows}
+    selected_baselines = []
+    for row in baseline_rows:
+        if row.get("clock_family") != "uniform":
+            continue
+        if _solver_signature(row) not in signatures:
+            continue
+        baseline_row = dict(row)
+        baseline_row["node_family"] = "uniform"
+        selected_baselines.append(baseline_row)
+    return list(solver_aware_rows) + selected_baselines
 
 
 def _group_solver_rows(
@@ -60,24 +90,27 @@ def plot_fid_curves(
     fig, axes = plt.subplots(1, len(solvers), figsize=(6 * len(solvers), 4.5), squeeze=False)
     for axis, solver in zip(axes[0], solvers):
         for node_family, label, color in (
-            ("uniform", "uniform nodes", "#1f77b4"),
-            ("solver_aware", "solver-aware nodes", "#d62728"),
+            ("uniform", "uniform baseline", "#1f77b4"),
+            ("solver_aware", "solver-aware / propagation-aware", "#d62728"),
         ):
             series_rows = sorted(grouped[solver][node_family], key=lambda row: int(row["nfe"]))
             if not series_rows:
                 continue
+            x_values = [int(row["nfe"]) for row in series_rows]
+            y_values = [float(row["value_mean"]) for row in series_rows]
+            y_std = [float(row.get("value_std", 0.0)) for row in series_rows]
             axis.plot(
-                [int(row["nfe"]) for row in series_rows],
-                [float(row["value_mean"]) for row in series_rows],
+                x_values,
+                y_values,
                 marker="o",
                 linewidth=2.0,
                 color=color,
                 label=label,
             )
             axis.fill_between(
-                [int(row["nfe"]) for row in series_rows],
-                [float(row["value_mean"]) - float(row.get("value_std", 0.0)) for row in series_rows],
-                [float(row["value_mean"]) + float(row.get("value_std", 0.0)) for row in series_rows],
+                x_values,
+                [mean - std for mean, std in zip(y_values, y_std)],
+                [mean + std for mean, std in zip(y_values, y_std)],
                 color=color,
                 alpha=0.12,
             )
@@ -130,9 +163,16 @@ def plot_solver_artifact(
     phi = artifact["phi"].cpu()
     r_grid = artifact["r_grid"].cpu()
     nodes = artifact["nodes"].cpu()
+    ell_values = artifact.get("ell_values")
+    g_values = artifact.get("g_values")
+    has_propagation = isinstance(ell_values, torch.Tensor) and isinstance(g_values, torch.Tensor)
+    if has_propagation:
+        ell_values = ell_values.cpu()
+        g_values = g_values.cpu()
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig, axes = plt.subplots(1, 3, figsize=(15, 4.2))
+    panel_count = 5 if has_propagation else 3
+    fig, axes = plt.subplots(1, panel_count, figsize=(5.0 * panel_count, 4.2))
 
     axes[0].plot(s_grid, q_values, color="#9c755f", linewidth=1.8, label="Q(s)")
     axes[0].plot(s_grid, q_smoothed, color="#2ca02c", linewidth=2.2, label="smoothed Q(s)")
@@ -142,20 +182,35 @@ def plot_solver_artifact(
     axes[0].grid(alpha=0.25, linestyle="--", linewidth=0.8)
     axes[0].legend(frameon=False)
 
-    axes[1].plot(s_grid, phi, color="#1f77b4", linewidth=2.2)
-    axes[1].plot([0.0, 1.0], [0.0, 1.0], color="#7f7f7f", linestyle="--", linewidth=1.0)
-    axes[1].set_title(f"{solver}: phi(s)")
-    axes[1].set_xlabel("s")
-    axes[1].set_ylabel("r = phi(s)")
-    axes[1].grid(alpha=0.25, linestyle="--", linewidth=0.8)
+    axis_offset = 1
+    if has_propagation:
+        axes[1].plot(s_grid, ell_values, color="#ff7f0e", linewidth=2.0)
+        axes[1].set_title(f"{solver}: ell(s)")
+        axes[1].set_xlabel("s")
+        axes[1].set_ylabel("spectral envelope")
+        axes[1].grid(alpha=0.25, linestyle="--", linewidth=0.8)
 
-    axes[2].plot(r_grid, nodes, color="#d62728", linewidth=2.0)
-    axes[2].scatter(r_grid, nodes, color="#d62728", s=18)
-    axes[2].plot([0.0, 1.0], [0.0, 1.0], color="#7f7f7f", linestyle="--", linewidth=1.0)
-    axes[2].set_title(f"{solver}: nodes")
-    axes[2].set_xlabel("r-grid")
-    axes[2].set_ylabel("s_n = psi(n / N)")
-    axes[2].grid(alpha=0.25, linestyle="--", linewidth=0.8)
+        axes[2].plot(s_grid, g_values, color="#9467bd", linewidth=2.0)
+        axes[2].set_title(f"{solver}: G(s)")
+        axes[2].set_xlabel("s")
+        axes[2].set_ylabel("propagation factor")
+        axes[2].grid(alpha=0.25, linestyle="--", linewidth=0.8)
+        axis_offset = 3
+
+    axes[axis_offset].plot(s_grid, phi, color="#1f77b4", linewidth=2.2)
+    axes[axis_offset].plot([0.0, 1.0], [0.0, 1.0], color="#7f7f7f", linestyle="--", linewidth=1.0)
+    axes[axis_offset].set_title(f"{solver}: phi(s)")
+    axes[axis_offset].set_xlabel("s")
+    axes[axis_offset].set_ylabel("r = phi(s)")
+    axes[axis_offset].grid(alpha=0.25, linestyle="--", linewidth=0.8)
+
+    axes[axis_offset + 1].plot(r_grid, nodes, color="#d62728", linewidth=2.0)
+    axes[axis_offset + 1].scatter(r_grid, nodes, color="#d62728", s=18)
+    axes[axis_offset + 1].plot([0.0, 1.0], [0.0, 1.0], color="#7f7f7f", linestyle="--", linewidth=1.0)
+    axes[axis_offset + 1].set_title(f"{solver}: nodes")
+    axes[axis_offset + 1].set_xlabel("r-grid")
+    axes[axis_offset + 1].set_ylabel("s_n = psi(n / N)")
+    axes[axis_offset + 1].grid(alpha=0.25, linestyle="--", linewidth=0.8)
 
     fig.tight_layout()
     fig.savefig(output_path, dpi=300, bbox_inches="tight")
@@ -163,17 +218,24 @@ def plot_solver_artifact(
 
 
 def write_summary(
-    rows: Sequence[Dict[str, object]],
+    plot_rows: Sequence[Dict[str, object]],
+    solver_aware_rows: Sequence[Dict[str, object]],
     output_path: Path,
+    baseline_csv: Optional[Path],
 ) -> None:
-    grouped = _group_solver_rows(rows)
-    lines = ["# Solver-Aware Clock Phase-1 Summary", ""]
+    grouped = _group_solver_rows(plot_rows)
+    improved_grouped = _group_solver_rows(solver_aware_rows)
+    lines = ["# Solver-Aware Clock Summary", ""]
+    if baseline_csv is not None:
+        lines.append(f"- baseline csv: `{baseline_csv}`")
+        lines.append("")
     for solver in ("euler", "heun2", "stork4"):
         payload = grouped.get(solver)
-        if payload is None or not payload["solver_aware"]:
+        improved_payload = improved_grouped.get(solver)
+        if payload is None or improved_payload is None or not improved_payload["solver_aware"]:
             continue
         baseline_nfes = sorted({int(row["nfe"]) for row in payload["uniform"]})
-        improved_rows = sorted(payload["solver_aware"], key=lambda row: int(row["nfe"]))
+        improved_rows = sorted(improved_payload["solver_aware"], key=lambda row: int(row["nfe"]))
         checkpoint_sources = sorted(
             {
                 str(row.get("monitor_source_checkpoint"))
@@ -184,17 +246,18 @@ def write_summary(
         estimator = str(improved_rows[0].get("solver_aware_monitor_estimator", ""))
         monitor_solver = str(improved_rows[0].get("solver_aware_monitor_solver", ""))
         theorem_backed = str(improved_rows[0].get("solver_aware_theorem_backed", ""))
-        notes = (
-            "theorem-backed"
-            if theorem_backed == "true"
-            else "heuristic phase-1"
-        )
+        propagation = str(improved_rows[0].get("solver_aware_use_propagation", "false"))
+        g_mode = str(improved_rows[0].get("solver_aware_g_mode", ""))
+        g_estimator = str(improved_rows[0].get("solver_aware_g_estimator", ""))
+        status = "theorem-backed" if theorem_backed == "true" else "heuristic / non-strict"
         lines.append(f"## {solver}")
         if checkpoint_sources:
             lines.append(f"- checkpoint: `{checkpoint_sources[0]}`")
         lines.append(f"- monitor: `{monitor_solver}` with estimator `{estimator}`")
-        lines.append(f"- NFE: {baseline_nfes}")
-        lines.append(f"- status: {notes}")
+        lines.append(f"- baseline NFE: {baseline_nfes}")
+        lines.append(f"- solver-aware NFE: {[int(row['nfe']) for row in improved_rows]}")
+        lines.append(f"- propagation: `{propagation}` / mode `{g_mode}` / estimator `{g_estimator}`")
+        lines.append(f"- status: {status}")
         lines.append("")
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -205,14 +268,26 @@ def visualize_solver_aware_results(
     results_dir: Path,
     csv_path: Optional[Path] = None,
     artifact_group: Optional[str] = None,
+    baseline_csv: Optional[Path] = None,
 ) -> None:
     csv_path = csv_path or results_dir / "results.csv"
-    rows = aggregate_seed_rows(_filter_completed_fid_rows(load_result_rows(csv_path), artifact_group))
+    solver_aware_rows = aggregate_seed_rows(
+        _filter_completed_fid_rows(load_result_rows(csv_path), artifact_group)
+    )
+    baseline_rows = []
+    if baseline_csv is not None:
+        baseline_rows = aggregate_seed_rows(
+            _filter_completed_fid_rows(load_result_rows(baseline_csv), artifact_group=None)
+        )
+    plot_rows = _collect_plot_rows(
+        solver_aware_rows=solver_aware_rows,
+        baseline_rows=baseline_rows,
+    )
 
     plots_dir = results_dir / "plots"
-    plot_fid_curves(rows=rows, output_path=plots_dir / "solver_aware_fid_vs_nfe.png")
+    plot_fid_curves(rows=plot_rows, output_path=plots_dir / "solver_aware_fid_vs_nfe.png")
     for solver in ("euler", "heun2", "stork4"):
-        artifact = _load_artifact_for_solver(results_dir=results_dir, rows=rows, solver=solver)
+        artifact = _load_artifact_for_solver(results_dir=results_dir, rows=solver_aware_rows, solver=solver)
         if artifact is None:
             continue
         plot_solver_artifact(
@@ -220,7 +295,12 @@ def visualize_solver_aware_results(
             solver=solver,
             output_path=plots_dir / f"solver_aware_{solver}_monitor_phi_nodes.png",
         )
-    write_summary(rows=rows, output_path=results_dir / "solver_aware_summary.md")
+    write_summary(
+        plot_rows=plot_rows,
+        solver_aware_rows=solver_aware_rows,
+        output_path=results_dir / "solver_aware_summary.md",
+        baseline_csv=baseline_csv,
+    )
 
 
 def main() -> None:
@@ -228,11 +308,13 @@ def main() -> None:
     parser.add_argument("--results_dir", type=Path, required=True)
     parser.add_argument("--csv", type=Path, default=None)
     parser.add_argument("--artifact_group", type=str, default=None)
+    parser.add_argument("--baseline_csv", type=Path, default=None)
     args = parser.parse_args()
     visualize_solver_aware_results(
         results_dir=args.results_dir,
         csv_path=args.csv,
         artifact_group=args.artifact_group,
+        baseline_csv=args.baseline_csv,
     )
 
 

@@ -2,6 +2,7 @@
 import argparse
 import json
 import logging
+import shutil
 import subprocess
 import sys
 import time
@@ -46,10 +47,15 @@ SOLVER_AWARE_DEFAULTS = {
     "solver_aware_monitor_estimator": "",
     "solver_aware_eps": None,
     "solver_aware_use_nodes": False,
+    "solver_aware_use_propagation": False,
+    "solver_aware_g_mode": "",
+    "solver_aware_g_estimator": "",
+    "solver_aware_g_safety_factor": None,
     "node_family": "uniform",
     "monitor_source_checkpoint": "",
     "monitor_grid_size": None,
     "solver_aware_monitor_batch_size": None,
+    "solver_aware_finetune_epochs": None,
     "solver_aware_theorem_backed": "",
 }
 
@@ -244,6 +250,9 @@ def _resolve_solver_aware_result_fields(
     mode = str(spec.get("solver_aware_clock_mode", "off"))
     use_nodes = bool(spec.get("solver_aware_use_nodes", False))
     target_solver = str(spec.get("solver_aware_target_solver", spec.get("sampling_solver", "")))
+    use_propagation = bool(spec.get("solver_aware_use_propagation", False))
+    g_mode = str(spec.get("solver_aware_g_mode", "none") or "none")
+    g_estimator = str(spec.get("solver_aware_g_estimator", "") or "")
     if mode == "off" or not use_nodes:
         return dict(SOLVER_AWARE_DEFAULTS)
 
@@ -254,6 +263,8 @@ def _resolve_solver_aware_result_fields(
         theorem_backed = "false"
     elif target_solver in {"euler", "heun2"}:
         theorem_backed = "true"
+    if use_propagation and g_estimator == "spectral_q95":
+        theorem_backed = "false"
 
     return {
         "solver_aware_clock_mode": mode,
@@ -263,6 +274,12 @@ def _resolve_solver_aware_result_fields(
         "solver_aware_monitor_estimator": str(spec.get("solver_aware_monitor_estimator", "auto")),
         "solver_aware_eps": spec.get("solver_aware_eps"),
         "solver_aware_use_nodes": "true" if use_nodes else "false",
+        "solver_aware_use_propagation": "true" if use_propagation else "false",
+        "solver_aware_g_mode": g_mode if use_propagation else "",
+        "solver_aware_g_estimator": g_estimator if use_propagation else "",
+        "solver_aware_g_safety_factor": (
+            spec.get("solver_aware_g_safety_factor") if use_propagation else None
+        ),
         "node_family": "solver_aware",
         "monitor_source_checkpoint": str(
             checkpoint_path
@@ -271,6 +288,7 @@ def _resolve_solver_aware_result_fields(
         ),
         "monitor_grid_size": spec.get("solver_aware_monitor_grid_size"),
         "solver_aware_monitor_batch_size": spec.get("solver_aware_monitor_batch_size"),
+        "solver_aware_finetune_epochs": spec.get("solver_aware_finetune_epochs"),
         "solver_aware_theorem_backed": theorem_backed,
     }
 
@@ -285,11 +303,16 @@ def _solver_aware_fields_match(row: Dict[str, object], spec: Dict[str, object]) 
             if observed not in {"", None}:
                 return False
             continue
-        if field in {"solver_aware_k", "monitor_grid_size", "solver_aware_monitor_batch_size"}:
+        if field in {
+            "solver_aware_k",
+            "monitor_grid_size",
+            "solver_aware_monitor_batch_size",
+            "solver_aware_finetune_epochs",
+        }:
             if int(observed) != int(expected_value):
                 return False
             continue
-        if field == "solver_aware_eps":
+        if field in {"solver_aware_eps", "solver_aware_g_safety_factor"}:
             if float(observed) != float(expected_value):
                 return False
             continue
@@ -373,6 +396,7 @@ class ExperimentManager:
         if spec.get("fid_samples") is not None:
             flags.append(f"--fid_samples {spec['fid_samples']}")
         if spec.get("solver_aware_clock_mode") not in {None, "", "off"}:
+            solver_aware_mode = str(spec["solver_aware_clock_mode"])
             flags.append(f"--solver_aware_clock_mode {spec['solver_aware_clock_mode']}")
             flags.append(
                 f"--solver_aware_target_solver {spec.get('solver_aware_target_solver', spec.get('sampling_solver', 'euler'))}"
@@ -395,6 +419,20 @@ class ExperimentManager:
                 flags.append(f"--solver_aware_cache_path {spec['solver_aware_cache_path']}")
             if spec.get("solver_aware_use_nodes", False):
                 flags.append("--solver_aware_use_nodes")
+            if spec.get("solver_aware_use_propagation", False):
+                flags.append("--solver_aware_use_propagation")
+            if spec.get("solver_aware_g_mode") not in {None, "", "none"}:
+                flags.append(f"--solver_aware_g_mode {spec['solver_aware_g_mode']}")
+            if spec.get("solver_aware_g_estimator") not in {None, ""}:
+                flags.append(f"--solver_aware_g_estimator {spec['solver_aware_g_estimator']}")
+            if spec.get("solver_aware_g_power_iters") is not None:
+                flags.append(f"--solver_aware_g_power_iters {spec['solver_aware_g_power_iters']}")
+            if spec.get("solver_aware_g_pool_radius") is not None:
+                flags.append(f"--solver_aware_g_pool_radius {spec['solver_aware_g_pool_radius']}")
+            if spec.get("solver_aware_g_safety_factor") is not None:
+                flags.append(f"--solver_aware_g_safety_factor {spec['solver_aware_g_safety_factor']}")
+            if spec.get("solver_aware_g_cache_path") not in {None, ""}:
+                flags.append(f"--solver_aware_g_cache_path {spec['solver_aware_g_cache_path']}")
             if spec.get("solver_aware_checkpoint_path") not in {None, ""}:
                 flags.append(
                     f"--solver_aware_checkpoint_path {spec['solver_aware_checkpoint_path']}"
@@ -408,6 +446,19 @@ class ExperimentManager:
                 flags.append(
                     f"--solver_aware_checkpoint_epoch {spec['solver_aware_checkpoint_epoch']}"
                 )
+            if solver_aware_mode == "fixed_point":
+                if spec.get("solver_aware_finetune_epochs") is not None:
+                    flags.append(
+                        f"--solver_aware_finetune_epochs {spec['solver_aware_finetune_epochs']}"
+                    )
+                if spec.get("solver_aware_finetune_lr") is not None:
+                    flags.append(f"--solver_aware_finetune_lr {spec['solver_aware_finetune_lr']}")
+                if spec.get("solver_aware_finetune_reset_optimizer", False):
+                    flags.append("--solver_aware_finetune_reset_optimizer")
+                if spec.get("solver_aware_finetune_resume_from_previous", True):
+                    flags.append("--solver_aware_finetune_resume_from_previous")
+                else:
+                    flags.append("--no-solver_aware_finetune_resume_from_previous")
         return flags
 
     def build_train_cmd(
@@ -564,6 +615,115 @@ class ExperimentManager:
                 missing_metrics.append(str(metric_name))
         return missing_metrics
 
+    def _checkpoint_epoch_hint(
+        self,
+        checkpoint_path: Path,
+        spec: Dict[str, object],
+    ) -> int:
+        checkpoint_args = load_checkpoint_args(checkpoint_path)
+        if checkpoint_args.get("epochs") not in {None, ""}:
+            return int(checkpoint_args["epochs"]) - 1
+        if checkpoint_args.get("start_epoch") not in {None, ""}:
+            return int(checkpoint_args["start_epoch"])
+        stem = checkpoint_path.stem
+        if stem.startswith("checkpoint-"):
+            suffix = stem.split("checkpoint-", maxsplit=1)[1]
+            if suffix.isdigit():
+                return int(suffix)
+        checkpoint_from = spec.get("checkpoint_from") or {}
+        if checkpoint_from.get("checkpoint_epoch") is not None:
+            return int(checkpoint_from["checkpoint_epoch"])
+        eval_epochs = spec.get("eval_epochs", [])
+        if eval_epochs:
+            return int(max(eval_epochs))
+        return int(spec.get("epochs", 1)) - 1
+
+    def _finalize_fixed_point_checkpoint(
+        self,
+        exp_dir: Path,
+        checkpoint_path: Path,
+        epoch: int,
+    ) -> None:
+        exp_dir.mkdir(parents=True, exist_ok=True)
+        latest_path = exp_dir / "checkpoint.pth"
+        epoch_path = exp_dir / f"checkpoint-{epoch}.pth"
+        if checkpoint_path.resolve() != latest_path.resolve():
+            shutil.copy2(checkpoint_path, latest_path)
+        if checkpoint_path.resolve() != epoch_path.resolve():
+            shutil.copy2(checkpoint_path, epoch_path)
+        source_args_path = checkpoint_path.parent / "args.json"
+        target_args_path = exp_dir / "args.json"
+        if source_args_path.exists() and source_args_path.resolve() != target_args_path.resolve():
+            shutil.copy2(source_args_path, target_args_path)
+
+    def _run_fixed_point_iterations(
+        self,
+        spec: Dict[str, object],
+        exp_dir: Path,
+        checkpoint: Path,
+        train_log: Path,
+        train_key: str,
+    ) -> Optional[Path]:
+        iteration_count = int(spec.get("solver_aware_k", 0))
+        if iteration_count <= 0:
+            return checkpoint
+        finetune_epochs = int(spec.get("solver_aware_finetune_epochs", 0))
+        if finetune_epochs <= 0:
+            raise ValueError(
+                f"{spec['name']} requested fixed_point mode but solver_aware_finetune_epochs={finetune_epochs}."
+            )
+        base_checkpoint = checkpoint
+        base_epoch = self._checkpoint_epoch_hint(checkpoint_path=checkpoint, spec=spec)
+        current_checkpoint = checkpoint
+        current_epoch = base_epoch
+        for iteration_index in range(1, iteration_count + 1):
+            if spec.get("solver_aware_finetune_resume_from_previous", True):
+                resume_checkpoint = current_checkpoint
+                resume_epoch = current_epoch
+            else:
+                resume_checkpoint = base_checkpoint
+                resume_epoch = base_epoch
+            iteration_dir = exp_dir / f"iter_{iteration_index}"
+            iteration_dir.mkdir(parents=True, exist_ok=True)
+            iteration_spec = dict(spec)
+            iteration_spec["epochs"] = int(resume_epoch) + 1 + finetune_epochs
+            iteration_spec["solver_aware_k"] = iteration_index
+            if iteration_spec.get("solver_aware_cache_path") in {None, "", "none", "None"}:
+                iteration_spec["solver_aware_cache_path"] = str(iteration_dir / "solver_aware_profile.pt")
+            if iteration_spec.get("solver_aware_g_cache_path") in {None, "", "none", "None"}:
+                iteration_spec["solver_aware_g_cache_path"] = str(
+                    iteration_dir / "solver_aware_propagation.pt"
+                )
+            self.state[train_key] = "running"
+            self._save_state()
+            success = run_command(
+                self.build_train_cmd(
+                    iteration_spec,
+                    iteration_dir,
+                    resume_checkpoint=resume_checkpoint,
+                ),
+                train_log,
+                retries=0,
+            )
+            if not success:
+                self.state[train_key] = f"failed_iter_{iteration_index}"
+                self._save_state()
+                return None
+            current_epoch = int(iteration_spec["epochs"]) - 1
+            current_checkpoint = find_checkpoint(iteration_dir, current_epoch)
+            if current_checkpoint is None:
+                self.state[train_key] = f"failed_missing_iter_{iteration_index}_checkpoint"
+                self._save_state()
+                return None
+        self._finalize_fixed_point_checkpoint(
+            exp_dir=exp_dir,
+            checkpoint_path=current_checkpoint,
+            epoch=current_epoch,
+        )
+        self.state[train_key] = "completed"
+        self._save_state()
+        return current_checkpoint
+
     def run_all(self) -> None:
         base_config = self.config.get("base_config", {})
         assert_no_legacy_keys(base_config)
@@ -639,51 +799,85 @@ class ExperimentManager:
                 self._save_state()
                 continue
 
-            if (
-                local_checkpoint.exists()
-                and local_checkpoint_compatible
-                and self.state.get(train_key) == "completed"
-            ):
-                checkpoint = local_checkpoint
-            elif local_checkpoint.exists() and local_checkpoint_compatible:
-                self.state[train_key] = "running"
-                self._save_state()
-                success = run_command(
-                    self.build_train_cmd(spec, exp_dir, resume_checkpoint=local_checkpoint),
-                    train_log,
-                    retries=1,
-                )
-                self.state[train_key] = "completed" if success else "failed"
-                self._save_state()
-                if not success:
-                    continue
-                checkpoint = local_checkpoint
-            elif reused_checkpoint is not None:
-                checkpoint = reused_checkpoint
-                self.state[train_key] = "completed"
-                self._save_state()
-            elif (
-                self.state.get(train_key) != "completed"
-                or not local_checkpoint.exists()
-                or not local_checkpoint_compatible
-            ):
-                self.state[train_key] = "running"
-                self._save_state()
-                resume_checkpoint = (
-                    local_checkpoint if local_checkpoint.exists() and local_checkpoint_compatible else None
-                )
-                success = run_command(
-                    self.build_train_cmd(spec, exp_dir, resume_checkpoint=resume_checkpoint),
-                    train_log,
-                    retries=1,
-                )
-                self.state[train_key] = "completed" if success else "failed"
-                self._save_state()
-                if not success:
-                    continue
-                checkpoint = local_checkpoint
+            fixed_point_mode = (
+                str(spec.get("solver_aware_clock_mode", "off")) == "fixed_point"
+                and int(spec.get("solver_aware_k", 0)) > 0
+            )
+            if fixed_point_mode:
+                if local_checkpoint.exists() and local_checkpoint_compatible and self.state.get(train_key) == "completed":
+                    checkpoint = local_checkpoint
+                else:
+                    base_checkpoint = (
+                        local_checkpoint
+                        if local_checkpoint.exists() and local_checkpoint_compatible
+                        else reused_checkpoint
+                    )
+                    if base_checkpoint is None:
+                        logger.error(
+                            "Fixed-point finetuning for %s requires a compatible starting checkpoint.",
+                            spec["name"],
+                        )
+                        self.state[train_key] = "failed_missing_fixed_point_base_checkpoint"
+                        self._save_state()
+                        continue
+                    checkpoint = self._run_fixed_point_iterations(
+                        spec=spec,
+                        exp_dir=exp_dir,
+                        checkpoint=base_checkpoint,
+                        train_log=train_log,
+                        train_key=train_key,
+                    )
+                    if checkpoint is None:
+                        continue
+            else:
+                if (
+                    local_checkpoint.exists()
+                    and local_checkpoint_compatible
+                    and self.state.get(train_key) == "completed"
+                ):
+                    checkpoint = local_checkpoint
+                elif local_checkpoint.exists() and local_checkpoint_compatible:
+                    self.state[train_key] = "running"
+                    self._save_state()
+                    success = run_command(
+                        self.build_train_cmd(spec, exp_dir, resume_checkpoint=local_checkpoint),
+                        train_log,
+                        retries=1,
+                    )
+                    self.state[train_key] = "completed" if success else "failed"
+                    self._save_state()
+                    if not success:
+                        continue
+                    checkpoint = local_checkpoint
+                elif reused_checkpoint is not None:
+                    checkpoint = reused_checkpoint
+                    self.state[train_key] = "completed"
+                    self._save_state()
+                elif (
+                    self.state.get(train_key) != "completed"
+                    or not local_checkpoint.exists()
+                    or not local_checkpoint_compatible
+                ):
+                    self.state[train_key] = "running"
+                    self._save_state()
+                    resume_checkpoint = (
+                        local_checkpoint if local_checkpoint.exists() and local_checkpoint_compatible else None
+                    )
+                    success = run_command(
+                        self.build_train_cmd(spec, exp_dir, resume_checkpoint=resume_checkpoint),
+                        train_log,
+                        retries=1,
+                    )
+                    self.state[train_key] = "completed" if success else "failed"
+                    self._save_state()
+                    if not success:
+                        continue
+                    checkpoint = local_checkpoint
 
-            for epoch in spec["eval_epochs"]:
+            eval_epochs = list(spec["eval_epochs"])
+            if fixed_point_mode:
+                eval_epochs = [self._checkpoint_epoch_hint(checkpoint_path=checkpoint, spec=spec)]
+            for epoch in eval_epochs:
                 checkpoint_for_eval = checkpoint
                 if checkpoint_for_eval == local_checkpoint:
                     checkpoint_for_eval = find_checkpoint(exp_dir, epoch)

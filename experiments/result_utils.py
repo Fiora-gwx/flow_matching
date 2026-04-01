@@ -38,10 +38,15 @@ SOLVER_AWARE_RESULT_FIELDS = [
     "solver_aware_monitor_estimator",
     "solver_aware_eps",
     "solver_aware_use_nodes",
+    "solver_aware_use_propagation",
+    "solver_aware_g_mode",
+    "solver_aware_g_estimator",
+    "solver_aware_g_safety_factor",
     "node_family",
     "monitor_source_checkpoint",
     "monitor_grid_size",
     "solver_aware_monitor_batch_size",
+    "solver_aware_finetune_epochs",
     "solver_aware_theorem_backed",
 ]
 RESULT_FIELDS = BASE_RESULT_FIELDS + SOLVER_AWARE_RESULT_FIELDS
@@ -62,8 +67,10 @@ OPTIONAL_NUMERIC_FIELDS = {
     "stratified_bins": int,
     "solver_aware_k": int,
     "solver_aware_eps": float,
+    "solver_aware_g_safety_factor": float,
     "monitor_grid_size": int,
     "solver_aware_monitor_batch_size": int,
+    "solver_aware_finetune_epochs": int,
 }
 METRIC_OUTPUTS = {
     "fid": ("fid",),

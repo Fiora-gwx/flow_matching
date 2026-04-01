@@ -31,6 +31,8 @@ TIME_SAMPLING_STRATEGIES = [
 SOLVER_AWARE_CLOCK_MODES = ["off", "training_free", "fixed_point"]
 SOLVER_AWARE_TARGET_SOLVERS = ["euler", "heun2", "stork4"]
 SOLVER_AWARE_MONITOR_ESTIMATORS = ["auto", "jvp", "fd"]
+SOLVER_AWARE_G_MODES = ["none", "jacobian_envelope"]
+SOLVER_AWARE_G_ESTIMATORS = ["spectral_max", "spectral_maxpool", "spectral_q95"]
 
 
 def get_args_parser():
@@ -194,6 +196,59 @@ def get_args_parser():
         help="Use solver-aware non-uniform nodes during sampling. Default keeps the legacy uniform grid.",
     )
     parser.add_argument(
+        "--solver_aware_use_propagation",
+        action="store_true",
+        help=(
+            "Augment solver-aware densities with a propagation envelope G(s). "
+            "When disabled, the existing monitor-only solver-aware clock is used."
+        ),
+    )
+    parser.add_argument(
+        "--solver_aware_g_mode",
+        default="none",
+        choices=SOLVER_AWARE_G_MODES,
+        help=(
+            "Propagation factor mode. none disables G(s); jacobian_envelope estimates "
+            "a Jacobian spectral envelope ell(s) and builds G(s)=exp(int_s^1 ell(t)dt)."
+        ),
+    )
+    parser.add_argument(
+        "--solver_aware_g_estimator",
+        default="spectral_max",
+        choices=SOLVER_AWARE_G_ESTIMATORS,
+        help=(
+            "Batch reducer used for Jacobian spectral envelope estimation. "
+            "spectral_q95 is smoother but no longer treated as theorem-backed."
+        ),
+    )
+    parser.add_argument(
+        "--solver_aware_g_power_iters",
+        default=2,
+        type=int,
+        help="Number of power-iteration steps used when estimating ||J_x u(z,s)||_2.",
+    )
+    parser.add_argument(
+        "--solver_aware_g_pool_radius",
+        default=2,
+        type=int,
+        help="Radius of the one-dimensional max-pool envelope applied to raw ell(s).",
+    )
+    parser.add_argument(
+        "--solver_aware_g_safety_factor",
+        default=1.0,
+        type=float,
+        help="Multiplicative safety factor applied to the pooled propagation envelope.",
+    )
+    parser.add_argument(
+        "--solver_aware_g_cache_path",
+        default="none",
+        type=str,
+        help=(
+            "Optional cache file for propagation envelope artifacts. "
+            "Use 'none' to keep the default location next to solver-aware caches."
+        ),
+    )
+    parser.add_argument(
         "--solver_aware_checkpoint_path",
         default="",
         type=str,
@@ -213,6 +268,36 @@ def get_args_parser():
         default=-1,
         type=int,
         help="Optional checkpoint epoch used with --solver_aware_checkpoint_from_experiment. -1 selects the latest checkpoint.",
+    )
+    parser.add_argument(
+        "--solver_aware_finetune_epochs",
+        default=10,
+        type=int,
+        help="Number of continuation finetuning epochs used by each fixed-point iteration.",
+    )
+    parser.add_argument(
+        "--solver_aware_finetune_lr",
+        default=1e-5,
+        type=float,
+        help="Learning rate used by solver-aware fixed-point continuation finetuning.",
+    )
+    parser.add_argument(
+        "--solver_aware_finetune_reset_optimizer",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Whether fixed-point finetuning should reset the optimizer state before each "
+            "continuation round."
+        ),
+    )
+    parser.add_argument(
+        "--solver_aware_finetune_resume_from_previous",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Whether fixed-point iteration k should continue from iteration k-1. "
+            "Disabling this resumes every round from the base checkpoint instead."
+        ),
     )
     parser.add_argument(
         "--metrics",

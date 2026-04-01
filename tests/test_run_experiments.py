@@ -260,6 +260,57 @@ class RunExperimentsTest(unittest.TestCase):
                 os.chdir(cwd)
             self.assertIn('--accum_iter 2', cmd)
 
+    def test_build_train_cmd_includes_propagation_and_finetune_flags(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            config_path = workspace / 'config.json'
+            config_path.write_text(json.dumps({
+                'experiment_name': 'demo_group',
+                'base_config': {},
+                'experiments': [],
+            }), encoding='utf-8')
+            cwd = os.getcwd()
+            os.chdir(workspace)
+            try:
+                manager = ExperimentManager(config_path)
+                cmd = manager.build_train_cmd(
+                    {
+                        'dataset': 'cifar10',
+                        'data_path': './data/cifar10',
+                        'batch_size': 8,
+                        'epochs': 4,
+                        'seed': 0,
+                        'num_gpus': 1,
+                        'path_family': 'linear',
+                        'clock_family': 'uniform',
+                        'sampling_solver': 'euler',
+                        'model_output_type': 'base_velocity',
+                        'time_sampling_strategy': 'ds_dr_sq',
+                        'solver_aware_clock_mode': 'fixed_point',
+                        'solver_aware_target_solver': 'euler',
+                        'solver_aware_k': 2,
+                        'solver_aware_use_nodes': True,
+                        'solver_aware_use_propagation': True,
+                        'solver_aware_g_mode': 'jacobian_envelope',
+                        'solver_aware_g_estimator': 'spectral_max',
+                        'solver_aware_g_power_iters': 2,
+                        'solver_aware_g_pool_radius': 2,
+                        'solver_aware_g_safety_factor': 1.0,
+                        'solver_aware_finetune_epochs': 5,
+                        'solver_aware_finetune_lr': 1e-5,
+                    },
+                    workspace / 'out',
+                    resume_checkpoint=workspace / 'checkpoint.pth',
+                )
+            finally:
+                os.chdir(cwd)
+            self.assertIn('--solver_aware_use_propagation', cmd)
+            self.assertIn('--solver_aware_g_mode jacobian_envelope', cmd)
+            self.assertIn('--solver_aware_g_estimator spectral_max', cmd)
+            self.assertIn('--solver_aware_finetune_epochs 5', cmd)
+            self.assertIn('--solver_aware_finetune_lr 1e-05', cmd)
+            self.assertIn('--solver_aware_finetune_resume_from_previous', cmd)
+
     def test_build_eval_cmd_includes_solver_aware_flags(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace = Path(tmpdir)
