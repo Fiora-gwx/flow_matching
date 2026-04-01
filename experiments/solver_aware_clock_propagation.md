@@ -43,8 +43,8 @@ Heun2 仍以 `Q_H(s) = E||L_u^2 u||^2` 作为局部 monitor，传播感知密度
 
 当前实现中：
 
-- `euler` 与 `heun2` 在 `spectral_max / spectral_maxpool` 模式下记为 theorem-backed
-- `spectral_q95` 更平滑，但明确标记为 heuristic
+- propagation-aware 分支统一记为 empirical / heuristic proxy，而不是 strict theorem-backed
+- `spectral_q95` 更平滑，当前推荐作为训练-free 对比配置
 - `stork4` 仍然只把 propagation-aware nodes 当作 phase-2 heuristic extension，因此 `solver_aware_theorem_backed=false`
 
 ## 4. G(s) 的实现
@@ -57,6 +57,14 @@ Heun2 仍以 `Q_H(s) = E||L_u^2 u||^2` 作为局部 monitor，传播感知密度
 4. 用 `max-pool1d(radius=solver_aware_g_pool_radius)` 构造 `env_ell(s_j)`
 5. `hat_ell(s_j) = solver_aware_g_safety_factor * env_ell(s_j)`
 6. `hat_G(s_j) = exp(sum_{m>=j} hat_ell(s_m) Delta s_m)`
+
+这里的尾积分采用右端点 Riemann sum，但仍然只把它当作 empirical propagation proxy：
+
+- `ell(s)` 来自有限 batch 的 Jacobian spectral 估计
+- power iteration 只做有限轮近似
+- pooling / smoothing / 数值积分都会引入经验近似
+
+因此代码中不会再把 propagation-aware 分支标成 strict theorem-backed。
 
 为了保持曲线连续性并避免之前的高方差问题：
 

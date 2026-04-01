@@ -18,7 +18,11 @@ sys.modules.setdefault('yaml', fake_yaml)
 
 from experiments.result_utils import append_result_rows, ensure_results_file, load_result_rows
 import experiments.run_experiments as run_experiments_module
-from experiments.run_experiments import ExperimentManager, resolve_dynamic_spec_fields
+from experiments.run_experiments import (
+    ExperimentManager,
+    _resolve_solver_aware_result_fields,
+    resolve_dynamic_spec_fields,
+)
 
 
 def make_source_row(run_id, seed, beta, value, nfe):
@@ -310,6 +314,27 @@ class RunExperimentsTest(unittest.TestCase):
             self.assertIn('--solver_aware_finetune_epochs 5', cmd)
             self.assertIn('--solver_aware_finetune_lr 1e-05', cmd)
             self.assertIn('--solver_aware_finetune_resume_from_previous', cmd)
+
+    def test_propagation_aware_rows_are_marked_non_theorem_backed(self):
+        fields = _resolve_solver_aware_result_fields(
+            spec={
+                'sampling_solver': 'euler',
+                'solver_aware_clock_mode': 'training_free',
+                'solver_aware_target_solver': 'euler',
+                'solver_aware_use_nodes': True,
+                'solver_aware_use_propagation': True,
+                'solver_aware_g_mode': 'jacobian_envelope',
+                'solver_aware_g_estimator': 'spectral_max',
+                'solver_aware_g_safety_factor': 1.0,
+                'solver_aware_monitor_grid_size': 65,
+                'solver_aware_monitor_batch_size': 64,
+                'solver_aware_eps': 1e-6,
+                'solver_aware_k': 0,
+                'solver_aware_monitor_estimator': 'auto',
+            },
+            checkpoint_path=None,
+        )
+        self.assertEqual(fields['solver_aware_theorem_backed'], 'false')
 
     def test_build_eval_cmd_includes_solver_aware_flags(self):
         with tempfile.TemporaryDirectory() as tmpdir:

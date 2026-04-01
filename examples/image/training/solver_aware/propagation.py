@@ -121,9 +121,10 @@ def build_propagation_factor(
 ) -> Tensor:
     """Build G(s)=exp(int_s^1 ell(t)dt) on a monotone s-grid.
 
-    We use a right-endpoint Riemann sum on the monotone envelope ell(s) so the
-    discrete propagation factor remains conservative with respect to the
-    per-interval upper envelope.
+    We use an empirical right-endpoint Riemann sum on the pooled envelope
+    ell(s). This is a numerical proxy for the tail integral, not a strict
+    conservative bound, because ell(s) itself is estimated from a finite batch
+    and is not guaranteed to be monotone or globally supremizing.
     """
     if s_grid.ndim != 1 or ell_values.ndim != 1:
         raise ValueError("s_grid and ell_values must be one-dimensional tensors.")
@@ -135,7 +136,7 @@ def build_propagation_factor(
     ds = (s_grid[1:] - s_grid[:-1]).to(dtype=torch.float64)
     if torch.any(ds <= 0.0):
         raise ValueError("s_grid must be strictly increasing.")
-    increments = ell_values[:-1].to(dtype=torch.float64).clamp(min=0.0) * ds
+    increments = ell_values[1:].to(dtype=torch.float64).clamp(min=0.0) * ds
     reverse_tail = torch.flip(torch.cumsum(torch.flip(increments, dims=[0]), dim=0), dims=[0])
     tail_integral = torch.zeros_like(ell_values, dtype=torch.float64)
     tail_integral[:-1] = reverse_tail
@@ -170,7 +171,7 @@ def estimate_jacobian_spectral_envelope(
         )
 
     resolved_estimator = str(estimator)
-    theorem_backed = resolved_estimator != "spectral_q95"
+    theorem_backed = False
     loader_iter = _cycle_loader(data_loader)
     noise_generator = _make_generator(device=device, seed=seed + 28081)
     microbatch_size = max(
@@ -234,9 +235,10 @@ def estimate_jacobian_spectral_envelope(
         ell_values=ell_values,
     )
     notes = (
-        "Propagation-aware Jacobian envelope uses an empirical spectral upper envelope "
-        "ell(s)=max_b ||J_x u(z_b,s)||_2 together with max-pooling and G(s)=exp(int_s^1 ell(t)dt)."
-        if theorem_backed
+        "Propagation-aware Jacobian envelope uses an empirical batchwise max spectral proxy "
+        "ell(s)=max_b ||J_x u(z_b,s)||_2 together with pooling and a right-endpoint tail integral. "
+        "This is treated as a heuristic propagation proxy rather than a strict upper bound."
+        if resolved_estimator in {"spectral_max", "spectral_maxpool"}
         else "Propagation-aware Jacobian envelope uses a q95 spectral summary for smoother ell(s); "
         "this is explicitly treated as heuristic rather than a strict upper bound."
     )

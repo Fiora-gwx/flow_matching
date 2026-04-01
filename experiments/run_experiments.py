@@ -263,7 +263,7 @@ def _resolve_solver_aware_result_fields(
         theorem_backed = "false"
     elif target_solver in {"euler", "heun2"}:
         theorem_backed = "true"
-    if use_propagation and g_estimator == "spectral_q95":
+    if use_propagation:
         theorem_backed = "false"
 
     return {

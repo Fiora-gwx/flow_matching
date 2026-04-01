@@ -21,7 +21,7 @@ base_config:
   solver_aware_eps: 1.0e-6
   solver_aware_use_propagation: true
   solver_aware_g_mode: jacobian_envelope
-  solver_aware_g_estimator: spectral_max
+  solver_aware_g_estimator: spectral_q95
   solver_aware_g_power_iters: 2
   solver_aware_g_pool_radius: 2
   solver_aware_g_safety_factor: 1.0

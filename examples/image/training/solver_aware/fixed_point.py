@@ -212,10 +212,7 @@ def _validate_propagation_args(
 
 def _resolve_monitor(target_solver: str, use_propagation: bool, g_estimator: str) -> Dict[str, object]:
     propagation_requested = bool(use_propagation)
-    propagation_theorem_backed = (not propagation_requested) or str(g_estimator) in {
-        "spectral_max",
-        "spectral_maxpool",
-    }
+    propagation_theorem_backed = not propagation_requested
 
     if target_solver == "euler":
         return {
@@ -224,8 +221,9 @@ def _resolve_monitor(target_solver: str, use_propagation: bool, g_estimator: str
             "theorem_backed": propagation_theorem_backed,
             "notes": (
                 "Euler local error obeys ||e_{n+1}|| <= (1 + h_n ell_n)||e_n|| + C_E M_E(s_n) h_n^2, "
-                "so after propagation we optimize J_E[rho] = int G(s) M_E(s) rho(s)^(-1) ds "
-                "with rho_E*(s) propto G(s)^(1/2) Q_E(s)^(1/4)."
+                "so if a valid propagation upper bound G(s) is available then rho_E*(s) propto "
+                "G(s)^(1/2) Q_E(s)^(1/4). The current code uses an empirical propagation proxy "
+                "rather than a strict theorem-backed upper bound."
                 if propagation_requested
                 else "Euler local truncation error is controlled by L_u u, so the monitor uses "
                 "Q_E(s)=E||L_u u||^2 and rho_E(s) propto (Q_E(s)+eps)^(1/4)."
@@ -237,8 +235,10 @@ def _resolve_monitor(target_solver: str, use_propagation: bool, g_estimator: str
             "propagation_exponent": 1.0 / 3.0,
             "theorem_backed": propagation_theorem_backed,
             "notes": (
-                "Heun2 uses the theorem-backed local monitor Q_H(s)=E||L_u^2 u||^2 and the "
-                "propagation-aware density rho_H*(s) propto G(s)^(1/3) Q_H(s)^(1/6)."
+                "Heun2 uses the theorem-backed local monitor Q_H(s)=E||L_u^2 u||^2. If a valid "
+                "propagation upper bound G(s) is available then rho_H*(s) propto "
+                "G(s)^(1/3) Q_H(s)^(1/6). The current code uses an empirical propagation proxy "
+                "rather than a strict theorem-backed upper bound."
                 if propagation_requested
                 else "Heun2 local truncation error is controlled by L_u^2 u, so the monitor uses "
                 "Q_H(s)=E||L_u^2 u||^2 and rho_H(s) propto (Q_H(s)+eps)^(1/6)."
@@ -703,6 +703,35 @@ def maybe_build_solver_aware_artifacts(
                     "g_pool_radius": artifacts.g_pool_radius,
                     "g_safety_factor": artifacts.g_safety_factor,
                     "step_count": artifacts.step_count,
+                    "r_grid": [float(value) for value in artifacts.r_grid.detach().cpu().tolist()],
+                    "nodes": [float(value) for value in artifacts.nodes.detach().cpu().tolist()],
+                },
+                indent=2,
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
+        node_lines = ["node_index,r_value,s_value,step_size_from_prev"]
+        r_values = artifacts.r_grid.detach().cpu().tolist()
+        node_values = artifacts.nodes.detach().cpu().tolist()
+        for index, (r_value, s_value) in enumerate(zip(r_values, node_values)):
+            prev_value = node_values[index - 1] if index > 0 else 0.0
+            step_size = float(s_value) - float(prev_value) if index > 0 else 0.0
+            node_lines.append(f"{index},{float(r_value):.10f},{float(s_value):.10f},{float(step_size):.10f}")
+        (output_dir / "solver_aware_nodes.csv").write_text(
+            "\n".join(node_lines) + "\n",
+            encoding="utf-8",
+        )
+        (output_dir / "solver_aware_nodes.json").write_text(
+            json.dumps(
+                {
+                    "step_count": int(artifacts.step_count),
+                    "r_grid": [float(value) for value in r_values],
+                    "nodes": [float(value) for value in node_values],
+                    "step_sizes": [
+                        0.0 if index == 0 else float(node_values[index] - node_values[index - 1])
+                        for index in range(len(node_values))
+                    ],
                 },
                 indent=2,
                 sort_keys=True,

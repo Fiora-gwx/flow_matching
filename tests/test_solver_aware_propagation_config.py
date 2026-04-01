@@ -26,7 +26,7 @@ class SolverAwarePropagationConfigTest(unittest.TestCase):
         source = CONFIG_PATH.read_text(encoding="utf-8")
         self.assertIn("solver_aware_use_propagation: true", source)
         self.assertIn("solver_aware_g_mode: jacobian_envelope", source)
-        self.assertIn("solver_aware_g_estimator: spectral_max", source)
+        self.assertIn("solver_aware_g_estimator: spectral_q95", source)
 
     def test_config_reuses_linear_uniform_checkpoint(self):
         source = CONFIG_PATH.read_text(encoding="utf-8")
