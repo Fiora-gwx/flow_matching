@@ -596,7 +596,7 @@ class ExperimentManager:
                 reused_checkpoint = resolve_reused_checkpoint(
                     reference=spec["checkpoint_from"],
                     spec=spec,
-                    workspace_root=Path.cwd(),
+                    workspace_root=ROOT,
                 )
                 if reused_checkpoint is not None:
                     logger.info(
@@ -606,7 +606,7 @@ class ExperimentManager:
                     )
                 else:
                     logger.warning(
-                        "Configured checkpoint reuse for %s but no external checkpoint was found: %s",
+                        "Configured checkpoint reuse for %s could not be resolved from reference: %s",
                         spec["name"],
                         spec["checkpoint_from"],
                     )
@@ -623,6 +623,21 @@ class ExperimentManager:
                         spec["name"],
                         local_checkpoint,
                     )
+
+            if (
+                spec.get("checkpoint_from") is not None
+                and reused_checkpoint is None
+                and not (local_checkpoint.exists() and local_checkpoint_compatible)
+            ):
+                logger.error(
+                    "Checkpoint reuse is required for %s, but no compatible checkpoint was found. "
+                    "reference=%s. Refusing to fall back to training.",
+                    spec["name"],
+                    spec["checkpoint_from"],
+                )
+                self.state[train_key] = "failed_missing_reused_checkpoint"
+                self._save_state()
+                continue
 
             if (
                 local_checkpoint.exists()

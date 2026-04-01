@@ -17,6 +17,7 @@ fake_yaml.safe_load = lambda handle: json.load(handle)
 sys.modules.setdefault('yaml', fake_yaml)
 
 from experiments.result_utils import append_result_rows, ensure_results_file, load_result_rows
+import experiments.run_experiments as run_experiments_module
 from experiments.run_experiments import ExperimentManager, resolve_dynamic_spec_fields
 
 
@@ -309,6 +310,15 @@ class RunExperimentsTest(unittest.TestCase):
     def test_experiment_manager_resumes_training_when_checkpoint_exists(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace = Path(tmpdir)
+            external_checkpoint = (
+                workspace
+                / 'experiments'
+                / 'results'
+                / 'ft_clock_linear_main'
+                / 'cifar10'
+                / 'linear_ft_beta_0_5'
+                / 'checkpoint-499.pth'
+            )
             config_path = workspace / 'config.json'
             config_path.write_text(json.dumps({
                 'experiment_name': 'demo_group',
@@ -375,6 +385,122 @@ class RunExperimentsTest(unittest.TestCase):
                 os.chdir(cwd)
 
             self.assertTrue(seen_resume['value'])
+
+    def test_experiment_manager_fails_fast_when_checkpoint_from_cannot_be_resolved(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            config_path = workspace / 'config.json'
+            config_path.write_text(json.dumps({
+                'experiment_name': 'demo_group',
+                'base_config': {
+                    'dataset': 'cifar10',
+                    'data_path': './data/cifar10',
+                    'epochs': 2,
+                    'batch_size': 8,
+                    'num_gpus': 1,
+                    'path_family': 'linear',
+                    'clock_family': 'uniform',
+                    'sampling_solver': 'euler',
+                    'metrics': ['fid'],
+                    'eval_epochs': [1],
+                    'eval_nfes': [10],
+                    'model_output_type': 'base_velocity',
+                    'time_sampling_strategy': 'ds_dr_sq',
+                },
+                'experiments': [
+                    {
+                        'name': 'missing_checkpoint_reuse',
+                        'checkpoint_from': {
+                            'artifact_group': 'does_not_exist',
+                            'source_exp_name': 'linear_uniform',
+                            'checkpoint_epoch': 499,
+                        },
+                    }
+                ],
+            }), encoding='utf-8')
+
+            seen_commands = []
+
+            def fake_run_command(cmd, log_file, retries=0):
+                seen_commands.append(cmd)
+                return True
+
+            cwd = os.getcwd()
+            os.chdir(workspace)
+            try:
+                with mock.patch('experiments.run_experiments.run_command', side_effect=fake_run_command):
+                    ExperimentManager(config_path).run_all()
+            finally:
+                os.chdir(cwd)
+
+            self.assertEqual(seen_commands, [])
+            state_path = workspace / 'experiments' / 'results' / 'demo_group' / 'experiment_status.json'
+            state = json.loads(state_path.read_text(encoding='utf-8'))
+            self.assertEqual(
+                state['missing_checkpoint_reuse:train'],
+                'failed_missing_reused_checkpoint',
+            )
+
+    def test_experiment_manager_uses_repo_root_for_checkpoint_reuse_resolution(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            config_path = workspace / 'config.json'
+            config_path.write_text(json.dumps({
+                'experiment_name': 'demo_group',
+                'base_config': {
+                    'dataset': 'cifar10',
+                    'data_path': './data/cifar10',
+                    'epochs': 2,
+                    'batch_size': 8,
+                    'num_gpus': 1,
+                    'path_family': 'linear',
+                    'sampling_solver': 'heun2',
+                    'metrics': ['fid'],
+                    'eval_epochs': [1],
+                    'eval_nfes': [10],
+                },
+                'experiments': [
+                    {
+                        'name': 'demo_ft',
+                        'clock_family': 'uniform',
+                        'checkpoint_from': {
+                            'artifact_group': 'ft_clock_linear_main',
+                            'source_exp_name': 'linear_uniform',
+                            'checkpoint_epoch': 499,
+                        },
+                    }
+                ],
+            }), encoding='utf-8')
+
+            expected_checkpoint = workspace / 'reused-checkpoint.pth'
+            expected_checkpoint.touch()
+            seen_workspace_roots = []
+
+            def fake_resolve_reused_checkpoint(reference, spec, workspace_root=None):
+                del reference, spec
+                seen_workspace_roots.append(workspace_root)
+                return expected_checkpoint
+
+            def fake_run_command(cmd, log_file, retries=0):
+                return True
+
+            cwd = os.getcwd()
+            os.chdir(workspace)
+            try:
+                with mock.patch('experiments.run_experiments.resolve_reused_checkpoint', side_effect=fake_resolve_reused_checkpoint):
+                    with mock.patch('experiments.run_experiments.run_command', side_effect=fake_run_command):
+                        with mock.patch('experiments.run_experiments.extract_eval_stats', return_value={
+                            'nfe': 10.0,
+                            'step_count': 5.0,
+                            'real_samples': 50000.0,
+                            'synthetic_samples': 50000.0,
+                            'fid': 9.5,
+                        }):
+                            ExperimentManager(config_path).run_all()
+            finally:
+                os.chdir(cwd)
+
+            self.assertEqual(seen_workspace_roots, [run_experiments_module.ROOT])
 
     def test_experiment_manager_backfills_missing_inception_score_without_retraining(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -571,6 +697,15 @@ class RunExperimentsTest(unittest.TestCase):
     def test_experiment_manager_reuses_external_checkpoint_without_training(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace = Path(tmpdir)
+            external_checkpoint = (
+                workspace
+                / 'experiments'
+                / 'results'
+                / 'ft_clock_linear_main'
+                / 'cifar10'
+                / 'linear_ft_beta_0_5'
+                / 'checkpoint-499.pth'
+            )
             config_path = workspace / 'config.json'
             config_path.write_text(json.dumps({
                 'experiment_name': 'cross_path_group',
@@ -595,23 +730,12 @@ class RunExperimentsTest(unittest.TestCase):
                         'model_output_type': 'base_velocity',
                         'time_sampling_strategy': 'ds_dr_sq',
                         'checkpoint_from': {
-                            'artifact_group': 'ft_clock_linear_main',
-                            'source_name_template': 'linear_ft_beta_{clock_beta_tag}',
-                            'checkpoint_epoch': 499,
+                            'checkpoint_path': str(external_checkpoint),
                         },
                     }
                 ],
             }), encoding='utf-8')
 
-            external_checkpoint = (
-                workspace
-                / 'experiments'
-                / 'results'
-                / 'ft_clock_linear_main'
-                / 'cifar10'
-                / 'linear_ft_beta_0_5'
-                / 'checkpoint-499.pth'
-            )
             external_checkpoint.parent.mkdir(parents=True, exist_ok=True)
             external_checkpoint.touch()
             (external_checkpoint.parent / 'args.json').write_text(

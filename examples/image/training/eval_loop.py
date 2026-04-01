@@ -139,6 +139,12 @@ class CFGScaledModel(ModelWrapper):
         return self.nfe_counter
 
 
+def _unwrap_eval_model(model: Module) -> Module:
+    if isinstance(model, DistributedDataParallel):
+        return model.module
+    return model
+
+
 def _solver_step_count(solver_name: str, nfe_budget: int) -> int:
     if solver_name == "stork4":
         return int(nfe_budget)
@@ -206,6 +212,15 @@ def eval_model(
         model_output_type=getattr(args, "model_output_type", "velocity"),
     )
     cfg_scaled_model.train(False)
+    solver_aware_monitor_model = CFGScaledModel(
+        model=_unwrap_eval_model(model),
+        path_family=args.path_family,
+        clock_family=args.clock_family,
+        clock_beta=args.clock_beta,
+        signal_scale_sq=getattr(args, "signal_scale_sq", None),
+        model_output_type=getattr(args, "model_output_type", "velocity"),
+    )
+    solver_aware_monitor_model.train(False)
 
     if args.discrete_flow_matching:
         scheduler = PolynomialConvexScheduler(n=3.0)
@@ -255,7 +270,7 @@ def eval_model(
                     mode=args.solver_aware_clock_mode,
                     k=args.solver_aware_k,
                     use_nodes=args.solver_aware_use_nodes,
-                    velocity_model=cfg_scaled_model,
+                    velocity_model=solver_aware_monitor_model,
                     data_loader=monitor_loader,
                     device=device,
                     path_family=args.path_family,

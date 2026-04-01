@@ -246,6 +246,19 @@ def resolve_reused_checkpoint(
         workspace_root=workspace_root,
     )
     if checkpoint_path is None:
+        if explicit_path:
+            candidate_path = Path(str(explicit_path))
+            if not candidate_path.is_absolute():
+                candidate_path = workspace_root / candidate_path
+        else:
+            exp_dir = base_dir / str(source_dataset) / str(source_name)
+            epoch_suffix = "checkpoint.pth" if checkpoint_epoch is None else f"checkpoint-{int(checkpoint_epoch)}.pth"
+            candidate_path = exp_dir / epoch_suffix
+        logger.warning(
+            "Checkpoint reference for %s did not resolve to an existing file. candidate=%s",
+            spec.get("name", "<unnamed>"),
+            candidate_path,
+        )
         return None
 
     checkpoint_args = _load_checkpoint_args(checkpoint_path)
