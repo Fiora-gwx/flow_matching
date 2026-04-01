@@ -247,8 +247,12 @@ def compute_euler_monitor(
                 grid_size=grid_size,
             )
             squared_norm = derivative.flatten(start_dim=1).pow(2).sum(dim=1)
-            squared_norm_sum = squared_norm_sum + squared_norm.sum()
+            # We only need the Monte Carlo mean value here. Detaching each
+            # microbatch statistic prevents the graph from retaining all
+            # earlier JVP chunks for the same grid point.
+            squared_norm_sum = squared_norm_sum + squared_norm.detach().sum()
             sample_count += int(squared_norm.shape[0])
+            del derivative, squared_norm, z_s, s_batch
         q_values[index] = squared_norm_sum / max(1, sample_count)
 
     logger.info(
@@ -379,8 +383,16 @@ def compute_heun2_monitor(
                 )
 
             squared_norm = second_derivative.flatten(start_dim=1).pow(2).sum(dim=1)
-            squared_norm_sum = squared_norm_sum + squared_norm.sum()
+            # We only need the Monte Carlo mean value here. Detaching each
+            # microbatch statistic prevents the graph from retaining all
+            # earlier chunks for the same grid point.
+            squared_norm_sum = squared_norm_sum + squared_norm.detach().sum()
             sample_count += int(squared_norm.shape[0])
+            del second_derivative, squared_norm, z_s, s_batch
+            if resolved_estimator == "jvp":
+                del u
+            else:
+                del u, first_derivative, shifted_derivative, delta, s_shift, z_shift
         q_values[index] = squared_norm_sum / max(1, sample_count)
 
     logger.info(
