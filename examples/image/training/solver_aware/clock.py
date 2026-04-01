@@ -9,7 +9,6 @@ EPS = 1e-12
 BISECTION_TOL = 1e-8
 BISECTION_STEPS = 80
 
-
 @dataclass
 class SolverAwareClockProfile:
     s_grid: Tensor
@@ -29,6 +28,9 @@ class SolverAwareClockProfile:
     floor_mode: str
     floor_eps: float
     legacy_unconstrained: bool
+    used_uniform_fallback: bool
+    floor_mass: float
+    min_feasible_step_count: int
     step_count: int
     smoothing_window: int
 
@@ -171,12 +173,6 @@ def build_density_from_constrained_problem(
         return unconstrained_weight / normalization
 
     floor_mass = float(_integrate_on_grid(rho_floor, s_grid).item())
-    if floor_mass > 1.0 + 1e-6:
-        raise ValueError(
-            "The constrained admissible floor is infeasible because ∫ rho_floor ds > 1. "
-            f"Got {floor_mass:.6f}."
-        )
-
     if floor_mass >= 1.0 - 1e-6:
         density = rho_floor
         normalization = _integrate_on_grid(density, s_grid).clamp(min=EPS)
@@ -318,12 +314,30 @@ def build_solver_aware_clock_profile(
         else:
             rho_floor = torch.full_like(pointwise_floor, float(pointwise_floor.max().item()))
 
-    density = build_density_from_constrained_problem(
-        s_grid=s_grid.to(dtype=torch.float64),
-        unconstrained_weight=unconstrained_weight,
-        rho_floor=rho_floor,
-        legacy_unconstrained=legacy_unconstrained,
+    floor_mass = float(
+        _integrate_on_grid(
+            rho_floor.to(dtype=torch.float64),
+            s_grid.to(dtype=torch.float64),
+        ).item()
     )
+    min_feasible_step_count = max(
+        int(step_count),
+        int(step_count) if floor_mass <= 1.0 else int(torch.ceil(torch.tensor(float(step_count) * floor_mass)).item()),
+    )
+    used_uniform_fallback = bool(
+        not legacy_unconstrained and floor_mass > 1.0 + 1e-6
+    )
+
+    if used_uniform_fallback:
+        density = torch.ones_like(unconstrained_weight, dtype=torch.float64)
+        density = density / _integrate_on_grid(density, s_grid.to(dtype=torch.float64)).clamp(min=EPS)
+    else:
+        density = build_density_from_constrained_problem(
+            s_grid=s_grid.to(dtype=torch.float64),
+            unconstrained_weight=unconstrained_weight,
+            rho_floor=rho_floor,
+            legacy_unconstrained=legacy_unconstrained,
+        )
 
     trapezoids = 0.5 * (density[1:] + density[:-1]) * (s_grid[1:] - s_grid[:-1]).to(dtype=density.dtype)
     phi = torch.zeros_like(s_grid, dtype=density.dtype)
@@ -349,6 +363,9 @@ def build_solver_aware_clock_profile(
         floor_mode=str(floor_mode),
         floor_eps=float(floor_eps),
         legacy_unconstrained=bool(legacy_unconstrained),
+        used_uniform_fallback=used_uniform_fallback,
+        floor_mass=float(floor_mass),
+        min_feasible_step_count=int(min_feasible_step_count),
         step_count=int(step_count),
         smoothing_window=int(smoothing_window),
     )
@@ -409,6 +426,9 @@ def build_solver_aware_clock(
         floor_mode=profile.floor_mode,
         floor_eps=profile.floor_eps,
         legacy_unconstrained=profile.legacy_unconstrained,
+        used_uniform_fallback=profile.used_uniform_fallback,
+        floor_mass=profile.floor_mass,
+        min_feasible_step_count=profile.min_feasible_step_count,
         step_count=profile.step_count,
         smoothing_window=profile.smoothing_window,
         r_grid=r_grid,

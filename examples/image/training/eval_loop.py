@@ -304,9 +304,19 @@ def eval_model(
                 )
             if solver_aware_artifacts is not None:
                 solver_aware_time_grid = solver_aware_artifacts.nodes.to(device=device, dtype=torch.float32)
+                if solver_aware_artifacts.used_uniform_fallback:
+                    logger.warning(
+                        "Solver-aware constrained floor is infeasible for step_count=%d "
+                        "(floor_mass=%.6f, min_feasible_step_count=%d); eval falls back to uniform nodes.",
+                        int(solver_aware_artifacts.step_count),
+                        float(solver_aware_artifacts.floor_mass),
+                        int(solver_aware_artifacts.min_feasible_step_count),
+                    )
         if distributed_mode.is_dist_avail_and_initialized():
             has_nodes = torch.tensor(
-                [1 if distributed_mode.is_main_process() and solver_aware_time_grid is not None else 0],
+                [
+                    1 if distributed_mode.is_main_process() and solver_aware_time_grid is not None else 0
+                ],
                 device=device,
                 dtype=torch.int64,
             )

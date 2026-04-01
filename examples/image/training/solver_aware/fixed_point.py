@@ -184,7 +184,7 @@ def _load_cache(
 ) -> Optional[CacheT]:
     if not cache_path.exists():
         return None
-    payload = torch.load(cache_path, map_location="cpu")
+    payload = torch.load(cache_path, map_location="cpu", weights_only=True)
     if payload.get("signature") != signature:
         logger.info("Ignoring solver-aware cache %s because the signature no longer matches.", cache_path)
         return None
@@ -930,6 +930,22 @@ def maybe_build_solver_aware_artifacts(
             step_sizes=artifacts.step_sizes,
             step_count=artifacts.step_count,
         )
+        diagnostics.update(
+            {
+                "used_uniform_fallback": bool(artifacts.used_uniform_fallback),
+                "floor_mass": float(artifacts.floor_mass),
+                "min_feasible_step_count": int(artifacts.min_feasible_step_count),
+            }
+        )
+        if artifacts.used_uniform_fallback:
+            logger.warning(
+                "Constrained solver-aware floor is infeasible for %s at step_count=%d "
+                "(floor_mass=%.6f, min_feasible_step_count=%d); using uniform nodes.",
+                artifacts.target_solver,
+                int(artifacts.step_count),
+                float(artifacts.floor_mass),
+                int(artifacts.min_feasible_step_count),
+            )
         if diagnostics["max_step_over_uniform"] > 2.0:
             logger.warning(
                 "Constrained solver-aware nodes still look concentrated for %s: "
@@ -959,6 +975,9 @@ def maybe_build_solver_aware_artifacts(
                     "floor_eps": artifacts.floor_eps,
                     "compute_qh_for_euler": artifacts.compute_qh_for_euler,
                     "legacy_unconstrained": artifacts.legacy_unconstrained,
+                    "used_uniform_fallback": artifacts.used_uniform_fallback,
+                    "floor_mass": artifacts.floor_mass,
+                    "min_feasible_step_count": artifacts.min_feasible_step_count,
                     "use_propagation": artifacts.use_propagation,
                     "g_mode": artifacts.g_mode,
                     "g_estimator": artifacts.g_estimator,
