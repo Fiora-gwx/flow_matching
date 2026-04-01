@@ -54,6 +54,11 @@ logger = logging.getLogger(__name__)
 PRINT_FREQUENCY = 50
 
 
+def _autocast_context(device: torch.device, enabled: bool):
+    device_type = "cuda" if device.type == "cuda" else "cpu"
+    return torch.amp.autocast(device_type=device_type, enabled=enabled)
+
+
 class CFGScaledModel(ModelWrapper):
     def __init__(
         self,
@@ -109,13 +114,13 @@ class CFGScaledModel(ModelWrapper):
 
         autocast_enabled = bool(use_autocast) and bool(x.is_cuda)
         if cfg_scale != 0.0:
-            with torch.cuda.amp.autocast(enabled=autocast_enabled):
+            with _autocast_context(device=x.device, enabled=autocast_enabled):
                 conditional = self.model(x, t, extra={"label": label})
                 condition_free = self.model(x, t, extra={})
             raw_result = (1.0 + cfg_scale) * conditional - cfg_scale * condition_free
             self.nfe_counter += 2
         else:
-            with torch.cuda.amp.autocast(enabled=autocast_enabled):
+            with _autocast_context(device=x.device, enabled=autocast_enabled):
                 raw_result = self.model(x, t, extra={"label": label})
             self.nfe_counter += 1
         if is_discrete:

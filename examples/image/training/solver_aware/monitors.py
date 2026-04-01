@@ -131,6 +131,25 @@ def _velocity_fn(velocity_model, x: Tensor, s: Tensor, labels: Tensor, cfg_scale
         return velocity_model(x, s, cfg_scale=cfg_scale, label=labels)
 
 
+def _velocity_fn_fd(
+    velocity_model,
+    x: Tensor,
+    s: Tensor,
+    labels: Tensor,
+    cfg_scale: float,
+) -> Tensor:
+    # Finite-difference monitor estimation only needs forward values, so we
+    # explicitly disable autograd graph construction to keep memory bounded.
+    with torch.no_grad():
+        return _velocity_fn(
+            velocity_model=velocity_model,
+            x=x,
+            s=s,
+            labels=labels,
+            cfg_scale=cfg_scale,
+        )
+
+
 def _jvp(function, inputs, tangents):
     if hasattr(torch, "func") and hasattr(torch.func, "jvp"):
         return torch.func.jvp(function, inputs, tangents)
@@ -145,11 +164,11 @@ def _material_derivative_fd(
     cfg_scale: float,
     grid_size: int,
 ) -> Tensor:
-    u = _velocity_fn(velocity_model, x, s, labels, cfg_scale)
+    u = _velocity_fn_fd(velocity_model, x, s, labels, cfg_scale)
     delta = _fd_step(s=s, grid_size=grid_size)
     s_shift = (s + delta).clamp(0.0, 1.0)
     x_shift = x + expand_like(delta, x) * u
-    u_shift = _velocity_fn(velocity_model, x_shift, s_shift, labels, cfg_scale)
+    u_shift = _velocity_fn_fd(velocity_model, x_shift, s_shift, labels, cfg_scale)
     delta_expand = expand_like(s_shift - s, x)
     delta_safe = torch.where(
         delta_expand >= 0.0,
@@ -375,7 +394,7 @@ def compute_heun2_monitor(
                     (u, torch.ones_like(s_batch)),
                 )
             else:
-                u = _velocity_fn(velocity_model, z_s, s_batch, label_chunk, cfg_scale)
+                u = _velocity_fn_fd(velocity_model, z_s, s_batch, label_chunk, cfg_scale)
                 first_derivative = _material_derivative_fd(
                     velocity_model=velocity_model,
                     x=z_s,
