@@ -613,6 +613,38 @@ def _node_diagnostics(
     }
 
 
+def _curve_summary(values: Tensor) -> Dict[str, float]:
+    tensor = values.detach().to(dtype=torch.float64).cpu()
+    return {
+        "min": float(tensor.min().item()),
+        "mean": float(tensor.mean().item()),
+        "max": float(tensor.max().item()),
+    }
+
+
+def _build_node_json_payload(
+    artifacts: SolverAwareArtifacts,
+    diagnostics: Dict[str, float],
+) -> Dict[str, object]:
+    r_values = artifacts.r_grid.detach().cpu().tolist()
+    node_values = artifacts.nodes.detach().cpu().tolist()
+    step_values = artifacts.step_sizes.detach().cpu().tolist()
+    rho_floor_values = artifacts.rho_floor.detach().cpu().tolist()
+    return {
+        "step_count": int(artifacts.step_count),
+        "eta": None if artifacts.eta is None else float(artifacts.eta),
+        "used_uniform_fallback": bool(artifacts.used_uniform_fallback),
+        "floor_mass": float(artifacts.floor_mass),
+        "min_feasible_step_count": int(artifacts.min_feasible_step_count),
+        "rho_floor": [float(value) for value in rho_floor_values],
+        "rho_floor_summary": _curve_summary(artifacts.rho_floor),
+        "r_grid": [float(value) for value in r_values],
+        "nodes": [float(value) for value in node_values],
+        "step_sizes": [float(value) for value in step_values],
+        "diagnostics": diagnostics,
+    }
+
+
 def maybe_build_solver_aware_profile(
     *,
     mode: str,
@@ -939,12 +971,24 @@ def maybe_build_solver_aware_artifacts(
             step_sizes=artifacts.step_sizes,
             step_count=artifacts.step_count,
         )
+        rho_floor_summary = _curve_summary(artifacts.rho_floor)
         diagnostics.update(
             {
                 "used_uniform_fallback": bool(artifacts.used_uniform_fallback),
                 "floor_mass": float(artifacts.floor_mass),
                 "min_feasible_step_count": int(artifacts.min_feasible_step_count),
             }
+        )
+        logger.info(
+            "Solver-aware diagnostics for %s at step_count=%d: eta=%s, floor_mass=%.6f, "
+            "rho_floor[min=%.6f, mean=%.6f, max=%.6f].",
+            artifacts.target_solver,
+            int(artifacts.step_count),
+            "none" if artifacts.eta is None else f"{float(artifacts.eta):.6f}",
+            float(artifacts.floor_mass),
+            float(rho_floor_summary["min"]),
+            float(rho_floor_summary["mean"]),
+            float(rho_floor_summary["max"]),
         )
         if artifacts.used_uniform_fallback:
             logger.warning(
@@ -987,6 +1031,7 @@ def maybe_build_solver_aware_artifacts(
                     "used_uniform_fallback": artifacts.used_uniform_fallback,
                     "floor_mass": artifacts.floor_mass,
                     "min_feasible_step_count": artifacts.min_feasible_step_count,
+                    "rho_floor_summary": rho_floor_summary,
                     "use_propagation": artifacts.use_propagation,
                     "g_mode": artifacts.g_mode,
                     "g_estimator": artifacts.g_estimator,
@@ -1042,17 +1087,7 @@ def maybe_build_solver_aware_artifacts(
             encoding="utf-8",
         )
         (output_dir / "solver_aware_nodes.json").write_text(
-            json.dumps(
-                {
-                    "step_count": int(artifacts.step_count),
-                    "r_grid": [float(value) for value in r_values],
-                    "nodes": [float(value) for value in node_values],
-                    "step_sizes": [float(value) for value in step_values],
-                    "diagnostics": diagnostics,
-                },
-                indent=2,
-                sort_keys=True,
-            ),
+            json.dumps(_build_node_json_payload(artifacts=artifacts, diagnostics=diagnostics), indent=2, sort_keys=True),
             encoding="utf-8",
         )
     return artifacts
