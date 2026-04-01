@@ -1,6 +1,6 @@
 import json
 import logging
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Dict, Iterable, Optional, Type, TypeVar
 
@@ -71,16 +71,16 @@ class SolverAwareProfile:
 
 @dataclass
 class SolverAwareArtifacts(SolverAwareProfile):
-    q_smoothed: Tensor
-    q_h_smoothed: Optional[Tensor]
-    rho_floor: Tensor
-    unconstrained_weight: Tensor
-    density: Tensor
-    phi: Tensor
-    step_count: int
-    r_grid: Tensor
-    nodes: Tensor
-    step_sizes: Tensor
+    q_smoothed: Tensor = field(default_factory=lambda: torch.empty(0))
+    q_h_smoothed: Optional[Tensor] = None
+    rho_floor: Tensor = field(default_factory=lambda: torch.empty(0))
+    unconstrained_weight: Tensor = field(default_factory=lambda: torch.empty(0))
+    density: Tensor = field(default_factory=lambda: torch.empty(0))
+    phi: Tensor = field(default_factory=lambda: torch.empty(0))
+    step_count: int = 0
+    r_grid: Tensor = field(default_factory=lambda: torch.empty(0))
+    nodes: Tensor = field(default_factory=lambda: torch.empty(0))
+    step_sizes: Tensor = field(default_factory=lambda: torch.empty(0))
 
     def to_dict(self) -> Dict[str, object]:
         payload = asdict(self)
