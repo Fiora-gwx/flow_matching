@@ -236,17 +236,6 @@ def eval_model(
     else:
         discrete_solver = None
 
-    metric_backend = None
-    if "fid" in active_metrics or "precision_recall" in active_metrics:
-        metric_backend = _build_fid_metric(device=device)
-    inception_score_metric = None
-    if "inception_score" in active_metrics:
-        requested_splits = int(getattr(args, "inception_score_splits", 10))
-        inception_score_metric = _build_inception_score_metric(
-            device=device,
-            splits=min(max(1, fid_samples), requested_splits),
-        )
-
     real_features = []
     fake_features = []
     if args.output_dir:
@@ -310,6 +299,17 @@ def eval_model(
                     solver_aware_time_grid,
                     device=device,
                 )
+
+    metric_backend = None
+    if "fid" in active_metrics or "precision_recall" in active_metrics:
+        metric_backend = _build_fid_metric(device=device)
+    inception_score_metric = None
+    if "inception_score" in active_metrics:
+        requested_splits = int(getattr(args, "inception_score_splits", 10))
+        inception_score_metric = _build_inception_score_metric(
+            device=device,
+            splits=min(max(1, fid_samples), requested_splits),
+        )
 
     num_synthetic = 0
     num_real = 0

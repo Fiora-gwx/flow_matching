@@ -45,6 +45,29 @@ Keep training on base velocity, keep importance sampling on `ds_dr^2`, and make 
 
 ---
 
+## [LRN-20260401-001] correction
+
+**Logged**: 2026-04-01T10:10:00+08:00
+**Priority**: high
+**Status**: pending
+**Area**: backend
+
+### Summary
+When solver-aware evaluation fails after checkpoint reuse succeeds, inspect rank0 monitor-memory pressure before blaming checkpoint resolution or hidden retraining.
+
+### Details
+The solver-aware training-free path can load the intended checkpoint correctly and still fail on rank0 before sampling starts. In this case the immediate root cause was the Euler monitor path: it built the metric backend on GPU first, then evaluated `torch.func.jvp` over the full monitor batch, which exhausted rank0 memory. The training script also logged `Start from 499 to 921 epochs` in `eval_only` mode, which made the failure look like an unintended retraining loop even though no optimizer step was taken.
+
+### Suggested Action
+Keep checkpoint reuse checks separate from runtime failure diagnosis. For solver-aware monitor estimation, reduce peak memory first by delaying metric-backend construction until after monitor nodes are built and by accumulating monitor statistics through small internal microbatches while preserving the requested total batch size.
+
+### Metadata
+- Source: user_feedback
+- Related Files: examples/image/training/solver_aware/monitors.py, examples/image/training/eval_loop.py, examples/image/train.py
+- Tags: solver-aware, oom, jvp, eval-only, diagnostics
+
+---
+
 ## [LRN-20260328-002] correction
 
 **Logged**: 2026-03-28T00:00:00+08:00

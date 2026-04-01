@@ -11,6 +11,8 @@ from training.continuous_runtime import evaluate_path, expand_like
 logger = logging.getLogger(__name__)
 FD_DELTA_FLOOR = 1e-3
 FD_DELTA_SCALE = 0.25
+JVP_MONITOR_MICROBATCH = 4
+FD_MONITOR_MICROBATCH = 16
 
 
 @dataclass
@@ -76,6 +78,13 @@ def _resolve_estimator(target_solver: str, estimator: str) -> str:
     if requested != "auto":
         return requested
     return "jvp" if target_solver == "euler" else "fd"
+
+
+def _resolve_monitor_microbatch_size(batch_size: int, estimator: str) -> int:
+    default_size = (
+        JVP_MONITOR_MICROBATCH if estimator == "jvp" else FD_MONITOR_MICROBATCH
+    )
+    return max(1, min(int(batch_size), default_size))
 
 
 def _fd_step(s: Tensor, grid_size: int) -> Tensor:
@@ -190,6 +199,10 @@ def compute_euler_monitor(
     satisfies rho_E(s) propto (Q_E(s) + eps)^(1/4).
     """
     resolved_estimator = _resolve_estimator(target_solver="euler", estimator=estimator)
+    microbatch_size = _resolve_monitor_microbatch_size(
+        batch_size=batch_size,
+        estimator=resolved_estimator,
+    )
     loader_iter = _cycle_loader(data_loader)
     noise_generator = _make_generator(device=device, seed=seed + 9103)
     s_grid = torch.linspace(0.0, 1.0, grid_size, device=device, dtype=torch.float32)
@@ -205,24 +218,46 @@ def compute_euler_monitor(
             dtype=samples.dtype,
             generator=noise_generator,
         )
-        s_batch = torch.full((samples.shape[0],), float(s_value.item()), device=device, dtype=samples.dtype)
-        z_s = _path_sample(samples=samples, noise=noise, s=s_batch, path_family=path_family)
-        derivative = _material_derivative(
-            velocity_model=velocity_model,
-            x=z_s,
-            s=s_batch,
-            labels=labels,
-            cfg_scale=cfg_scale,
-            estimator=resolved_estimator,
-            grid_size=grid_size,
-        )
-        squared_norm = derivative.flatten(start_dim=1).pow(2).sum(dim=1)
-        q_values[index] = squared_norm.mean()
+        squared_norm_sum = torch.zeros((), device=device, dtype=torch.float32)
+        sample_count = 0
+        for sample_chunk, label_chunk, noise_chunk in zip(
+            samples.split(microbatch_size),
+            labels.split(microbatch_size),
+            noise.split(microbatch_size),
+        ):
+            s_batch = torch.full(
+                (sample_chunk.shape[0],),
+                float(s_value.item()),
+                device=device,
+                dtype=sample_chunk.dtype,
+            )
+            z_s = _path_sample(
+                samples=sample_chunk,
+                noise=noise_chunk,
+                s=s_batch,
+                path_family=path_family,
+            )
+            derivative = _material_derivative(
+                velocity_model=velocity_model,
+                x=z_s,
+                s=s_batch,
+                labels=label_chunk,
+                cfg_scale=cfg_scale,
+                estimator=resolved_estimator,
+                grid_size=grid_size,
+            )
+            squared_norm = derivative.flatten(start_dim=1).pow(2).sum(dim=1)
+            squared_norm_sum = squared_norm_sum + squared_norm.sum()
+            sample_count += int(squared_norm.shape[0])
+        q_values[index] = squared_norm_sum / max(1, sample_count)
 
     logger.info(
-        "Computed Euler solver-aware monitor with estimator=%s on %d grid points.",
+        "Computed Euler solver-aware monitor with estimator=%s on %d grid points "
+        "(batch_size=%d, microbatch_size=%d).",
         resolved_estimator,
         grid_size,
+        batch_size,
+        microbatch_size,
     )
     return MonitorArtifacts(
         s_grid=s_grid,
@@ -258,6 +293,10 @@ def compute_heun2_monitor(
     - jvp: nested JVP evaluation of L_u(L_u u).
     """
     resolved_estimator = _resolve_estimator(target_solver="heun2", estimator=estimator)
+    microbatch_size = _resolve_monitor_microbatch_size(
+        batch_size=batch_size,
+        estimator=resolved_estimator,
+    )
     loader_iter = _cycle_loader(data_loader)
     noise_generator = _make_generator(device=device, seed=seed + 17021)
     s_grid = torch.linspace(0.0, 1.0, grid_size, device=device, dtype=torch.float32)
@@ -273,61 +312,84 @@ def compute_heun2_monitor(
             dtype=samples.dtype,
             generator=noise_generator,
         )
-        s_batch = torch.full((samples.shape[0],), float(s_value.item()), device=device, dtype=samples.dtype)
-        z_s = _path_sample(samples=samples, noise=noise, s=s_batch, path_family=path_family)
+        squared_norm_sum = torch.zeros((), device=device, dtype=torch.float32)
+        sample_count = 0
+        for sample_chunk, label_chunk, noise_chunk in zip(
+            samples.split(microbatch_size),
+            labels.split(microbatch_size),
+            noise.split(microbatch_size),
+        ):
+            s_batch = torch.full(
+                (sample_chunk.shape[0],),
+                float(s_value.item()),
+                device=device,
+                dtype=sample_chunk.dtype,
+            )
+            z_s = _path_sample(
+                samples=sample_chunk,
+                noise=noise_chunk,
+                s=s_batch,
+                path_family=path_family,
+            )
 
-        if resolved_estimator == "jvp":
-            def a_fn(x_input: Tensor, s_input: Tensor) -> Tensor:
-                return _material_derivative_jvp(
+            if resolved_estimator == "jvp":
+
+                def a_fn(x_input: Tensor, s_input: Tensor) -> Tensor:
+                    return _material_derivative_jvp(
+                        velocity_model=velocity_model,
+                        x=x_input,
+                        s=s_input,
+                        labels=label_chunk,
+                        cfg_scale=cfg_scale,
+                    )
+
+                u = _velocity_fn(velocity_model, z_s, s_batch, label_chunk, cfg_scale)
+                _, second_derivative = _jvp(
+                    a_fn,
+                    (z_s, s_batch),
+                    (u, torch.ones_like(s_batch)),
+                )
+            else:
+                u = _velocity_fn(velocity_model, z_s, s_batch, label_chunk, cfg_scale)
+                first_derivative = _material_derivative_fd(
                     velocity_model=velocity_model,
-                    x=x_input,
-                    s=s_input,
-                    labels=labels,
+                    x=z_s,
+                    s=s_batch,
+                    labels=label_chunk,
                     cfg_scale=cfg_scale,
+                    grid_size=grid_size,
+                )
+                delta = _fd_step(s=s_batch, grid_size=grid_size)
+                s_shift = (s_batch + delta).clamp(0.0, 1.0)
+                z_shift = z_s + expand_like(delta, z_s) * u
+                shifted_derivative = _material_derivative_fd(
+                    velocity_model=velocity_model,
+                    x=z_shift,
+                    s=s_shift,
+                    labels=label_chunk,
+                    cfg_scale=cfg_scale,
+                    grid_size=grid_size,
+                )
+                second_derivative = (
+                    shifted_derivative - first_derivative
+                ) / torch.where(
+                    expand_like(s_shift - s_batch, z_s) >= 0.0,
+                    expand_like(s_shift - s_batch, z_s).clamp(min=FD_DELTA_FLOOR),
+                    expand_like(s_shift - s_batch, z_s).clamp(max=-FD_DELTA_FLOOR),
                 )
 
-            u = _velocity_fn(velocity_model, z_s, s_batch, labels, cfg_scale)
-            _, second_derivative = _jvp(
-                a_fn,
-                (z_s, s_batch),
-                (u, torch.ones_like(s_batch)),
-            )
-        else:
-            u = _velocity_fn(velocity_model, z_s, s_batch, labels, cfg_scale)
-            first_derivative = _material_derivative_fd(
-                velocity_model=velocity_model,
-                x=z_s,
-                s=s_batch,
-                labels=labels,
-                cfg_scale=cfg_scale,
-                grid_size=grid_size,
-            )
-            delta = _fd_step(s=s_batch, grid_size=grid_size)
-            s_shift = (s_batch + delta).clamp(0.0, 1.0)
-            z_shift = z_s + expand_like(delta, z_s) * u
-            shifted_derivative = _material_derivative_fd(
-                velocity_model=velocity_model,
-                x=z_shift,
-                s=s_shift,
-                labels=labels,
-                cfg_scale=cfg_scale,
-                grid_size=grid_size,
-            )
-            second_derivative = (
-                shifted_derivative - first_derivative
-            ) / torch.where(
-                expand_like(s_shift - s_batch, z_s) >= 0.0,
-                expand_like(s_shift - s_batch, z_s).clamp(min=FD_DELTA_FLOOR),
-                expand_like(s_shift - s_batch, z_s).clamp(max=-FD_DELTA_FLOOR),
-            )
-
-        squared_norm = second_derivative.flatten(start_dim=1).pow(2).sum(dim=1)
-        q_values[index] = squared_norm.mean()
+            squared_norm = second_derivative.flatten(start_dim=1).pow(2).sum(dim=1)
+            squared_norm_sum = squared_norm_sum + squared_norm.sum()
+            sample_count += int(squared_norm.shape[0])
+        q_values[index] = squared_norm_sum / max(1, sample_count)
 
     logger.info(
-        "Computed Heun2 solver-aware monitor with estimator=%s on %d grid points.",
+        "Computed Heun2 solver-aware monitor with estimator=%s on %d grid points "
+        "(batch_size=%d, microbatch_size=%d).",
         resolved_estimator,
         grid_size,
+        batch_size,
+        microbatch_size,
     )
     return MonitorArtifacts(
         s_grid=s_grid,

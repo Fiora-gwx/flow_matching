@@ -290,9 +290,17 @@ def main(args):
         with open(args_filepath, "w", encoding="utf-8") as f:
             json.dump(vars(args), f, indent=2)
 
-    logger.info(f"Start from {args.start_epoch} to {args.epochs} epochs")
+    if args.eval_only:
+        epoch_iterator = [int(args.start_epoch)]
+        logger.info(
+            "Eval-only mode at checkpoint epoch %s.",
+            args.start_epoch,
+        )
+    else:
+        epoch_iterator = range(args.start_epoch, args.epochs)
+        logger.info(f"Start from {args.start_epoch} to {args.epochs} epochs")
     start_time = time.time()
-    for epoch in range(args.start_epoch, args.epochs):
+    for epoch in epoch_iterator:
         if args.distributed:
             data_loader_train.sampler.set_epoch(epoch)
 
