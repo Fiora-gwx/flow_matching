@@ -9,16 +9,20 @@ EPS = 1e-12
 
 
 @dataclass
-class SolverAwareClockArtifacts:
+class SolverAwareClockProfile:
     s_grid: Tensor
     q_raw: Tensor
     q_smoothed: Tensor
     density: Tensor
     phi: Tensor
-    r_grid: Tensor
-    nodes: Tensor
     density_exponent: float
     smoothing_window: int
+
+
+@dataclass
+class SolverAwareClockArtifacts(SolverAwareClockProfile):
+    r_grid: Tensor
+    nodes: Tensor
 
 
 def _moving_average(values: Tensor, window: int) -> Tensor:
@@ -72,20 +76,41 @@ def monotone_inverse_lookup(
     return values.reshape_as(query)
 
 
-def build_solver_aware_clock(
+def build_solver_aware_nodes(
+    s_grid: Tensor,
+    phi: Tensor,
+    node_count: int,
+) -> tuple[Tensor, Tensor]:
+    r_grid = torch.linspace(
+        0.0,
+        1.0,
+        node_count,
+        device=s_grid.device,
+        dtype=s_grid.dtype,
+    )
+    nodes = monotone_inverse_lookup(
+        x_grid=s_grid.to(dtype=phi.dtype),
+        y_grid=phi.to(dtype=phi.dtype),
+        query=r_grid.to(dtype=phi.dtype),
+    ).to(dtype=s_grid.dtype)
+    nodes[0] = 0.0
+    nodes[-1] = 1.0
+    return r_grid, nodes
+
+
+def build_solver_aware_clock_profile(
     s_grid: Tensor,
     q_values: Tensor,
     density_exponent: float,
     eps: float,
-    node_count: int,
     smoothing_window: Optional[int] = None,
-) -> SolverAwareClockArtifacts:
+) -> SolverAwareClockProfile:
     """Build a monotone solver-aware clock from a squared monitor curve Q(s).
 
     For a solver with leading local error order p+1, the phase-1 density uses
     m(s) = (Q(s) + eps)^gamma, where gamma = 1/4 for Euler and 1/6 for Heun2.
     The cumulative clock is phi(s) = int_0^s m(u) du / int_0^1 m(u) du and the
-    sampling nodes are s_n = psi(n / N) with psi = phi^{-1}.
+    sampling nodes are then produced by s_n = psi(n / N) with psi = phi^{-1}.
     """
     if s_grid.ndim != 1 or q_values.ndim != 1:
         raise ValueError("s_grid and q_values must be one-dimensional tensors.")
@@ -93,8 +118,6 @@ def build_solver_aware_clock(
         raise ValueError("s_grid and q_values must have the same length.")
     if s_grid.numel() < 2:
         raise ValueError("At least two grid points are required to build a solver-aware clock.")
-    if node_count < 2:
-        raise ValueError("node_count must be at least 2.")
 
     smoothing_window = (
         max(3, int(s_grid.numel() // 16) * 2 + 1)
@@ -115,29 +138,47 @@ def build_solver_aware_clock(
     phi = phi / phi[-1].clamp(min=EPS)
     phi = _strictly_monotone(phi)
 
-    r_grid = torch.linspace(
-        0.0,
-        1.0,
-        node_count,
-        device=s_grid.device,
-        dtype=s_grid.dtype,
-    )
-    nodes = monotone_inverse_lookup(
-        x_grid=s_grid.to(dtype=phi.dtype),
-        y_grid=phi,
-        query=r_grid.to(dtype=phi.dtype),
-    ).to(dtype=s_grid.dtype)
-    nodes[0] = 0.0
-    nodes[-1] = 1.0
-
-    return SolverAwareClockArtifacts(
+    return SolverAwareClockProfile(
         s_grid=s_grid,
         q_raw=q_raw.to(dtype=s_grid.dtype),
         q_smoothed=q_smoothed.to(dtype=s_grid.dtype),
         density=density.to(dtype=s_grid.dtype),
         phi=phi.to(dtype=s_grid.dtype),
-        r_grid=r_grid,
-        nodes=nodes,
         density_exponent=float(density_exponent),
         smoothing_window=int(smoothing_window),
+    )
+
+
+def build_solver_aware_clock(
+    s_grid: Tensor,
+    q_values: Tensor,
+    density_exponent: float,
+    eps: float,
+    node_count: int,
+    smoothing_window: Optional[int] = None,
+) -> SolverAwareClockArtifacts:
+    profile = build_solver_aware_clock_profile(
+        s_grid=s_grid,
+        q_values=q_values,
+        density_exponent=density_exponent,
+        eps=eps,
+        smoothing_window=smoothing_window,
+    )
+    if node_count < 2:
+        raise ValueError("node_count must be at least 2.")
+    r_grid, nodes = build_solver_aware_nodes(
+        s_grid=profile.s_grid,
+        phi=profile.phi,
+        node_count=node_count,
+    )
+    return SolverAwareClockArtifacts(
+        s_grid=profile.s_grid,
+        q_raw=profile.q_raw,
+        q_smoothed=profile.q_smoothed,
+        density=profile.density,
+        phi=profile.phi,
+        density_exponent=profile.density_exponent,
+        smoothing_window=profile.smoothing_window,
+        r_grid=r_grid,
+        nodes=nodes,
     )

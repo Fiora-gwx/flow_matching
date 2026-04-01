@@ -15,14 +15,11 @@ base_config:
   eval_epochs: [499]
   eval_nfes: [6, 12, 18, 24, 30, 48, 96]
   checkpoint_from:
-    artifact_group: ft_clock_solver_aware_training_free_linear_uniform
-    source_exp_name: linear_uniform_euler_baseline
+    artifact_group: ft_clock_linear_main_uparam
+    source_exp_name: linear_uniform
     checkpoint_epoch: 499
 
 experiments:
-  - name: linear_uniform_euler_baseline
-    sampling_solver: euler
-
   - name: linear_uniform_euler_solver_aware
     sampling_solver: euler
     solver_aware_clock_mode: training_free
@@ -33,9 +30,6 @@ experiments:
     solver_aware_monitor_batch_size: 64
     solver_aware_eps: 1.0e-6
     solver_aware_use_nodes: true
-
-  - name: linear_uniform_heun2_baseline
-    sampling_solver: heun2
 
   - name: linear_uniform_heun2_solver_aware
     sampling_solver: heun2
@@ -48,11 +42,9 @@ experiments:
     solver_aware_eps: 1.0e-6
     solver_aware_use_nodes: true
 
-  - name: linear_uniform_stork4_baseline
-    sampling_solver: stork4
-
   - name: linear_uniform_stork4_solver_aware
     sampling_solver: stork4
+    eval_nfes: [6, 8, 10, 12, 18, 20, 24, 30, 48, 50, 96]
     solver_aware_clock_mode: training_free
     solver_aware_target_solver: stork4
     solver_aware_k: 0

@@ -61,6 +61,24 @@ def _take_monitor_batch(
     return torch.cat(sample_chunks, dim=0), torch.cat(label_chunks, dim=0)
 
 
+def _prepare_reference_batch(
+    loader_iter: Iterator[Tuple[Tensor, Tensor]],
+    batch_size: int,
+    device: torch.device,
+    noise_generator: torch.Generator,
+) -> Tuple[Tensor, Tensor, Tensor]:
+    samples, labels = _take_monitor_batch(loader_iter, batch_size=batch_size)
+    samples = samples.to(device=device, dtype=torch.float32, non_blocking=True) * 2.0 - 1.0
+    labels = labels.to(device=device, non_blocking=True)
+    noise = torch.randn(
+        samples.shape,
+        device=device,
+        dtype=samples.dtype,
+        generator=noise_generator,
+    )
+    return samples, labels, noise
+
+
 def _path_sample(
     samples: Tensor,
     noise: Tensor,
@@ -101,7 +119,16 @@ def _fd_step(s: Tensor, grid_size: int) -> Tensor:
 
 
 def _velocity_fn(velocity_model, x: Tensor, s: Tensor, labels: Tensor, cfg_scale: float) -> Tensor:
-    return velocity_model(x, s, cfg_scale=cfg_scale, label=labels)
+    try:
+        return velocity_model(
+            x,
+            s,
+            cfg_scale=cfg_scale,
+            label=labels,
+            use_autocast=False,
+        )
+    except TypeError:
+        return velocity_model(x, s, cfg_scale=cfg_scale, label=labels)
 
 
 def _jvp(function, inputs, tangents):
@@ -207,17 +234,14 @@ def compute_euler_monitor(
     noise_generator = _make_generator(device=device, seed=seed + 9103)
     s_grid = torch.linspace(0.0, 1.0, grid_size, device=device, dtype=torch.float32)
     q_values = torch.zeros_like(s_grid)
+    samples, labels, noise = _prepare_reference_batch(
+        loader_iter=loader_iter,
+        batch_size=batch_size,
+        device=device,
+        noise_generator=noise_generator,
+    )
 
     for index, s_value in enumerate(s_grid):
-        samples, labels = _take_monitor_batch(loader_iter, batch_size=batch_size)
-        samples = samples.to(device=device, dtype=torch.float32, non_blocking=True) * 2.0 - 1.0
-        labels = labels.to(device=device, non_blocking=True)
-        noise = torch.randn(
-            samples.shape,
-            device=device,
-            dtype=samples.dtype,
-            generator=noise_generator,
-        )
         squared_norm_sum = torch.zeros((), device=device, dtype=torch.float32)
         sample_count = 0
         for sample_chunk, label_chunk, noise_chunk in zip(
@@ -257,7 +281,7 @@ def compute_euler_monitor(
 
     logger.info(
         "Computed Euler solver-aware monitor with estimator=%s on %d grid points "
-        "(batch_size=%d, microbatch_size=%d).",
+        "(batch_size=%d, microbatch_size=%d, fixed_reference_batch=true).",
         resolved_estimator,
         grid_size,
         batch_size,
@@ -305,17 +329,14 @@ def compute_heun2_monitor(
     noise_generator = _make_generator(device=device, seed=seed + 17021)
     s_grid = torch.linspace(0.0, 1.0, grid_size, device=device, dtype=torch.float32)
     q_values = torch.zeros_like(s_grid)
+    samples, labels, noise = _prepare_reference_batch(
+        loader_iter=loader_iter,
+        batch_size=batch_size,
+        device=device,
+        noise_generator=noise_generator,
+    )
 
     for index, s_value in enumerate(s_grid):
-        samples, labels = _take_monitor_batch(loader_iter, batch_size=batch_size)
-        samples = samples.to(device=device, dtype=torch.float32, non_blocking=True) * 2.0 - 1.0
-        labels = labels.to(device=device, non_blocking=True)
-        noise = torch.randn(
-            samples.shape,
-            device=device,
-            dtype=samples.dtype,
-            generator=noise_generator,
-        )
         squared_norm_sum = torch.zeros((), device=device, dtype=torch.float32)
         sample_count = 0
         for sample_chunk, label_chunk, noise_chunk in zip(
@@ -397,7 +418,7 @@ def compute_heun2_monitor(
 
     logger.info(
         "Computed Heun2 solver-aware monitor with estimator=%s on %d grid points "
-        "(batch_size=%d, microbatch_size=%d).",
+        "(batch_size=%d, microbatch_size=%d, fixed_reference_batch=true).",
         resolved_estimator,
         grid_size,
         batch_size,

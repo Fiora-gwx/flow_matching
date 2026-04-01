@@ -7,7 +7,10 @@ from typing import Dict, Iterable, Optional
 import torch
 from torch import Tensor
 
-from training.solver_aware.clock import SolverAwareClockArtifacts, build_solver_aware_clock
+from training.solver_aware.clock import (
+    build_solver_aware_clock_profile,
+    build_solver_aware_nodes,
+)
 from training.solver_aware.monitors import (
     MonitorArtifacts,
     compute_euler_monitor,
@@ -19,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class SolverAwareArtifacts:
+class SolverAwareProfile:
     mode: str
     target_solver: str
     monitor_solver: str
@@ -30,12 +33,22 @@ class SolverAwareArtifacts:
     grid_size: int
     batch_size: int
     eps: float
-    step_count: int
     q_values: Tensor
     q_smoothed: Tensor
     density: Tensor
     s_grid: Tensor
     phi: Tensor
+
+    def to_dict(self) -> Dict[str, object]:
+        payload = asdict(self)
+        for key in ("q_values", "q_smoothed", "density", "s_grid", "phi"):
+            payload[key] = payload[key].detach().cpu()
+        return payload
+
+
+@dataclass
+class SolverAwareArtifacts(SolverAwareProfile):
+    step_count: int
     r_grid: Tensor
     nodes: Tensor
 
@@ -58,7 +71,6 @@ def _cache_signature(
     grid_size: int,
     batch_size: int,
     eps: float,
-    step_count: int,
     seed: int,
 ) -> Dict[str, object]:
     return {
@@ -72,7 +84,6 @@ def _cache_signature(
         "grid_size": int(grid_size),
         "batch_size": int(batch_size),
         "eps": float(eps),
-        "step_count": int(step_count),
         "seed": int(seed),
     }
 
@@ -83,7 +94,22 @@ def _normalize_cache_path(cache_path: str) -> Optional[Path]:
     return Path(str(cache_path))
 
 
-def _load_cache(cache_path: Path, signature: Dict[str, object]) -> Optional[SolverAwareArtifacts]:
+def _resolve_profile_cache_path(
+    *,
+    cache_path: str,
+    output_dir: Optional[Path],
+    target_solver: str,
+    monitor_solver: str,
+) -> Optional[Path]:
+    explicit_path = _normalize_cache_path(cache_path=cache_path)
+    if explicit_path is not None:
+        return explicit_path
+    if output_dir is None:
+        return None
+    return output_dir.parent / f"solver_aware_profile_{target_solver}_{monitor_solver}.pt"
+
+
+def _load_cache(cache_path: Path, signature: Dict[str, object]) -> Optional[SolverAwareProfile]:
     if not cache_path.exists():
         return None
     payload = torch.load(cache_path, map_location="cpu")
@@ -91,10 +117,10 @@ def _load_cache(cache_path: Path, signature: Dict[str, object]) -> Optional[Solv
         logger.info("Ignoring solver-aware cache %s because the signature no longer matches.", cache_path)
         return None
     artifact_payload = payload["artifacts"]
-    return SolverAwareArtifacts(**artifact_payload)
+    return SolverAwareProfile(**artifact_payload)
 
 
-def _save_cache(cache_path: Path, signature: Dict[str, object], artifacts: SolverAwareArtifacts) -> None:
+def _save_cache(cache_path: Path, signature: Dict[str, object], artifacts: SolverAwareProfile) -> None:
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     torch.save({"signature": signature, "artifacts": artifacts.to_dict()}, cache_path)
 
@@ -171,7 +197,7 @@ def _compute_monitor(
     raise ValueError(f"Unsupported monitor solver {target_solver}.")
 
 
-def _merge_monitor_and_clock(
+def _merge_monitor_and_clock_profile(
     *,
     mode: str,
     target_solver: str,
@@ -182,11 +208,12 @@ def _merge_monitor_and_clock(
     grid_size: int,
     batch_size: int,
     eps: float,
-    step_count: int,
     monitor: MonitorArtifacts,
-    clock: SolverAwareClockArtifacts,
-) -> SolverAwareArtifacts:
-    return SolverAwareArtifacts(
+    q_smoothed: Tensor,
+    density: Tensor,
+    phi: Tensor,
+) -> SolverAwareProfile:
+    return SolverAwareProfile(
         mode=mode,
         target_solver=target_solver,
         monitor_solver=monitor_solver,
@@ -197,14 +224,42 @@ def _merge_monitor_and_clock(
         grid_size=grid_size,
         batch_size=batch_size,
         eps=eps,
-        step_count=step_count,
         q_values=monitor.q_values,
-        q_smoothed=clock.q_smoothed,
-        density=clock.density,
+        q_smoothed=q_smoothed,
+        density=density,
         s_grid=monitor.s_grid,
-        phi=clock.phi,
-        r_grid=clock.r_grid,
-        nodes=clock.nodes,
+        phi=phi,
+    )
+
+
+def _materialize_solver_aware_artifacts(
+    profile: SolverAwareProfile,
+    step_count: int,
+) -> SolverAwareArtifacts:
+    r_grid, nodes = build_solver_aware_nodes(
+        s_grid=profile.s_grid,
+        phi=profile.phi,
+        node_count=step_count + 1,
+    )
+    return SolverAwareArtifacts(
+        mode=profile.mode,
+        target_solver=profile.target_solver,
+        monitor_solver=profile.monitor_solver,
+        estimator=profile.estimator,
+        theorem_backed=profile.theorem_backed,
+        notes=profile.notes,
+        checkpoint_source=profile.checkpoint_source,
+        grid_size=profile.grid_size,
+        batch_size=profile.batch_size,
+        eps=profile.eps,
+        q_values=profile.q_values,
+        q_smoothed=profile.q_smoothed,
+        density=profile.density,
+        s_grid=profile.s_grid,
+        phi=profile.phi,
+        step_count=step_count,
+        r_grid=r_grid,
+        nodes=nodes,
     )
 
 
@@ -264,52 +319,75 @@ def maybe_build_solver_aware_artifacts(
         grid_size=grid_size,
         batch_size=batch_size,
         eps=eps,
-        step_count=step_count,
         seed=seed,
     )
-    resolved_cache_path = _normalize_cache_path(cache_path=cache_path)
-    if resolved_cache_path is not None:
-        cached = _load_cache(cache_path=resolved_cache_path, signature=signature)
-        if cached is not None:
-            logger.info("Loaded solver-aware clock artifacts from cache %s", resolved_cache_path)
-            return cached
-
-    monitor = _compute_monitor(
-        velocity_model=velocity_model,
-        data_loader=data_loader,
-        device=device,
-        path_family=path_family,
-        target_solver=monitor_spec["monitor_solver"],
-        grid_size=grid_size,
-        batch_size=batch_size,
-        estimator=estimator,
-        cfg_scale=cfg_scale,
-        seed=seed,
-    )
-    clock = build_solver_aware_clock(
-        s_grid=monitor.s_grid,
-        q_values=monitor.q_values,
-        density_exponent=monitor.density_exponent,
-        eps=eps,
-        node_count=step_count + 1,
-    )
-    artifacts = _merge_monitor_and_clock(
-        mode=effective_mode,
+    resolved_cache_path = _resolve_profile_cache_path(
+        cache_path=cache_path,
+        output_dir=output_dir,
         target_solver=target_solver,
-        monitor_solver=monitor_spec["monitor_solver"],
-        theorem_backed=bool(monitor_spec["theorem_backed"]),
-        notes=str(monitor_spec["notes"]),
-        checkpoint_source=checkpoint_source,
-        grid_size=grid_size,
-        batch_size=batch_size,
-        eps=eps,
+        monitor_solver=str(monitor_spec["monitor_solver"]),
+    )
+    profile: Optional[SolverAwareProfile] = None
+    if resolved_cache_path is not None:
+        profile = _load_cache(cache_path=resolved_cache_path, signature=signature)
+        if profile is not None:
+            logger.info(
+                "Loaded solver-aware continuous profile from cache %s and rematerialized nodes for step_count=%d",
+                resolved_cache_path,
+                step_count,
+            )
+
+    if profile is None:
+        monitor = _compute_monitor(
+            velocity_model=velocity_model,
+            data_loader=data_loader,
+            device=device,
+            path_family=path_family,
+            target_solver=monitor_spec["monitor_solver"],
+            grid_size=grid_size,
+            batch_size=batch_size,
+            estimator=estimator,
+            cfg_scale=cfg_scale,
+            seed=seed,
+        )
+        clock_profile = build_solver_aware_clock_profile(
+            s_grid=monitor.s_grid,
+            q_values=monitor.q_values,
+            density_exponent=monitor.density_exponent,
+            eps=eps,
+        )
+        profile = _merge_monitor_and_clock_profile(
+            mode=effective_mode,
+            target_solver=target_solver,
+            monitor_solver=monitor_spec["monitor_solver"],
+            theorem_backed=bool(monitor_spec["theorem_backed"]),
+            notes=str(monitor_spec["notes"]),
+            checkpoint_source=checkpoint_source,
+            grid_size=grid_size,
+            batch_size=batch_size,
+            eps=eps,
+            monitor=monitor,
+            q_smoothed=clock_profile.q_smoothed,
+            density=clock_profile.density,
+            phi=clock_profile.phi,
+        )
+        if resolved_cache_path is not None:
+            _save_cache(cache_path=resolved_cache_path, signature=signature, artifacts=profile)
+            logger.info(
+                "Saved solver-aware continuous profile cache to %s; future NFEs will reuse the same monitor/clock profile.",
+                resolved_cache_path,
+            )
+
+    artifacts = _materialize_solver_aware_artifacts(
+        profile=profile,
         step_count=step_count,
-        monitor=monitor,
-        clock=clock,
     )
 
-    if resolved_cache_path is not None:
-        _save_cache(cache_path=resolved_cache_path, signature=signature, artifacts=artifacts)
+    logger.info(
+        "Materialized solver-aware nodes for target_solver=%s using a continuous profile shared across NFEs (step_count=%d).",
+        target_solver,
+        step_count,
+    )
 
     if output_dir is not None:
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -340,7 +418,7 @@ def maybe_build_solver_aware_artifacts(
         "Built solver-aware nodes for target_solver=%s using monitor_solver=%s and estimator=%s.",
         target_solver,
         monitor_spec["monitor_solver"],
-        monitor.resolved_estimator,
+        profile.estimator,
     )
     logger.info("Solver-aware note: %s", monitor_spec["notes"])
     return artifacts

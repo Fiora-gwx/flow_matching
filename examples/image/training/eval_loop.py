@@ -87,7 +87,12 @@ class CFGScaledModel(ModelWrapper):
         return adapted.clamp(min=sample_eps, max=1.0 - sample_eps)
 
     def forward(
-        self, x: torch.Tensor, t: torch.Tensor, cfg_scale: float, label: torch.Tensor
+        self,
+        x: torch.Tensor,
+        t: torch.Tensor,
+        cfg_scale: float,
+        label: torch.Tensor,
+        use_autocast: bool = True,
     ):
         module = (
             self.model.module
@@ -102,14 +107,15 @@ class CFGScaledModel(ModelWrapper):
         ), f"Cfg scaling does not work for the logit outputs of discrete models. Got cfg weight={cfg_scale} and model {type(self.model)}."
         t = torch.zeros(x.shape[0], device=x.device) + t
 
+        autocast_enabled = bool(use_autocast) and bool(x.is_cuda)
         if cfg_scale != 0.0:
-            with torch.cuda.amp.autocast():
+            with torch.cuda.amp.autocast(enabled=autocast_enabled):
                 conditional = self.model(x, t, extra={"label": label})
                 condition_free = self.model(x, t, extra={})
             raw_result = (1.0 + cfg_scale) * conditional - cfg_scale * condition_free
             self.nfe_counter += 2
         else:
-            with torch.cuda.amp.autocast():
+            with torch.cuda.amp.autocast(enabled=autocast_enabled):
                 raw_result = self.model(x, t, extra={"label": label})
             self.nfe_counter += 1
         if is_discrete:
