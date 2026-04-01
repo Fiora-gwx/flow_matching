@@ -10,6 +10,29 @@ except ModuleNotFoundError:  # pragma: no cover - depends on local runtime.
 
 @unittest.skipIf(torch is None, "torch is required for solver-aware clock tests")
 class SolverAwareClockTest(unittest.TestCase):
+    def test_constrained_profile_resolves_adaptive_eta_when_unspecified(self):
+        s_grid = torch.linspace(0.0, 1.0, 5, dtype=torch.float32)
+        q_e = torch.ones(5, dtype=torch.float32)
+        q_h = torch.ones(5, dtype=torch.float32)
+
+        profile = build_solver_aware_clock_profile(
+            s_grid=s_grid,
+            q_values=q_e,
+            q_h_values=q_h,
+            use_q_h_for_weight=False,
+            density_exponent=0.25,
+            eps=1.0e-6,
+            step_count=2,
+            eta=None,
+            floor_mode="pointwise",
+            floor_eps=1.0e-6,
+            legacy_unconstrained=False,
+        )
+
+        self.assertFalse(profile.used_uniform_fallback)
+        self.assertAlmostEqual(profile.eta, 1.0 / 4.2, places=5)
+        self.assertAlmostEqual(profile.floor_mass, 0.7, places=4)
+
     def test_constrained_profile_falls_back_to_uniform_when_floor_is_infeasible(self):
         s_grid = torch.linspace(0.0, 1.0, 5, dtype=torch.float32)
         q_e = torch.full((5,), 1.0e-4, dtype=torch.float32)

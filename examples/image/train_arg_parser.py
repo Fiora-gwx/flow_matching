@@ -186,11 +186,12 @@ def get_args_parser():
     )
     parser.add_argument(
         "--solver_aware_eta",
-        default=0.25,
+        default=None,
         type=float,
         help=(
-            "Admissibility tolerance eta used in the constrained floor "
-            "rho_floor_N(s)=B(s)/(3 eta N A(s))."
+            "Optional admissibility tolerance eta override used in the constrained floor "
+            "rho_floor_N(s)=B(s)/(3 eta N A(s)). When omitted, eta is resolved adaptively "
+            "from Q_H/Q_E and the current NFE budget."
         ),
     )
     parser.add_argument(

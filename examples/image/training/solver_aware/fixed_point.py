@@ -36,7 +36,7 @@ class SolverAwareProfile:
     grid_size: int
     batch_size: int
     eps: float
-    eta: float
+    eta: Optional[float]
     floor_mode: str
     floor_eps: float
     compute_qh_for_euler: bool
@@ -103,7 +103,7 @@ def _cache_signature(
     grid_size: int,
     batch_size: int,
     eps: float,
-    eta: float,
+    eta: Optional[float],
     floor_mode: str,
     floor_eps: float,
     compute_qh_for_euler: bool,
@@ -127,7 +127,7 @@ def _cache_signature(
         "grid_size": int(grid_size),
         "batch_size": int(batch_size),
         "eps": float(eps),
-        "eta": float(eta),
+        "eta": None if eta is None else float(eta),
         "floor_mode": str(floor_mode),
         "floor_eps": float(floor_eps),
         "compute_qh_for_euler": bool(compute_qh_for_euler),
@@ -215,7 +215,7 @@ def _validate_constrained_args(
     *,
     use_propagation: bool,
     g_mode: str,
-    eta: float,
+    eta: Optional[float],
     floor_mode: str,
     floor_eps: float,
 ) -> None:
@@ -223,7 +223,7 @@ def _validate_constrained_args(
         raise ValueError(
             "solver_aware_use_propagation=true requires solver_aware_g_mode to be non-none."
         )
-    if float(eta) <= 0.0:
+    if eta is not None and float(eta) <= 0.0:
         raise ValueError("solver_aware_eta must be positive.")
     if str(floor_mode) not in {"pointwise", "constant"}:
         raise ValueError(f"Unsupported solver_aware_floor_mode={floor_mode}.")
@@ -466,7 +466,7 @@ def _merge_profile(
     grid_size: int,
     batch_size: int,
     eps: float,
-    eta: float,
+    eta: Optional[float],
     floor_mode: str,
     floor_eps: float,
     compute_qh_for_euler: bool,
@@ -495,7 +495,7 @@ def _merge_profile(
         grid_size=grid_size,
         batch_size=batch_size,
         eps=float(eps),
-        eta=float(eta),
+        eta=None if eta is None else float(eta),
         floor_mode=str(floor_mode),
         floor_eps=float(floor_eps),
         compute_qh_for_euler=bool(compute_qh_for_euler),
@@ -553,7 +553,7 @@ def _materialize_solver_aware_artifacts(
         grid_size=profile.grid_size,
         batch_size=profile.batch_size,
         eps=profile.eps,
-        eta=profile.eta,
+        eta=clock.eta,
         floor_mode=profile.floor_mode,
         floor_eps=profile.floor_eps,
         compute_qh_for_euler=profile.compute_qh_for_euler,
@@ -627,7 +627,7 @@ def maybe_build_solver_aware_profile(
     grid_size: int,
     batch_size: int,
     eps: float,
-    eta: float,
+    eta: Optional[float],
     floor_mode: str,
     floor_eps: float,
     compute_qh_for_euler: bool,
@@ -873,7 +873,7 @@ def maybe_build_solver_aware_artifacts(
     grid_size: int,
     batch_size: int,
     eps: float,
-    eta: float,
+    eta: Optional[float],
     floor_mode: str,
     floor_eps: float,
     compute_qh_for_euler: bool,

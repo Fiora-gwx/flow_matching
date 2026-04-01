@@ -8,6 +8,8 @@ from torch import Tensor
 EPS = 1e-12
 BISECTION_TOL = 1e-8
 BISECTION_STEPS = 80
+ADAPTIVE_ETA_DELTA = 0.3
+ADAPTIVE_ETA_CAP = 0.95
 
 @dataclass
 class SolverAwareClockProfile:
@@ -161,6 +163,39 @@ def _build_pointwise_floor(
     return ratio / (3.0 * float(eta) * float(step_count))
 
 
+def _resolve_eta(
+    *,
+    s_grid: Tensor,
+    q_smoothed: Tensor,
+    q_h_smoothed: Optional[Tensor],
+    step_count: int,
+    eta: Optional[float],
+    floor_eps: float,
+    legacy_unconstrained: bool,
+) -> float:
+    if eta is not None:
+        if float(eta) <= 0.0:
+            raise ValueError("solver_aware_eta must be positive.")
+        return float(eta)
+    if q_h_smoothed is None:
+        if not bool(legacy_unconstrained):
+            raise ValueError(
+                "Adaptive solver-aware eta requires q_h_values so the admissible floor can be built."
+            )
+        return ADAPTIVE_ETA_CAP
+    numerator = (q_h_smoothed + float(floor_eps)).clamp(min=EPS)
+    denominator = (q_smoothed + float(floor_eps)).clamp(min=EPS)
+    ratio = torch.sqrt(numerator / denominator)
+    k_n = float(
+        _integrate_on_grid(
+            ratio.to(dtype=torch.float64),
+            s_grid.to(dtype=torch.float64),
+        ).item()
+    ) / (3.0 * float(step_count))
+    adaptive_eta = k_n / (1.0 - ADAPTIVE_ETA_DELTA)
+    return max(float(floor_eps), min(ADAPTIVE_ETA_CAP, float(adaptive_eta)))
+
+
 def build_density_from_constrained_problem(
     *,
     s_grid: Tensor,
@@ -212,7 +247,7 @@ def build_solver_aware_clock_profile(
     density_exponent: float,
     eps: float,
     step_count: int,
-    eta: float,
+    eta: Optional[float],
     floor_mode: str,
     floor_eps: float,
     g_values: Optional[Tensor] = None,
@@ -236,6 +271,14 @@ def build_solver_aware_clock_profile(
     so the admissible floor becomes
 
         rho_floor_N(s) ≈ (1 / (3 eta N)) * sqrt((Q_H(s)+eps)/(Q_E(s)+eps)).
+
+    When eta is omitted, this function resolves an adaptive default at the
+    current NFE:
+
+        K_N = (1 / (3N)) * \int sqrt((Q_H+eps)/(Q_E+eps)) ds
+        eta(N) = min(0.95, K_N / (1 - delta)),
+
+    with delta fixed to 0.3.
 
     The constrained minimizer has the closed form
 
@@ -278,6 +321,16 @@ def build_solver_aware_clock_profile(
             raise ValueError("g_values must be one-dimensional and aligned with s_grid.")
         g_tensor = g_values.to(dtype=torch.float64).clamp(min=EPS)
 
+    resolved_eta = _resolve_eta(
+        s_grid=s_grid,
+        q_smoothed=q_smoothed,
+        q_h_smoothed=q_h_smoothed,
+        step_count=step_count,
+        eta=eta,
+        floor_eps=floor_eps,
+        legacy_unconstrained=legacy_unconstrained,
+    )
+
     if bool(use_q_h_for_weight):
         if q_h_smoothed is None:
             raise ValueError("use_q_h_for_weight=true requires q_h_values.")
@@ -306,7 +359,7 @@ def build_solver_aware_clock_profile(
             q_smoothed=q_smoothed,
             q_h_smoothed=q_h_smoothed,
             step_count=step_count,
-            eta=eta,
+            eta=resolved_eta,
             floor_eps=floor_eps,
         )
         if floor_mode == "pointwise":
@@ -359,7 +412,7 @@ def build_solver_aware_clock_profile(
         weight_monitor_name=weight_monitor_name,
         density_exponent=float(density_exponent),
         propagation_exponent=float(propagation_exponent),
-        eta=float(eta),
+        eta=float(resolved_eta),
         floor_mode=str(floor_mode),
         floor_eps=float(floor_eps),
         legacy_unconstrained=bool(legacy_unconstrained),
@@ -379,7 +432,7 @@ def build_solver_aware_clock(
     density_exponent: float,
     eps: float,
     step_count: int,
-    eta: float,
+    eta: Optional[float],
     floor_mode: str,
     floor_eps: float,
     g_values: Optional[Tensor] = None,

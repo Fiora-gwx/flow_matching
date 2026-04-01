@@ -34,7 +34,7 @@ class SolverAwareTrainingFreeConfigTest(unittest.TestCase):
 
     def test_config_uses_constrained_defaults(self):
         source = CONFIG_PATH.read_text(encoding="utf-8")
-        self.assertIn("solver_aware_eta: 0.25", source)
+        self.assertNotIn("solver_aware_eta:", source)
         self.assertIn("solver_aware_floor_mode: pointwise", source)
         self.assertIn("solver_aware_floor_eps: 1.0e-6", source)
         self.assertIn("solver_aware_compute_qh_for_euler: true", source)

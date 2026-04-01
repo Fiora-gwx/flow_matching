@@ -21,7 +21,6 @@ base_config:
   solver_aware_monitor_grid_size: 65
   solver_aware_monitor_batch_size: 64
   solver_aware_eps: 1.0e-6
-  solver_aware_eta: 0.25
   solver_aware_floor_mode: pointwise
   solver_aware_floor_eps: 1.0e-6
   solver_aware_compute_qh_for_euler: true

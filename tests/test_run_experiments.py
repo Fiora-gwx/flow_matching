@@ -406,6 +406,54 @@ class RunExperimentsTest(unittest.TestCase):
             self.assertIn('--solver_aware_use_nodes', cmd)
             self.assertIn('--solver_aware_monitor_estimator auto', cmd)
 
+    def test_build_eval_cmd_omits_solver_aware_eta_when_unspecified(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            config_path = workspace / 'config.json'
+            config_path.write_text(json.dumps({
+                'experiment_name': 'demo_group',
+                'base_config': {},
+                'experiments': [],
+            }), encoding='utf-8')
+            cwd = os.getcwd()
+            os.chdir(workspace)
+            try:
+                manager = ExperimentManager(config_path)
+                cmd = manager.build_eval_cmd(
+                    {
+                        'dataset': 'cifar10',
+                        'data_path': './data/cifar10',
+                        'batch_size': 8,
+                        'epochs': 2,
+                        'seed': 0,
+                        'num_gpus': 1,
+                        'path_family': 'linear',
+                        'clock_family': 'uniform',
+                        'sampling_solver': 'euler',
+                        'model_output_type': 'base_velocity',
+                        'time_sampling_strategy': 'ds_dr_sq',
+                        'metrics': ['fid'],
+                        'solver_aware_clock_mode': 'training_free',
+                        'solver_aware_target_solver': 'euler',
+                        'solver_aware_k': 0,
+                        'solver_aware_monitor_estimator': 'auto',
+                        'solver_aware_monitor_grid_size': 65,
+                        'solver_aware_monitor_batch_size': 64,
+                        'solver_aware_eps': 1e-6,
+                        'solver_aware_floor_mode': 'pointwise',
+                        'solver_aware_floor_eps': 1e-6,
+                        'solver_aware_compute_qh_for_euler': True,
+                        'solver_aware_legacy_unconstrained': False,
+                        'solver_aware_use_nodes': True,
+                    },
+                    workspace / 'out',
+                    workspace / 'checkpoint.pth',
+                    12,
+                )
+            finally:
+                os.chdir(cwd)
+            self.assertNotIn('--solver_aware_eta', cmd)
+
     def test_experiment_manager_resumes_training_when_checkpoint_exists(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace = Path(tmpdir)

@@ -27,7 +27,7 @@ class SolverAwarePropagationConfigTest(unittest.TestCase):
         self.assertIn("solver_aware_use_propagation: true", source)
         self.assertIn("solver_aware_g_mode: jacobian_envelope", source)
         self.assertIn("solver_aware_g_estimator: spectral_q95", source)
-        self.assertIn("solver_aware_eta: 0.25", source)
+        self.assertNotIn("solver_aware_eta:", source)
         self.assertIn("solver_aware_floor_mode: pointwise", source)
         self.assertIn("solver_aware_floor_eps: 1.0e-6", source)
         self.assertIn("solver_aware_compute_qh_for_euler: true", source)
