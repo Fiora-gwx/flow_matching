@@ -59,6 +59,116 @@ class SolverAwareArtifacts(SolverAwareProfile):
         return payload
 
 
+def _curve_summary(values: Tensor) -> Dict[str, float]:
+    detached = values.detach().to(dtype=torch.float64)
+    return {
+        "min": float(detached.min().item()),
+        "mean": float(detached.mean().item()),
+        "max": float(detached.max().item()),
+    }
+
+
+def _tail(values: Tensor, count: int = 8) -> list[float]:
+    tail = values.detach().cpu().tolist()[-count:]
+    return [float(value) for value in tail]
+
+
+def _compute_step_sizes(nodes: Tensor) -> Tensor:
+    step_sizes = torch.zeros_like(nodes)
+    if nodes.numel() > 1:
+        step_sizes[1:] = nodes[1:] - nodes[:-1]
+    return step_sizes
+
+
+def _build_artifact_json_payload(artifacts: SolverAwareArtifacts) -> Dict[str, object]:
+    return {
+        "mode": artifacts.mode,
+        "target_solver": artifacts.target_solver,
+        "monitor_solver": artifacts.monitor_solver,
+        "estimator": artifacts.estimator,
+        "theorem_backed": artifacts.theorem_backed,
+        "notes": artifacts.notes,
+        "checkpoint_source": artifacts.checkpoint_source,
+        "grid_size": artifacts.grid_size,
+        "batch_size": artifacts.batch_size,
+        "eps": artifacts.eps,
+        "step_count": artifacts.step_count,
+        "density_exponent": artifacts.density_exponent,
+        "smoothing_window": artifacts.smoothing_window,
+        "s_grid": [float(value) for value in artifacts.s_grid.detach().cpu().tolist()],
+        "q_values": [float(value) for value in artifacts.q_values.detach().cpu().tolist()],
+        "q_smoothed": [float(value) for value in artifacts.q_smoothed.detach().cpu().tolist()],
+        "density": [float(value) for value in artifacts.density.detach().cpu().tolist()],
+        "phi": [float(value) for value in artifacts.phi.detach().cpu().tolist()],
+        "q_summary": _curve_summary(artifacts.q_values),
+        "q_smoothed_summary": _curve_summary(artifacts.q_smoothed),
+        "density_summary": _curve_summary(artifacts.density),
+        "phi_summary": _curve_summary(artifacts.phi),
+    }
+
+
+def _build_artifact_csv_text(artifacts: SolverAwareArtifacts) -> str:
+    rows = ["grid_index,s_value,q_value,q_smoothed,density,phi"]
+    s_values = artifacts.s_grid.detach().cpu().tolist()
+    q_values = artifacts.q_values.detach().cpu().tolist()
+    q_smoothed = artifacts.q_smoothed.detach().cpu().tolist()
+    density = artifacts.density.detach().cpu().tolist()
+    phi = artifacts.phi.detach().cpu().tolist()
+    for index, (s_value, q_value, q_smooth, density_value, phi_value) in enumerate(
+        zip(s_values, q_values, q_smoothed, density, phi)
+    ):
+        rows.append(
+            f"{index},{float(s_value)},{float(q_value)},{float(q_smooth)},{float(density_value)},{float(phi_value)}"
+        )
+    return "\n".join(rows) + "\n"
+
+
+def _build_node_json_payload(artifacts: SolverAwareArtifacts) -> Dict[str, object]:
+    step_sizes = _compute_step_sizes(artifacts.nodes)
+    positive_steps = step_sizes[1:]
+    uniform_step = 1.0 / float(max(1, artifacts.step_count))
+    max_step = float(positive_steps.max().item()) if positive_steps.numel() > 0 else 0.0
+    min_positive_step = (
+        float(positive_steps.clamp(min=torch.finfo(positive_steps.dtype).eps).min().item())
+        if positive_steps.numel() > 0
+        else 0.0
+    )
+    return {
+        "mode": artifacts.mode,
+        "target_solver": artifacts.target_solver,
+        "monitor_solver": artifacts.monitor_solver,
+        "estimator": artifacts.estimator,
+        "theorem_backed": artifacts.theorem_backed,
+        "notes": artifacts.notes,
+        "checkpoint_source": artifacts.checkpoint_source,
+        "step_count": artifacts.step_count,
+        "r_grid": [float(value) for value in artifacts.r_grid.detach().cpu().tolist()],
+        "nodes": [float(value) for value in artifacts.nodes.detach().cpu().tolist()],
+        "step_sizes": [float(value) for value in step_sizes.detach().cpu().tolist()],
+        "diagnostics": {
+            "uniform_step": float(uniform_step),
+            "max_step": float(max_step),
+            "min_positive_step": float(min_positive_step),
+            "max_step_over_uniform": float(max_step / uniform_step) if uniform_step > 0.0 else 0.0,
+            "max_step_over_min_positive": (
+                float(max_step / min_positive_step) if min_positive_step > 0.0 else 0.0
+            ),
+        },
+    }
+
+
+def _build_node_csv_text(artifacts: SolverAwareArtifacts) -> str:
+    rows = ["node_index,r_value,s_value,step_size_from_prev"]
+    step_sizes = _compute_step_sizes(artifacts.nodes).detach().cpu().tolist()
+    r_values = artifacts.r_grid.detach().cpu().tolist()
+    s_values = artifacts.nodes.detach().cpu().tolist()
+    for index, (r_value, s_value, step_size) in enumerate(zip(r_values, s_values, step_sizes)):
+        rows.append(
+            f"{index},{float(r_value)},{float(s_value)},{float(step_size)}"
+        )
+    return "\n".join(rows) + "\n"
+
+
 def _cache_signature(
     *,
     mode: str,
@@ -388,29 +498,61 @@ def maybe_build_solver_aware_artifacts(
         target_solver,
         step_count,
     )
+    step_sizes = _compute_step_sizes(artifacts.nodes)
+    positive_steps = step_sizes[1:]
+    uniform_step = 1.0 / float(max(1, artifacts.step_count))
+    max_step = float(positive_steps.max().item()) if positive_steps.numel() > 0 else 0.0
+    max_step_over_uniform = float(max_step / uniform_step) if uniform_step > 0.0 else 0.0
+    logger.info(
+        "Solver-aware diagnostics for %s at step_count=%d: q[min=%.6f, mean=%.6f, max=%.6f], "
+        "density[min=%.6f, mean=%.6f, max=%.6f], max_step=%.6f, max_step_over_uniform=%.6f.",
+        target_solver,
+        step_count,
+        float(_curve_summary(artifacts.q_values)["min"]),
+        float(_curve_summary(artifacts.q_values)["mean"]),
+        float(_curve_summary(artifacts.q_values)["max"]),
+        float(_curve_summary(artifacts.density)["min"]),
+        float(_curve_summary(artifacts.density)["mean"]),
+        float(_curve_summary(artifacts.density)["max"]),
+        max_step,
+        max_step_over_uniform,
+    )
+    logger.info(
+        "Solver-aware tails for %s at step_count=%d: q_smoothed_tail=%s, density_tail=%s, nodes_tail=%s.",
+        target_solver,
+        step_count,
+        _tail(artifacts.q_smoothed),
+        _tail(artifacts.density),
+        _tail(artifacts.nodes),
+    )
 
     if output_dir is not None:
         output_dir.mkdir(parents=True, exist_ok=True)
         torch.save(artifacts.to_dict(), output_dir / "solver_aware_artifacts.pt")
         (output_dir / "solver_aware_artifacts.json").write_text(
             json.dumps(
-                {
-                    "mode": artifacts.mode,
-                    "target_solver": artifacts.target_solver,
-                    "monitor_solver": artifacts.monitor_solver,
-                    "estimator": artifacts.estimator,
-                    "theorem_backed": artifacts.theorem_backed,
-                    "notes": artifacts.notes,
-                    "checkpoint_source": artifacts.checkpoint_source,
-                    "grid_size": artifacts.grid_size,
-                    "batch_size": artifacts.batch_size,
-                    "eps": artifacts.eps,
-                    "step_count": artifacts.step_count,
-                },
+                _build_artifact_json_payload(artifacts),
                 indent=2,
                 sort_keys=True,
             )
             + "\n",
+            encoding="utf-8",
+        )
+        (output_dir / "solver_aware_artifacts.csv").write_text(
+            _build_artifact_csv_text(artifacts),
+            encoding="utf-8",
+        )
+        (output_dir / "solver_aware_nodes.json").write_text(
+            json.dumps(
+                _build_node_json_payload(artifacts),
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        (output_dir / "solver_aware_nodes.csv").write_text(
+            _build_node_csv_text(artifacts),
             encoding="utf-8",
         )
 
