@@ -1,6 +1,6 @@
 import json
 import logging
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Dict, Iterable, Optional
 
@@ -38,6 +38,8 @@ class SolverAwareProfile:
     density: Tensor
     s_grid: Tensor
     phi: Tensor
+    density_exponent: float
+    smoothing_window: int
 
     def to_dict(self) -> Dict[str, object]:
         payload = asdict(self)
@@ -227,7 +229,20 @@ def _load_cache(cache_path: Path, signature: Dict[str, object]) -> Optional[Solv
         logger.info("Ignoring solver-aware cache %s because the signature no longer matches.", cache_path)
         return None
     artifact_payload = payload["artifacts"]
-    return SolverAwareProfile(**artifact_payload)
+    expected_fields = {field.name for field in fields(SolverAwareProfile)}
+    missing_fields = sorted(expected_fields.difference(artifact_payload.keys()))
+    if missing_fields:
+        logger.info(
+            "Ignoring solver-aware cache %s because it is missing profile fields: %s",
+            cache_path,
+            ", ".join(missing_fields),
+        )
+        return None
+    normalized_payload = {
+        key: artifact_payload[key]
+        for key in expected_fields
+    }
+    return SolverAwareProfile(**normalized_payload)
 
 
 def _save_cache(cache_path: Path, signature: Dict[str, object], artifacts: SolverAwareProfile) -> None:
@@ -322,6 +337,8 @@ def _merge_monitor_and_clock_profile(
     q_smoothed: Tensor,
     density: Tensor,
     phi: Tensor,
+    density_exponent: float,
+    smoothing_window: int,
 ) -> SolverAwareProfile:
     return SolverAwareProfile(
         mode=mode,
@@ -339,6 +356,8 @@ def _merge_monitor_and_clock_profile(
         density=density,
         s_grid=monitor.s_grid,
         phi=phi,
+        density_exponent=float(density_exponent),
+        smoothing_window=int(smoothing_window),
     )
 
 
@@ -367,6 +386,8 @@ def _materialize_solver_aware_artifacts(
         density=profile.density,
         s_grid=profile.s_grid,
         phi=profile.phi,
+        density_exponent=profile.density_exponent,
+        smoothing_window=profile.smoothing_window,
         step_count=step_count,
         r_grid=r_grid,
         nodes=nodes,
@@ -480,6 +501,8 @@ def maybe_build_solver_aware_artifacts(
             q_smoothed=clock_profile.q_smoothed,
             density=clock_profile.density,
             phi=clock_profile.phi,
+            density_exponent=clock_profile.density_exponent,
+            smoothing_window=clock_profile.smoothing_window,
         )
         if resolved_cache_path is not None:
             _save_cache(cache_path=resolved_cache_path, signature=signature, artifacts=profile)

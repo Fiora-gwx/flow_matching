@@ -1,4 +1,6 @@
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 try:
     import torch
@@ -9,6 +11,7 @@ try:
         _build_artifact_json_payload,
         _build_node_csv_text,
         _build_node_json_payload,
+        _load_cache,
     )
 except ModuleNotFoundError:  # pragma: no cover - depends on local runtime.
     torch = None
@@ -54,6 +57,30 @@ class SolverAwareFixedPointOutputsTest(unittest.TestCase):
         self.assertAlmostEqual(node_payload["diagnostics"]["max_step_over_uniform"], 1.5, places=6)
         self.assertIn("grid_index,s_value,q_value,q_smoothed,density,phi", artifact_csv)
         self.assertIn("node_index,r_value,s_value,step_size_from_prev", node_csv)
+
+    def test_load_cache_ignores_legacy_profile_without_new_fields(self):
+        signature = {"mode": "training_free"}
+        legacy_payload = {
+            "mode": "training_free",
+            "target_solver": "euler",
+            "monitor_solver": "euler",
+            "estimator": "jvp",
+            "theorem_backed": True,
+            "notes": "legacy",
+            "checkpoint_source": "checkpoint-499.pth",
+            "grid_size": 5,
+            "batch_size": 4,
+            "eps": 1.0e-6,
+            "q_values": torch.tensor([1.0, 2.0], dtype=torch.float32),
+            "q_smoothed": torch.tensor([1.0, 2.0], dtype=torch.float32),
+            "density": torch.tensor([1.0, 2.0], dtype=torch.float32),
+            "s_grid": torch.tensor([0.0, 1.0], dtype=torch.float32),
+            "phi": torch.tensor([0.0, 1.0], dtype=torch.float32),
+        }
+        with TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "legacy.pt"
+            torch.save({"signature": signature, "artifacts": legacy_payload}, path)
+            self.assertIsNone(_load_cache(path, signature))
 
 
 if __name__ == "__main__":
