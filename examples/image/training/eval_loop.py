@@ -254,17 +254,47 @@ def eval_model(
 
     solver_aware_artifacts = None
     solver_aware_time_grid = None
+    solver_aware_monitor_family = str(
+        getattr(args, "solver_aware_monitor_family", "legacy_continuous")
+    )
+    defect_based_monitor = solver_aware_monitor_family == "defect_based"
+    allow_eval_loader_for_monitor = bool(
+        getattr(args, "solver_aware_allow_eval_loader_for_monitor", False)
+    )
     if (
         not args.discrete_flow_matching
         and getattr(args, "solver_aware_clock_mode", "off") != "off"
         and getattr(args, "solver_aware_use_nodes", False)
     ):
+        if defect_based_monitor and args.solver_aware_target_solver != args.sampling_solver:
+            logger.warning(
+                "Current clock is built for one solver but consumed by another solver: "
+                "target_solver=%s, sampling_solver=%s. The theorem-backed interpretation only applies "
+                "when target_solver == sampling_solver, so this run should be treated as cross-solver heuristic transfer.",
+                args.solver_aware_target_solver,
+                args.sampling_solver,
+            )
         step_count = _solver_step_count(
             solver_name=args.sampling_solver,
             nfe_budget=args.eval_nfe,
         )
         if distributed_mode.is_main_process():
-            monitor_loader = _build_monitor_loader(args=args, data_loader=data_loader)
+            use_eval_loader_for_monitor = allow_eval_loader_for_monitor
+            if not allow_eval_loader_for_monitor:
+                logger.info(
+                    "Solver-aware monitor safety gate is active for monitor_family=%s: a valid cache hit is required and the current eval/test loader will not be used.",
+                    solver_aware_monitor_family,
+                )
+            else:
+                logger.warning(
+                    "Solver-aware monitor is allowed to use the current eval/test loader because "
+                    "--solver_aware_allow_eval_loader_for_monitor was set. This may cause evaluation leakage."
+                )
+            monitor_loader = (
+                _build_monitor_loader(args=args, data_loader=data_loader)
+                if use_eval_loader_for_monitor
+                else data_loader
+            )
             with torch.enable_grad():
                 solver_aware_artifacts = maybe_build_solver_aware_artifacts(
                     mode=args.solver_aware_clock_mode,
@@ -308,6 +338,10 @@ def eval_model(
                     ),
                     seed=int(getattr(args, "seed", 0)),
                     cache_path=args.solver_aware_cache_path,
+                    sampling_solver=args.sampling_solver,
+                    using_eval_loader_for_monitor=use_eval_loader_for_monitor,
+                    require_cache_hit=bool(not allow_eval_loader_for_monitor),
+                    refuse_recompute_when_cache_exists=True,
                     stork_effective_order=float(
                         getattr(args, "solver_aware_stork_effective_order", 4.0)
                     ),
@@ -317,6 +351,20 @@ def eval_model(
                     output_dir=Path(args.output_dir) if args.output_dir else None,
                 )
             if solver_aware_artifacts is not None:
+                logger.info(
+                    "Solver-aware monitor source resolved as loaded_from_cache=%s, eval_loader_used=%s for monitor_family=%s.",
+                    bool(
+                        solver_aware_artifacts.distribution_info.get(
+                            "monitor_loaded_from_cache", False
+                        )
+                    ),
+                    bool(
+                        solver_aware_artifacts.distribution_info.get(
+                            "monitor_used_eval_loader", False
+                        )
+                    ),
+                    solver_aware_monitor_family,
+                )
                 solver_aware_time_grid = solver_aware_artifacts.nodes.to(device=device, dtype=torch.float32)
         if distributed_mode.is_dist_avail_and_initialized():
             has_nodes = torch.tensor(
@@ -411,7 +459,7 @@ def eval_model(
                 synthetic_samples * 0.5 + 0.5, min=0.0, max=1.0
             )
         logger.info(
-            f"{samples.shape[0]} samples generated in {last_nfe} evaluations and {last_step_count} steps."
+            f"{samples.shape[0]} samples generated in {last_nfe} actual evaluations under raw_nfe_budget={args.eval_nfe} and {last_step_count} macro-steps."
         )
         if num_synthetic + synthetic_samples.shape[0] > fid_samples:
             synthetic_samples = synthetic_samples[: fid_samples - num_synthetic]
@@ -465,6 +513,7 @@ def eval_model(
 
     results = {
         "nfe": float(last_nfe),
+        "requested_nfe_budget": float(args.eval_nfe),
         "step_count": float(last_step_count),
         "real_samples": float(num_real),
         "synthetic_samples": float(num_synthetic),

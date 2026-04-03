@@ -85,7 +85,8 @@ def build_solver_stats(
     virtual_stage_count: int = 0,
 ) -> Dict[str, object]:
     exact_budget = is_exact_budget(solver_name, requested_nfe_budget)
-    used_tail_step = any(method != solver_name for method in step_methods)
+    tail_step_methods = tuple(method for method in step_methods if method != solver_name)
+    used_tail_step = len(tail_step_methods) > 0
     return {
         "solver": solver_name,
         "requested_nfe_budget": int(requested_nfe_budget),
@@ -93,9 +94,18 @@ def build_solver_stats(
         "step_count": int(step_count),
         "virtual_stage_count": int(virtual_stage_count),
         "used_tail_step": bool(used_tail_step),
+        "tail_step_methods": tail_step_methods,
         "is_exact_budget": bool(exact_budget),
         "is_shared_budget": bool(exact_budget and requested_nfe_budget in SHARED_FAIR_BUDGETS),
     }
+
+
+def get_tail_step_methods(solver_name: str, nfe_budget: int) -> Tuple[str, ...]:
+    return tuple(
+        method
+        for method in build_step_methods(solver_name=solver_name, nfe_budget=nfe_budget)
+        if method != solver_name
+    )
 
 
 @torch.no_grad()
