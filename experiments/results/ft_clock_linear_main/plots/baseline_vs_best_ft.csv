@@ -1,0 +1,10 @@
+dataset,path_family,solver,checkpoint_epoch,nfe,baseline_fid_mean,baseline_fid_std,baseline_num_seeds,best_clock_family,best_clock_param_name,best_clock_param_value,best_fid_mean,best_fid_std,best_num_seeds
+cifar10,linear,heun2,499,4,289.2790222167969,0.0,1,ft_linear_beta,beta,0.4,156.14202880859375,0.0,1
+cifar10,linear,heun2,499,6,173.40652465820312,0.0,1,ft_linear_beta,beta,0.3,59.03997802734375,0.0,1
+cifar10,linear,heun2,499,8,116.92234802246094,0.0,1,ft_linear_beta,beta,0.3,21.921371459960938,0.0,1
+cifar10,linear,heun2,499,10,87.02867889404297,0.0,1,ft_linear_beta,beta,0.3,10.689225196838379,0.0,1
+cifar10,linear,heun2,499,15,11.941577911376953,0.0,1,ft_linear_beta,beta,0.6,12.001585006713867,0.0,1
+cifar10,linear,heun2,499,20,37.819671630859375,0.0,1,ft_linear_beta,beta,0.3,7.648921966552734,0.0,1
+cifar10,linear,heun2,499,30,22.593050003051758,0.0,1,ft_linear_beta,beta,0.3,7.146337032318115,0.0,1
+cifar10,linear,heun2,499,50,11.600393295288086,0.0,1,ft_linear_beta,beta,0.3,6.789980411529541,0.0,1
+cifar10,linear,heun2,499,100,6.731564521789551,0.0,1,ft_linear_beta,beta,0.5,6.946688652038574,0.0,1

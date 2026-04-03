@@ -77,8 +77,9 @@ output_dir/
 *mixture_uniform_step=320001/
 *.out
 *.err
-
+*.pt
 
 data/
 experiments/logs
 experiments/results/*/cifar10
+experiments/results/*/cifar100

@@ -1,0 +1,4 @@
+dataset,path_family,solver,checkpoint_epoch,nfe,baseline_fid_mean,baseline_fid_std,baseline_num_seeds,best_clock_family,best_clock_param_name,best_clock_param_value,best_fid_mean,best_fid_std,best_num_seeds
+cifar100,linear,heun2,499,10,92.73995971679688,0.0,1,ft_linear_beta,beta,0.3,25.439001083374023,0.0,1
+cifar100,linear,heun2,499,20,44.993656158447266,0.0,1,ft_linear_beta,beta,0.3,17.139263153076172,0.0,1
+cifar100,linear,heun2,499,50,15.79393482208252,0.0,1,ft_linear_beta,beta,0.3,15.770661354064941,0.0,1

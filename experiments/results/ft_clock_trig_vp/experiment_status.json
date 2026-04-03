@@ -1,0 +1,18 @@
+{
+  "trig_vp_uniform:train": "completed",
+  "trig_vp_uniform:ep499:nfe10": "completed",
+  "trig_vp_uniform:ep499:nfe20": "completed",
+  "trig_vp_uniform:ep499:nfe50": "completed",
+  "trig_vp_ft_beta_0_3:train": "completed",
+  "trig_vp_ft_beta_0_3:ep499:nfe10": "completed",
+  "trig_vp_ft_beta_0_3:ep499:nfe20": "completed",
+  "trig_vp_ft_beta_0_3:ep499:nfe50": "completed",
+  "trig_vp_ft_beta_0_5:train": "completed",
+  "trig_vp_ft_beta_0_5:ep499:nfe10": "completed",
+  "trig_vp_ft_beta_0_5:ep499:nfe20": "completed",
+  "trig_vp_ft_beta_0_5:ep499:nfe50": "completed",
+  "trig_vp_ft_beta_0_7:train": "completed",
+  "trig_vp_ft_beta_0_7:ep499:nfe10": "completed",
+  "trig_vp_ft_beta_0_7:ep499:nfe20": "completed",
+  "trig_vp_ft_beta_0_7:ep499:nfe50": "completed"
+}

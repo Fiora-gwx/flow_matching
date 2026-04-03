@@ -1,0 +1,4 @@
+dataset,solver,nfe,linear_uniform_mean,linear_uniform_std,linear_ft_mean,linear_ft_std,trig_vp_uniform_mean,trig_vp_uniform_std,trig_vp_ft_mean,trig_vp_ft_std
+cifar10,heun2,10,87.02867889404297,0.0,10.689225196838379,0.0,,,,
+cifar10,heun2,20,37.819671630859375,0.0,7.648921966552734,0.0,,,,
+cifar10,heun2,50,11.600393295288086,0.0,6.789980411529541,0.0,,,,

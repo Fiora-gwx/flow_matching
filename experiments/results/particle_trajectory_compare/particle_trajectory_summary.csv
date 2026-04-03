@@ -1,0 +1,4 @@
+method,checkpoint,mean_path_length,mean_curvature,mean_oracle_endpoint_error
+Theoretical Perfect Pairing,,2.6449313163757324,1.291235633971155e-07,0.0
+Traditional,/home/gwx/flow_matching/experiments/results/ft_clock_linear_main/cifar10/linear_uniform/checkpoint-499.pth,2.9009134769439697,1.335453561068789e-07,1.4765068292617798
+Ours,/home/gwx/flow_matching/experiments/results/ft_clock_linear_main/cifar10/linear_ft_beta_0_3/checkpoint-499.pth,2.6449313163757324,0.00843686331063509,0.0

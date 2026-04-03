@@ -1,0 +1,7 @@
+exp_name,dataset,stage,checkpoint_epoch,path_family,clock_family,clock_param_name,clock_param_value,solver,nfe,step_count,metric,status,artifact_group,run_id,seed,value,value_mean,value_std,num_seeds,real_samples,synthetic_samples
+cifar100_linear_ft_best,cifar100,eval,499,linear,ft_linear_beta,beta,0.3,heun2,10,5,fid,completed,ft_clock_cifar100_transfer,aggregate:3,aggregate,25.439001083374023,25.439001083374023,0.0,1,12500,12500
+cifar100_linear_uniform,cifar100,eval,499,linear,uniform,none,,heun2,10,5,fid,completed,ft_clock_cifar100_transfer,aggregate:0,aggregate,92.73995971679688,92.73995971679688,0.0,1,12500,12500
+cifar100_linear_ft_best,cifar100,eval,499,linear,ft_linear_beta,beta,0.3,heun2,20,10,fid,completed,ft_clock_cifar100_transfer,aggregate:4,aggregate,17.139263153076172,17.139263153076172,0.0,1,12500,12500
+cifar100_linear_uniform,cifar100,eval,499,linear,uniform,none,,heun2,20,10,fid,completed,ft_clock_cifar100_transfer,aggregate:1,aggregate,44.993656158447266,44.993656158447266,0.0,1,12500,12500
+cifar100_linear_ft_best,cifar100,eval,499,linear,ft_linear_beta,beta,0.3,heun2,50,25,fid,completed,ft_clock_cifar100_transfer,aggregate:5,aggregate,15.770661354064941,15.770661354064941,0.0,1,12500,12500
+cifar100_linear_uniform,cifar100,eval,499,linear,uniform,none,,heun2,50,25,fid,completed,ft_clock_cifar100_transfer,aggregate:2,aggregate,15.79393482208252,15.79393482208252,0.0,1,12500,12500
