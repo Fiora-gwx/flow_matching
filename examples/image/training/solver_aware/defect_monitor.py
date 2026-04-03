@@ -12,6 +12,11 @@ from training.solver_aware.monitors import (
     _path_sample,
     _prepare_reference_batch,
 )
+from training.solver_aware.stork_hybrid import (
+    build_stork_hybrid_metadata,
+    maybe_compute_stork_warm_defect,
+    stork_cold_start_threshold,
+)
 from training.stork_solver import STORKState, stork4_step
 
 
@@ -116,8 +121,11 @@ def _resolve_order_and_notes(
             theorem
             + terminal_step_note
             + "For STORK we use a configured effective order "
-            f"p_stork={configured_order}. The monitor is still evaluated on z ~ p_s, "
-            "but the order is assumed / configured rather than theorem-backed.",
+            f"p_stork={configured_order}. STORK first macro-step is a fixed cold-start Euler step, "
+            "the cold-start region is excluded from optimization, and only warm-stage macro-steps "
+            "participate in solver-aware optimization on [1 / K_STORK(B), 1]. The current defect "
+            "uses a synthetic warm-state heuristic on z ~ p_s rather than a strict theorem-backed "
+            "STORK defect expansion.",
         )
     raise ValueError(f"Unsupported target_solver={target_solver}.")
 
@@ -331,6 +339,11 @@ def _compute_budget_curve(
 ) -> Tensor:
     step_count = _solver_step_count(solver_name=target_solver, nfe_budget=target_nfe)
     step_size = 1.0 / float(max(1, step_count))
+    cold_start_threshold = (
+        stork_cold_start_threshold(step_count)
+        if target_solver == "stork4"
+        else 0.0
+    )
     microbatch_size = max(1, min(int(samples.shape[0]), DEFECT_MONITOR_MICROBATCH))
     q_values = torch.zeros_like(s_grid, dtype=torch.float32)
 
@@ -339,6 +352,9 @@ def _compute_budget_curve(
         # Near s=1 we truncate the final defect step to stay inside the terminal time.
         effective_step = min(step_size, max(0.0, 1.0 - s_float))
         if effective_step <= 0.0:
+            q_values[index] = 0.0
+            continue
+        if target_solver == "stork4" and s_float < cold_start_threshold:
             q_values[index] = 0.0
             continue
         squared_norm_sum = torch.zeros((), device=s_grid.device, dtype=torch.float32)
@@ -360,27 +376,42 @@ def _compute_budget_curve(
                 s=s_batch,
                 path_family=path_family,
             )
-            full_step = _apply_single_step(
-                solver_name=target_solver,
-                velocity_model=velocity_model,
-                z=z_s,
-                s=s_float,
-                h=effective_step,
-                labels=label_chunk,
-                cfg_scale=cfg_scale,
-                step_count_hint=step_count,
-            )
-            subdivided = _apply_subdivided_step(
-                solver_name=target_solver,
-                velocity_model=velocity_model,
-                z=z_s,
-                s=s_float,
-                h=effective_step,
-                labels=label_chunk,
-                cfg_scale=cfg_scale,
-                step_count_hint=step_count,
-                defect_subdivide=defect_subdivide,
-            )
+            if target_solver == "stork4":
+                full_step, subdivided = maybe_compute_stork_warm_defect(
+                    velocity_model=velocity_model,
+                    samples=sample_chunk,
+                    noise=noise_chunk,
+                    z_s=z_s,
+                    s=s_float,
+                    effective_step=effective_step,
+                    labels=label_chunk,
+                    cfg_scale=cfg_scale,
+                    step_count_hint=step_count,
+                    defect_subdivide=defect_subdivide,
+                    path_family=path_family,
+                )
+            else:
+                full_step = _apply_single_step(
+                    solver_name=target_solver,
+                    velocity_model=velocity_model,
+                    z=z_s,
+                    s=s_float,
+                    h=effective_step,
+                    labels=label_chunk,
+                    cfg_scale=cfg_scale,
+                    step_count_hint=step_count,
+                )
+                subdivided = _apply_subdivided_step(
+                    solver_name=target_solver,
+                    velocity_model=velocity_model,
+                    z=z_s,
+                    s=s_float,
+                    h=effective_step,
+                    labels=label_chunk,
+                    cfg_scale=cfg_scale,
+                    step_count_hint=step_count,
+                    defect_subdivide=defect_subdivide,
+                )
             defect = full_step - subdivided
             squared_norm = defect.flatten(start_dim=1).pow(2).sum(dim=1)
             squared_norm_sum = squared_norm_sum + squared_norm.sum()
@@ -459,8 +490,13 @@ def compute_defect_monitor(
 
     q_values_by_budget: Dict[str, Tensor] = {}
     budget_step_count_by_nfe: Dict[str, int] = {}
+    stork_metadata_by_nfe: Dict[str, Dict[str, object]] = {}
     with torch.no_grad():
         for budget in budgets:
+            step_count = _solver_step_count(
+                solver_name=target_solver,
+                nfe_budget=budget,
+            )
             q_values_by_budget[str(budget)] = _compute_budget_curve(
                 velocity_model=velocity_model,
                 samples=samples,
@@ -473,9 +509,13 @@ def compute_defect_monitor(
                 cfg_scale=cfg_scale,
                 defect_subdivide=defect_subdivide,
             ).detach()
-            budget_step_count_by_nfe[str(budget)] = _solver_step_count(
-                solver_name=target_solver,
-                nfe_budget=budget,
+            budget_step_count_by_nfe[str(budget)] = step_count
+            stork_metadata_by_nfe[str(budget)] = build_stork_hybrid_metadata(
+                step_count=step_count,
+                stork_context=target_solver == "stork4",
+                hybrid_used=target_solver == "stork4" and step_count >= 3,
+                warm_defect=target_solver == "stork4",
+                warm_state_heuristic=target_solver == "stork4",
             )
 
     logger.info(
@@ -487,10 +527,21 @@ def compute_defect_monitor(
     )
     if target_solver == "stork4":
         logger.info(
-            "Path-based STORK defect monitor uses configured effective order p_stork=%s (assumed/configured).",
+            "Path-based STORK defect monitor uses configured effective order p_stork=%s, excludes the cold-start region [0, 1 / K_STORK(B)), and evaluates a warm-state heuristic defect on [1 / K_STORK(B), 1].",
             order,
         )
 
+    primary_budget = budgets[0]
+    primary_stork_metadata = stork_metadata_by_nfe.get(
+        str(primary_budget),
+        build_stork_hybrid_metadata(
+            step_count=1,
+            stork_context=False,
+            hybrid_used=False,
+            warm_defect=False,
+            warm_state_heuristic=False,
+        ),
+    )
     return DefectMonitorArtifacts(
         target_solver=str(target_solver),
         budget_mode=str(budget_mode),
@@ -517,5 +568,32 @@ def compute_defect_monitor(
             "effective_step_rule": "h_eff(s)=min(1/step_count,1-s)",
             "target_nfe_budgets": [int(budget) for budget in budgets],
             "budget_step_count_by_nfe": dict(budget_step_count_by_nfe),
+            "cold_start_region_excluded_from_optimization": bool(target_solver == "stork4"),
+            "cold_start_threshold_by_nfe": {
+                budget: float(metadata["cold_start_threshold"])
+                for budget, metadata in stork_metadata_by_nfe.items()
+            },
+            "warm_region_start_by_nfe": {
+                budget: float(metadata["warm_region_start"])
+                for budget, metadata in stork_metadata_by_nfe.items()
+            },
+            "warm_region_enabled_by_nfe": {
+                budget: bool(metadata["warm_region_enabled"])
+                for budget, metadata in stork_metadata_by_nfe.items()
+            },
+            "warm_macro_step_count_by_nfe": {
+                budget: int(metadata["warm_macro_step_count"])
+                for budget, metadata in stork_metadata_by_nfe.items()
+            },
+            "stork_hybrid_clock": bool(primary_stork_metadata["stork_hybrid_clock"]),
+            "cold_start_threshold": float(primary_stork_metadata["cold_start_threshold"]),
+            "warm_region_start": float(primary_stork_metadata["warm_region_start"]),
+            "warm_region_enabled": bool(primary_stork_metadata["warm_region_enabled"]),
+            "warm_macro_step_count": int(primary_stork_metadata["warm_macro_step_count"]),
+            "cold_start_fixed_step": bool(primary_stork_metadata["cold_start_fixed_step"]),
+            "stork_warm_defect": bool(primary_stork_metadata["stork_warm_defect"]),
+            "stork_warm_state_heuristic": bool(
+                primary_stork_metadata["stork_warm_state_heuristic"]
+            ),
         },
     )
