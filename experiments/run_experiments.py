@@ -42,6 +42,13 @@ SOLVER_AWARE_DEFAULTS = {
     "solver_aware_clock_mode": "off",
     "solver_aware_target_solver": "",
     "solver_aware_monitor_solver": "",
+    "solver_aware_monitor_family": "",
+    "solver_aware_budget_mode": "",
+    "solver_aware_target_nfe": None,
+    "solver_aware_target_nfe_list": "",
+    "solver_aware_target_nfe_weights": "",
+    "solver_aware_target_step_count": None,
+    "solver_aware_budget_step_counts": "",
     "solver_aware_k": 0,
     "solver_aware_monitor_estimator": "",
     "solver_aware_eps": None,
@@ -51,7 +58,24 @@ SOLVER_AWARE_DEFAULTS = {
     "monitor_grid_size": None,
     "solver_aware_monitor_batch_size": None,
     "solver_aware_theorem_backed": "",
+    "solver_aware_reference_solver": "",
+    "solver_aware_reference_nfe": None,
+    "solver_aware_reference_grid_size": None,
+    "solver_aware_reference_cache_path": "",
+    "solver_aware_reference_source": "",
+    "solver_aware_reference_cache_hit": "",
+    "solver_aware_defect_subdivide": None,
+    "solver_aware_stork_effective_order": None,
+    "solver_aware_q_curve_name": "",
 }
+
+
+def _solver_aware_step_count(target_solver: str, nfe_budget: int) -> int:
+    if target_solver in {"euler", "stork4"}:
+        return int(nfe_budget)
+    if target_solver == "heun2":
+        return int(nfe_budget // 2 + (1 if nfe_budget % 2 else 0))
+    return int(nfe_budget)
 
 
 def load_config(config_path: Path) -> Dict:
@@ -240,6 +264,7 @@ def _checkpoint_semantics_for_results(
 def _resolve_solver_aware_result_fields(
     spec: Dict[str, object],
     checkpoint_path: Optional[Path],
+    current_nfe: Optional[int] = None,
 ) -> Dict[str, object]:
     mode = str(spec.get("solver_aware_clock_mode", "off"))
     use_nodes = bool(spec.get("solver_aware_use_nodes", False))
@@ -248,19 +273,78 @@ def _resolve_solver_aware_result_fields(
         return dict(SOLVER_AWARE_DEFAULTS)
 
     monitor_solver = target_solver
+    monitor_family = str(
+        spec.get("solver_aware_monitor_family", "legacy_continuous")
+    )
+    budget_mode = str(spec.get("solver_aware_budget_mode", "single_budget"))
     theorem_backed = ""
     if target_solver == "stork4":
-        monitor_solver = "heun2"
-        theorem_backed = "false"
+        theorem_backed = "false" if monitor_family == "legacy_continuous" else "false"
     elif target_solver in {"euler", "heun2"}:
         theorem_backed = "true"
+    if monitor_family == "legacy_continuous" and target_solver == "stork4":
+        monitor_solver = "heun2"
+
+    resolved_target_nfe = None
+    target_nfe_list = ""
+    target_nfe_weights = ""
+    target_step_count = None
+    budget_step_counts = ""
+    reference_solver = ""
+    reference_nfe = None
+    reference_grid_size = None
+    reference_cache_path = ""
+    reference_source = ""
+    defect_subdivide = None
+    stork_effective_order = None
+    q_curve_name = ""
+    if monitor_family == "defect_based":
+        if budget_mode == "single_budget":
+            resolved_target_nfe = int(
+                spec.get("solver_aware_target_nfe", 0) or current_nfe or 0
+            )
+            target_step_count = _solver_aware_step_count(
+                target_solver=target_solver,
+                nfe_budget=resolved_target_nfe,
+            )
+            target_nfe_list = str(resolved_target_nfe)
+            budget_step_counts = f"{resolved_target_nfe}:{target_step_count}"
+            q_curve_name = "Q_path_defect"
+        else:
+            raw_list = [
+                int(value)
+                for value in spec.get("solver_aware_target_nfe_list", [])
+                if int(value) > 0
+            ]
+            target_nfe_list = "|".join(str(value) for value in raw_list)
+            raw_weights = [float(value) for value in spec.get("solver_aware_target_nfe_weights", [])]
+            if raw_weights:
+                target_nfe_weights = "|".join(str(value) for value in raw_weights)
+            budget_step_counts = "|".join(
+                f"{budget}:{_solver_aware_step_count(target_solver=target_solver, nfe_budget=budget)}"
+                for budget in raw_list
+            )
+            q_curve_name = "M_tilde_path_defect"
+        defect_subdivide = int(spec.get("solver_aware_defect_subdivide", 2))
+        stork_effective_order = float(spec.get("solver_aware_stork_effective_order", 4.0))
 
     return {
         "solver_aware_clock_mode": mode,
         "solver_aware_target_solver": target_solver,
         "solver_aware_monitor_solver": monitor_solver,
+        "solver_aware_monitor_family": monitor_family,
+        "solver_aware_budget_mode": budget_mode if monitor_family == "defect_based" else "single_budget",
+        "solver_aware_target_nfe": resolved_target_nfe,
+        "solver_aware_target_nfe_list": target_nfe_list,
+        "solver_aware_target_nfe_weights": target_nfe_weights,
+        "solver_aware_target_step_count": target_step_count,
+        "solver_aware_budget_step_counts": budget_step_counts,
         "solver_aware_k": int(spec.get("solver_aware_k", 0)),
-        "solver_aware_monitor_estimator": str(spec.get("solver_aware_monitor_estimator", "auto")),
+        "solver_aware_monitor_estimator": (
+            "defect"
+            if monitor_family == "defect_based"
+            else str(spec.get("solver_aware_monitor_estimator", "auto"))
+        ),
         "solver_aware_eps": spec.get("solver_aware_eps"),
         "solver_aware_use_nodes": "true" if use_nodes else "false",
         "node_family": "solver_aware",
@@ -272,11 +356,24 @@ def _resolve_solver_aware_result_fields(
         "monitor_grid_size": spec.get("solver_aware_monitor_grid_size"),
         "solver_aware_monitor_batch_size": spec.get("solver_aware_monitor_batch_size"),
         "solver_aware_theorem_backed": theorem_backed,
+        "solver_aware_reference_solver": reference_solver,
+        "solver_aware_reference_nfe": reference_nfe,
+        "solver_aware_reference_grid_size": reference_grid_size,
+        "solver_aware_reference_cache_path": reference_cache_path,
+        "solver_aware_reference_source": reference_source,
+        "solver_aware_reference_cache_hit": "",
+        "solver_aware_defect_subdivide": defect_subdivide,
+        "solver_aware_stork_effective_order": stork_effective_order,
+        "solver_aware_q_curve_name": q_curve_name,
     }
 
 
 def _solver_aware_fields_match(row: Dict[str, object], spec: Dict[str, object]) -> bool:
-    expected = _resolve_solver_aware_result_fields(spec=spec, checkpoint_path=None)
+    expected = _resolve_solver_aware_result_fields(
+        spec=spec,
+        checkpoint_path=None,
+        current_nfe=int(row.get("nfe", 0) or 0),
+    )
     for field, expected_value in expected.items():
         observed = row.get(field, SOLVER_AWARE_DEFAULTS.get(field, ""))
         if observed in {"", None}:
@@ -285,11 +382,20 @@ def _solver_aware_fields_match(row: Dict[str, object], spec: Dict[str, object]) 
             if observed not in {"", None}:
                 return False
             continue
-        if field in {"solver_aware_k", "monitor_grid_size", "solver_aware_monitor_batch_size"}:
+        if field in {
+            "solver_aware_k",
+            "solver_aware_target_nfe",
+            "solver_aware_target_step_count",
+            "monitor_grid_size",
+            "solver_aware_monitor_batch_size",
+            "solver_aware_reference_nfe",
+            "solver_aware_reference_grid_size",
+            "solver_aware_defect_subdivide",
+        }:
             if int(observed) != int(expected_value):
                 return False
             continue
-        if field == "solver_aware_eps":
+        if field in {"solver_aware_eps", "solver_aware_stork_effective_order"}:
             if float(observed) != float(expected_value):
                 return False
             continue
@@ -377,6 +483,24 @@ class ExperimentManager:
             flags.append(
                 f"--solver_aware_target_solver {spec.get('solver_aware_target_solver', spec.get('sampling_solver', 'euler'))}"
             )
+            flags.append(
+                f"--solver_aware_monitor_family {spec.get('solver_aware_monitor_family', 'legacy_continuous')}"
+            )
+            flags.append(
+                f"--solver_aware_budget_mode {spec.get('solver_aware_budget_mode', 'single_budget')}"
+            )
+            if spec.get("solver_aware_target_nfe") is not None:
+                flags.append(f"--solver_aware_target_nfe {spec.get('solver_aware_target_nfe', 0)}")
+            if spec.get("solver_aware_target_nfe_list"):
+                flags.append(
+                    "--solver_aware_target_nfe_list "
+                    + " ".join(str(value) for value in spec["solver_aware_target_nfe_list"])
+                )
+            if spec.get("solver_aware_target_nfe_weights"):
+                flags.append(
+                    "--solver_aware_target_nfe_weights "
+                    + " ".join(str(value) for value in spec["solver_aware_target_nfe_weights"])
+                )
             flags.append(f"--solver_aware_k {spec.get('solver_aware_k', 0)}")
             flags.append(
                 f"--solver_aware_monitor_estimator {spec.get('solver_aware_monitor_estimator', 'auto')}"
@@ -393,6 +517,14 @@ class ExperimentManager:
                 flags.append(f"--solver_aware_eps {spec['solver_aware_eps']}")
             if spec.get("solver_aware_cache_path") not in {None, ""}:
                 flags.append(f"--solver_aware_cache_path {spec['solver_aware_cache_path']}")
+            if spec.get("solver_aware_stork_effective_order") is not None:
+                flags.append(
+                    f"--solver_aware_stork_effective_order {spec.get('solver_aware_stork_effective_order', 4.0)}"
+                )
+            if spec.get("solver_aware_defect_subdivide") is not None:
+                flags.append(
+                    f"--solver_aware_defect_subdivide {spec.get('solver_aware_defect_subdivide', 2)}"
+                )
             if spec.get("solver_aware_use_nodes", False):
                 flags.append("--solver_aware_use_nodes")
             if spec.get("solver_aware_checkpoint_path") not in {None, ""}:
@@ -473,6 +605,7 @@ class ExperimentManager:
         solver_aware_fields = _resolve_solver_aware_result_fields(
             spec=spec,
             checkpoint_path=checkpoint_path,
+            current_nfe=int(stats.get("nfe", nfe)),
         )
         clock_param_name, clock_param_value = infer_clock_parameter(
             effective_spec.get("clock_family", "uniform"),

@@ -15,8 +15,8 @@ base_config:
   eval_epochs: [499]
   eval_nfes: [6, 12, 18, 24, 30, 48, 96]
   checkpoint_from:
-    artifact_group: ft_clock_solver_aware_training_free_linear_uniform
-    source_exp_name: linear_uniform_euler_baseline
+    artifact_group: ft_clock_linear_main
+    source_exp_name: linear_uniform
     checkpoint_epoch: 499
 
 experiments:

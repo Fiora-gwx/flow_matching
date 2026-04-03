@@ -172,6 +172,26 @@ class ResultUtilsTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 append_result_rows(csv_path, [row])
 
+    def test_validate_results_schema_accepts_legacy_solver_aware_header(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            csv_path = Path(tmpdir) / 'results.csv'
+            legacy_header = BASE_RESULT_FIELDS + [
+                'solver_aware_clock_mode',
+                'solver_aware_target_solver',
+                'solver_aware_monitor_solver',
+                'solver_aware_k',
+                'solver_aware_monitor_estimator',
+                'solver_aware_eps',
+                'solver_aware_use_nodes',
+                'node_family',
+                'monitor_source_checkpoint',
+                'monitor_grid_size',
+                'solver_aware_monitor_batch_size',
+                'solver_aware_theorem_backed',
+            ]
+            csv_path.write_text(','.join(legacy_header) + '\n', encoding='utf-8')
+            validate_results_schema(csv_path)
+
 
 if __name__ == '__main__':
     unittest.main()

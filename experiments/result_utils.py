@@ -34,6 +34,13 @@ SOLVER_AWARE_RESULT_FIELDS = [
     "solver_aware_clock_mode",
     "solver_aware_target_solver",
     "solver_aware_monitor_solver",
+    "solver_aware_monitor_family",
+    "solver_aware_budget_mode",
+    "solver_aware_target_nfe",
+    "solver_aware_target_nfe_list",
+    "solver_aware_target_nfe_weights",
+    "solver_aware_target_step_count",
+    "solver_aware_budget_step_counts",
     "solver_aware_k",
     "solver_aware_monitor_estimator",
     "solver_aware_eps",
@@ -43,6 +50,15 @@ SOLVER_AWARE_RESULT_FIELDS = [
     "monitor_grid_size",
     "solver_aware_monitor_batch_size",
     "solver_aware_theorem_backed",
+    "solver_aware_reference_solver",
+    "solver_aware_reference_nfe",
+    "solver_aware_reference_grid_size",
+    "solver_aware_reference_cache_path",
+    "solver_aware_reference_source",
+    "solver_aware_reference_cache_hit",
+    "solver_aware_defect_subdivide",
+    "solver_aware_stork_effective_order",
+    "solver_aware_q_curve_name",
 ]
 RESULT_FIELDS = BASE_RESULT_FIELDS + SOLVER_AWARE_RESULT_FIELDS
 
@@ -62,8 +78,14 @@ OPTIONAL_NUMERIC_FIELDS = {
     "stratified_bins": int,
     "solver_aware_k": int,
     "solver_aware_eps": float,
+    "solver_aware_target_nfe": int,
+    "solver_aware_target_step_count": int,
     "monitor_grid_size": int,
     "solver_aware_monitor_batch_size": int,
+    "solver_aware_reference_nfe": int,
+    "solver_aware_reference_grid_size": int,
+    "solver_aware_defect_subdivide": int,
+    "solver_aware_stork_effective_order": float,
 }
 METRIC_OUTPUTS = {
     "fid": ("fid",),
@@ -96,7 +118,25 @@ def validate_results_schema(csv_path: Path) -> None:
     header = _read_header(csv_path)
     if not header:
         return
-    accepted_headers = {tuple(BASE_RESULT_FIELDS), tuple(RESULT_FIELDS)}
+    legacy_solver_aware_fields = [
+        "solver_aware_clock_mode",
+        "solver_aware_target_solver",
+        "solver_aware_monitor_solver",
+        "solver_aware_k",
+        "solver_aware_monitor_estimator",
+        "solver_aware_eps",
+        "solver_aware_use_nodes",
+        "node_family",
+        "monitor_source_checkpoint",
+        "monitor_grid_size",
+        "solver_aware_monitor_batch_size",
+        "solver_aware_theorem_backed",
+    ]
+    accepted_headers = {
+        tuple(BASE_RESULT_FIELDS),
+        tuple(BASE_RESULT_FIELDS + legacy_solver_aware_fields),
+        tuple(RESULT_FIELDS),
+    }
     if tuple(header) not in accepted_headers:
         raise ValueError(
             f"Result schema mismatch in {csv_path}. "

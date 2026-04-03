@@ -31,6 +31,8 @@ TIME_SAMPLING_STRATEGIES = [
 SOLVER_AWARE_CLOCK_MODES = ["off", "training_free", "fixed_point"]
 SOLVER_AWARE_TARGET_SOLVERS = ["euler", "heun2", "stork4"]
 SOLVER_AWARE_MONITOR_ESTIMATORS = ["auto", "jvp", "fd"]
+SOLVER_AWARE_MONITOR_FAMILIES = ["legacy_continuous", "defect_based"]
+SOLVER_AWARE_BUDGET_MODES = ["single_budget", "multi_budget"]
 
 
 def get_args_parser():
@@ -144,6 +146,47 @@ def get_args_parser():
         ),
     )
     parser.add_argument(
+        "--solver_aware_monitor_family",
+        default="legacy_continuous",
+        choices=SOLVER_AWARE_MONITOR_FAMILIES,
+        help=(
+            "legacy_continuous keeps the original L_u u / L_u^2 u monitor family; "
+            "defect_based adds the budget-aware one-step self-consistency defect branch."
+        ),
+    )
+    parser.add_argument(
+        "--solver_aware_budget_mode",
+        default="single_budget",
+        choices=SOLVER_AWARE_BUDGET_MODES,
+        help=(
+            "single_budget builds a clock for one target budget; "
+            "multi_budget aggregates multiple normalized defect monitors into one shared clock."
+        ),
+    )
+    parser.add_argument(
+        "--solver_aware_target_nfe",
+        default=0,
+        type=int,
+        help=(
+            "Target evaluation NFE used by the defect-based single_budget clock. "
+            "0 means reuse the current --eval_nfe."
+        ),
+    )
+    parser.add_argument(
+        "--solver_aware_target_nfe_list",
+        nargs="+",
+        default=[],
+        type=int,
+        help="Target NFE list used by the defect-based multi_budget clock.",
+    )
+    parser.add_argument(
+        "--solver_aware_target_nfe_weights",
+        nargs="+",
+        default=[],
+        type=float,
+        help="Optional weights paired with --solver_aware_target_nfe_list in multi_budget mode.",
+    )
+    parser.add_argument(
         "--solver_aware_k",
         default=0,
         type=int,
@@ -187,6 +230,18 @@ def get_args_parser():
             "Optional cache file for solver-aware monitor artifacts. "
             "Use 'none' to disable disk caching."
         ),
+    )
+    parser.add_argument(
+        "--solver_aware_stork_effective_order",
+        default=4.0,
+        type=float,
+        help="Configured effective order p_stork used by the defect-based STORK density exponent.",
+    )
+    parser.add_argument(
+        "--solver_aware_defect_subdivide",
+        default=2,
+        type=int,
+        help="Subdivide count for defect-based self-consistency checks. Phase-1 currently supports 2 only.",
     )
     parser.add_argument(
         "--solver_aware_use_nodes",

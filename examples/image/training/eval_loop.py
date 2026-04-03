@@ -277,10 +277,30 @@ def eval_model(
                     clock_family=args.clock_family,
                     target_solver=args.solver_aware_target_solver,
                     estimator=args.solver_aware_monitor_estimator,
+                    monitor_family=getattr(
+                        args,
+                        "solver_aware_monitor_family",
+                        "legacy_continuous",
+                    ),
+                    budget_mode=getattr(
+                        args,
+                        "solver_aware_budget_mode",
+                        "single_budget",
+                    ),
+                    target_nfe=int(getattr(args, "solver_aware_target_nfe", 0)),
+                    target_nfe_list=tuple(
+                        int(value)
+                        for value in getattr(args, "solver_aware_target_nfe_list", [])
+                    ),
+                    target_nfe_weights=tuple(
+                        float(value)
+                        for value in getattr(args, "solver_aware_target_nfe_weights", [])
+                    ),
                     grid_size=args.solver_aware_monitor_grid_size,
                     batch_size=args.solver_aware_monitor_batch_size,
                     eps=args.solver_aware_eps,
                     cfg_scale=args.cfg_scale,
+                    nfe_budget=args.eval_nfe,
                     step_count=step_count,
                     checkpoint_source=str(
                         getattr(args, "solver_aware_monitor_source_checkpoint", "")
@@ -288,6 +308,12 @@ def eval_model(
                     ),
                     seed=int(getattr(args, "seed", 0)),
                     cache_path=args.solver_aware_cache_path,
+                    stork_effective_order=float(
+                        getattr(args, "solver_aware_stork_effective_order", 4.0)
+                    ),
+                    defect_subdivide=int(
+                        getattr(args, "solver_aware_defect_subdivide", 2)
+                    ),
                     output_dir=Path(args.output_dir) if args.output_dir else None,
                 )
             if solver_aware_artifacts is not None:

@@ -24,7 +24,7 @@ class SolverAwareTrainingFreeConfigTest(unittest.TestCase):
 
     def test_config_reuses_trained_linear_uniform_checkpoint(self):
         source = CONFIG_PATH.read_text(encoding="utf-8")
-        self.assertIn("artifact_group: ft_clock_linear_main_uparam", source)
+        self.assertIn("artifact_group: ft_clock_linear_main", source)
         self.assertIn("source_exp_name: linear_uniform", source)
         self.assertEqual(source.count("checkpoint_from:"), 1)
 

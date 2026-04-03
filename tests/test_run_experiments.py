@@ -307,6 +307,57 @@ class RunExperimentsTest(unittest.TestCase):
             self.assertIn('--solver_aware_use_nodes', cmd)
             self.assertIn('--solver_aware_monitor_estimator auto', cmd)
 
+    def test_build_eval_cmd_includes_defect_solver_aware_flags(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            config_path = workspace / 'config.json'
+            config_path.write_text(json.dumps({
+                'experiment_name': 'demo_group',
+                'base_config': {},
+                'experiments': [],
+            }), encoding='utf-8')
+            cwd = os.getcwd()
+            os.chdir(workspace)
+            try:
+                manager = ExperimentManager(config_path)
+                cmd = manager.build_eval_cmd(
+                    {
+                        'dataset': 'cifar10',
+                        'data_path': './data/cifar10',
+                        'batch_size': 8,
+                        'epochs': 2,
+                        'seed': 0,
+                        'num_gpus': 1,
+                        'path_family': 'linear',
+                        'clock_family': 'uniform',
+                        'sampling_solver': 'heun2',
+                        'model_output_type': 'base_velocity',
+                        'time_sampling_strategy': 'ds_dr_sq',
+                        'metrics': ['fid'],
+                        'solver_aware_clock_mode': 'training_free',
+                        'solver_aware_target_solver': 'heun2',
+                        'solver_aware_monitor_family': 'defect_based',
+                        'solver_aware_budget_mode': 'multi_budget',
+                        'solver_aware_target_nfe_list': [6, 12, 24],
+                        'solver_aware_target_nfe_weights': [1.0, 1.0, 1.0],
+                        'solver_aware_defect_subdivide': 2,
+                        'solver_aware_stork_effective_order': 4.0,
+                        'solver_aware_monitor_grid_size': 65,
+                        'solver_aware_monitor_batch_size': 64,
+                        'solver_aware_eps': 1e-6,
+                        'solver_aware_use_nodes': True,
+                    },
+                    workspace / 'out',
+                    workspace / 'checkpoint.pth',
+                    12,
+                )
+            finally:
+                os.chdir(cwd)
+            self.assertIn('--solver_aware_monitor_family defect_based', cmd)
+            self.assertIn('--solver_aware_budget_mode multi_budget', cmd)
+            self.assertIn('--solver_aware_target_nfe_list 6 12 24', cmd)
+            self.assertIn('--solver_aware_defect_subdivide 2', cmd)
+
     def test_experiment_manager_resumes_training_when_checkpoint_exists(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace = Path(tmpdir)

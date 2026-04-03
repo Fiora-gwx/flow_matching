@@ -82,6 +82,61 @@ class SolverAwareFixedPointOutputsTest(unittest.TestCase):
             torch.save({"signature": signature, "artifacts": legacy_payload}, path)
             self.assertIsNone(_load_cache(path, signature))
 
+    def test_defect_payloads_include_budget_curves_and_reference_metadata(self):
+        artifacts = SolverAwareArtifacts(
+            mode="training_free",
+            target_solver="heun2",
+            monitor_solver="heun2",
+            estimator="defect",
+            theorem_backed=True,
+            notes="defect",
+            checkpoint_source="checkpoint-499.pth",
+            grid_size=5,
+            batch_size=4,
+            eps=1.0e-6,
+            q_values=torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32),
+            q_smoothed=torch.tensor([1.5, 2.0, 2.5], dtype=torch.float32),
+            density=torch.tensor([0.4, 0.5, 0.6], dtype=torch.float32),
+            s_grid=torch.tensor([0.0, 0.5, 1.0], dtype=torch.float32),
+            phi=torch.tensor([0.0, 0.25, 1.0], dtype=torch.float32),
+            density_exponent=1.0 / 6.0,
+            smoothing_window=3,
+            monitor_family="defect_based",
+            budget_mode="multi_budget",
+            target_nfe=12,
+            target_nfe_list=(12, 24),
+            target_nfe_weights={"12": 0.5, "24": 0.5},
+            target_step_count=6,
+            budget_step_count_by_nfe={"12": 6, "24": 12},
+            defect_subdivide=2,
+            solver_order=2.0,
+            q_curve_name="M_tilde_path_defect",
+            aggregation_name="normalized_multi_budget",
+            q_values_by_budget={
+                "12": torch.tensor([1.0, 1.5, 2.0], dtype=torch.float32),
+                "24": torch.tensor([0.5, 0.75, 1.0], dtype=torch.float32),
+            },
+            q_normalized_by_budget={
+                "12": torch.tensor([4.0, 6.0, 8.0], dtype=torch.float32),
+                "24": torch.tensor([4.0, 6.0, 8.0], dtype=torch.float32),
+            },
+            budget_weights={"12": 0.5, "24": 0.5},
+            distribution_info={"distribution": "path_distribution", "path_family": "linear"},
+            step_count=6,
+            r_grid=torch.tensor([0.0, 0.5, 1.0], dtype=torch.float32),
+            nodes=torch.tensor([0.0, 0.2, 1.0], dtype=torch.float32),
+        )
+
+        artifact_payload = _build_artifact_json_payload(artifacts)
+        node_payload = _build_node_json_payload(artifacts)
+
+        self.assertEqual(artifact_payload["monitor_family"], "defect_based")
+        self.assertEqual(artifact_payload["budget_mode"], "multi_budget")
+        self.assertEqual(artifact_payload["q_curve_name"], "M_tilde_path_defect")
+        self.assertEqual(artifact_payload["q_values_by_budget"]["12"], [1.0, 1.5, 2.0])
+        self.assertEqual(artifact_payload["distribution_info"]["distribution"], "path_distribution")
+        self.assertEqual(node_payload["budget_step_count_by_nfe"]["24"], 12)
+
 
 if __name__ == "__main__":
     unittest.main()
