@@ -26,3 +26,32 @@ Run visualization tests in isolated Python processes or give the fake matplotlib
 - Related Files: tests/test_visualize_results.py, tests/test_visualize_solver_sensitivity.py, tests/test_particle_trajectory_plot.py, tests/test_sampling_progression_plot.py
 
 ---
+
+## [ERR-20260403-001] local_test_runner_commands
+
+**Logged**: 2026-04-03T00:00:00+08:00
+**Priority**: low
+**Status**: pending
+**Area**: tests
+
+### Summary
+This workspace does not expose a `python` alias and does not have `pytest` installed, so the fastest portable test command here is `python3 -m unittest`.
+
+### Error
+```
+zsh:1: command not found: python
+/Library/Developer/CommandLineTools/usr/bin/python3: No module named pytest
+```
+
+### Context
+- Command attempted: `python -m pytest tests/test_metric_utils.py tests/test_train_eval_data_pipeline.py`
+- Fallback command that worked: `python3 -m unittest tests.test_metric_utils tests.test_train_eval_data_pipeline`
+
+### Suggested Fix
+Prefer `python3 -m unittest` first in this repository unless the environment is explicitly provisioned with a `python` alias and `pytest`.
+
+### Metadata
+- Reproducible: yes
+- Related Files: .learnings/ERRORS.md
+
+---
