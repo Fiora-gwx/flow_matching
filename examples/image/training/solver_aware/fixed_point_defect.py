@@ -14,6 +14,8 @@ class DefectFixedPointProfile:
     target_solver: str
     budget_mode: str
     target_nfes: Tuple[int, ...]
+    target_nfe_budget: int
+    target_step_count: int
     target_nfe_weights: Dict[str, float]
     theorem_backed: bool
     notes: str
@@ -48,6 +50,16 @@ class DefectFixedPointProfile:
             for key, value in self.q_normalized_by_budget.items()
         }
         return payload
+
+
+def _append_note(base: str, extra: str) -> str:
+    base_text = str(base).strip()
+    extra_text = str(extra).strip()
+    if not extra_text:
+        return base_text
+    if not base_text:
+        return extra_text
+    return f"{base_text} {extra_text}"
 
 
 def resolve_defect_target_nfes(
@@ -122,7 +134,7 @@ def build_defect_fixed_point_profile(
             int(key): value
             for key, value in defect_monitor.q_values_by_budget.items()
         },
-        budget_scale_by_nfe={
+        budget_step_count_by_nfe={
             int(key): int(value)
             for key, value in defect_monitor.budget_step_count_by_nfe.items()
         },
@@ -131,14 +143,22 @@ def build_defect_fixed_point_profile(
         eps=eps,
         target_nfe_weights=target_nfe_weights,
     )
+    normalization_note = (
+        "Raw NFE budget B is mapped to the solver-specific effective step count K_S(B). "
+        "Normalized defect curves use effective step count scaling K_S(B)^(2p+2) rather than raw-NFE scaling. "
+        f"The primary target_nfe_budget={int(defect_clock.target_nfe_budget)} uses "
+        f"target_step_count={int(defect_clock.target_step_count)}."
+    )
     return DefectFixedPointProfile(
         mode=str(mode),
         target_solver=str(target_solver),
         budget_mode=str(budget_mode),
         target_nfes=tuple(int(value) for value in target_nfes),
+        target_nfe_budget=int(defect_clock.target_nfe_budget),
+        target_step_count=int(defect_clock.target_step_count),
         target_nfe_weights=dict(defect_monitor.target_nfe_weights),
         theorem_backed=bool(defect_monitor.theorem_backed),
-        notes=str(defect_monitor.notes),
+        notes=_append_note(str(defect_monitor.notes), normalization_note),
         checkpoint_source=str(checkpoint_source),
         defect_subdivide=int(defect_monitor.defect_subdivide),
         solver_order=float(defect_monitor.order),

@@ -232,6 +232,14 @@ def get_args_parser():
         ),
     )
     parser.add_argument(
+        "--solver_aware_allow_eval_loader_for_monitor",
+        action="store_true",
+        help=(
+            "Allow the solver-aware monitor to be recomputed from the current eval/test loader. "
+            "Default is off because this may cause evaluation leakage."
+        ),
+    )
+    parser.add_argument(
         "--solver_aware_stork_effective_order",
         default=4.0,
         type=float,

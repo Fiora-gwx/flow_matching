@@ -18,6 +18,8 @@ class DefectClockProfile:
     q_curve_name: str
     aggregation_name: str
     primary_budget: int
+    target_nfe_budget: int
+    target_step_count: int
     density_exponent: float
     q_raw: Tensor
     q_smoothed: Tensor
@@ -27,6 +29,7 @@ class DefectClockProfile:
     smoothing_window: int
     q_values_by_budget: Dict[str, Tensor]
     q_normalized_by_budget: Dict[str, Tensor]
+    budget_step_count_by_nfe: Dict[str, int]
     budget_weights: Dict[str, float]
 
 
@@ -68,9 +71,12 @@ def _profile_to_defect(
     q_curve_name: str,
     aggregation_name: str,
     primary_budget: int,
+    target_nfe_budget: int,
+    target_step_count: int,
     profile: SolverAwareClockProfile,
     q_values_by_budget: Dict[str, Tensor],
     q_normalized_by_budget: Dict[str, Tensor],
+    budget_step_count_by_nfe: Dict[str, int],
     budget_weights: Dict[str, float],
 ) -> DefectClockProfile:
     return DefectClockProfile(
@@ -79,6 +85,8 @@ def _profile_to_defect(
         q_curve_name=str(q_curve_name),
         aggregation_name=str(aggregation_name),
         primary_budget=int(primary_budget),
+        target_nfe_budget=int(target_nfe_budget),
+        target_step_count=int(target_step_count),
         density_exponent=float(profile.density_exponent),
         q_raw=profile.q_raw,
         q_smoothed=profile.q_smoothed,
@@ -88,6 +96,7 @@ def _profile_to_defect(
         smoothing_window=int(profile.smoothing_window),
         q_values_by_budget=q_values_by_budget,
         q_normalized_by_budget=q_normalized_by_budget,
+        budget_step_count_by_nfe=budget_step_count_by_nfe,
         budget_weights=budget_weights,
     )
 
@@ -96,13 +105,19 @@ def build_defect_clock_profile(
     *,
     s_grid: Tensor,
     q_values_by_budget: Dict[int, Tensor],
-    budget_scale_by_nfe: Dict[int, int],
+    budget_step_count_by_nfe: Dict[int, int],
     budget_mode: str,
     order: float,
     eps: float,
     target_nfe_weights: Optional[Sequence[float]] = None,
     smoothing_window: Optional[int] = None,
 ) -> DefectClockProfile:
+    """Build a defect-based clock using effective step counts rather than raw NFEs.
+
+    Let B denote the raw NFE budget and K_S(B) the solver-specific effective
+    macro-step count induced by that budget. Multi-budget normalization uses
+    K_S(B)^(2p+2), not raw-NFE scaling.
+    """
     budgets = sorted(int(budget) for budget in q_values_by_budget)
     if not budgets:
         raise ValueError("q_values_by_budget must contain at least one entry.")
@@ -116,12 +131,16 @@ def build_defect_clock_profile(
     q_normalized_by_budget = {
         str(budget): torch.pow(
             torch.as_tensor(
-                float(budget_scale_by_nfe[int(budget)]),
+                float(budget_step_count_by_nfe[int(budget)]),
                 device=s_grid.device,
                 dtype=s_grid.dtype,
             ),
             2.0 * (float(order) + 1.0),
         ) * q_values_by_budget[int(budget)]
+        for budget in budgets
+    }
+    budget_step_count_by_nfe_str = {
+        str(budget): int(budget_step_count_by_nfe[int(budget)])
         for budget in budgets
     }
     budget_weights = {
@@ -149,9 +168,12 @@ def build_defect_clock_profile(
             q_curve_name="Q_path_defect",
             aggregation_name="single_budget",
             primary_budget=primary_budget,
+            target_nfe_budget=primary_budget,
+            target_step_count=budget_step_count_by_nfe[int(primary_budget)],
             profile=profile,
             q_values_by_budget=q_values_str,
             q_normalized_by_budget=q_normalized_by_budget,
+            budget_step_count_by_nfe=budget_step_count_by_nfe_str,
             budget_weights=budget_weights,
         )
 
@@ -174,9 +196,12 @@ def build_defect_clock_profile(
         q_curve_name="M_tilde_path_defect",
         aggregation_name="normalized_multi_budget",
         primary_budget=budgets[0],
+        target_nfe_budget=budgets[0],
+        target_step_count=budget_step_count_by_nfe[int(budgets[0])],
         profile=profile,
         q_values_by_budget=q_values_str,
         q_normalized_by_budget=q_normalized_by_budget,
+        budget_step_count_by_nfe=budget_step_count_by_nfe_str,
         budget_weights=budget_weights,
     )
 
@@ -185,7 +210,7 @@ def build_defect_clock(
     *,
     s_grid: Tensor,
     q_values_by_budget: Dict[int, Tensor],
-    budget_scale_by_nfe: Dict[int, int],
+    budget_step_count_by_nfe: Dict[int, int],
     budget_mode: str,
     order: float,
     eps: float,
@@ -196,7 +221,7 @@ def build_defect_clock(
     profile = build_defect_clock_profile(
         s_grid=s_grid,
         q_values_by_budget=q_values_by_budget,
-        budget_scale_by_nfe=budget_scale_by_nfe,
+        budget_step_count_by_nfe=budget_step_count_by_nfe,
         budget_mode=budget_mode,
         order=order,
         eps=eps,
@@ -214,6 +239,8 @@ def build_defect_clock(
         q_curve_name=profile.q_curve_name,
         aggregation_name=profile.aggregation_name,
         primary_budget=profile.primary_budget,
+        target_nfe_budget=profile.target_nfe_budget,
+        target_step_count=profile.target_step_count,
         density_exponent=profile.density_exponent,
         q_raw=profile.q_raw,
         q_smoothed=profile.q_smoothed,
@@ -223,6 +250,7 @@ def build_defect_clock(
         smoothing_window=profile.smoothing_window,
         q_values_by_budget=profile.q_values_by_budget,
         q_normalized_by_budget=profile.q_normalized_by_budget,
+        budget_step_count_by_nfe=profile.budget_step_count_by_nfe,
         budget_weights=profile.budget_weights,
         r_grid=r_grid,
         nodes=nodes,

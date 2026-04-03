@@ -84,11 +84,16 @@ def _resolve_order_and_notes(
         "Delta_S = Psi_h^S - Psi_{h/2}^{S,(2)} = "
         "C_S (1 - 2^{-p}) h^(p+1) E_S[u] + O(h^(p+2)). "
     )
+    terminal_step_note = (
+        "The actual defect step is terminal-aware with "
+        "h_eff(s) = min(1 / step_count, 1 - s). "
+    )
     if target_solver == "euler":
         return (
             1.0,
             True,
             theorem
+            + terminal_step_note
             + "The defect monitor is evaluated on z ~ p_s, so "
             "Q_{E,N}^{path}(s) = E_{z~p_s}||Delta_E(z,s;h)||^2 and "
             "rho_{E,N}(s) propto (Q_{E,N}^{path}(s)+eps)^(1/4).",
@@ -98,6 +103,7 @@ def _resolve_order_and_notes(
             2.0,
             True,
             theorem
+            + terminal_step_note
             + "The defect monitor is evaluated on z ~ p_s, so "
             "Q_{H,N}^{path}(s) = E_{z~p_s}||Delta_H(z,s;h)||^2 and "
             "rho_{H,N}(s) propto (Q_{H,N}^{path}(s)+eps)^(1/6).",
@@ -108,6 +114,7 @@ def _resolve_order_and_notes(
             configured_order,
             False,
             theorem
+            + terminal_step_note
             + "For STORK we use a configured effective order "
             f"p_stork={configured_order}. The monitor is still evaluated on z ~ p_s, "
             "but the order is assumed / configured rather than theorem-backed.",
@@ -329,6 +336,7 @@ def _compute_budget_curve(
 
     for index, s_value in enumerate(s_grid):
         s_float = float(s_value.item())
+        # Near s=1 we truncate the final defect step to stay inside the terminal time.
         effective_step = min(step_size, max(0.0, 1.0 - s_float))
         if effective_step <= 0.0:
             q_values[index] = 0.0
@@ -428,7 +436,9 @@ def compute_defect_monitor(
         Q_{S,N}^{path}(s) = E_{z~p_s} ||Psi_h^S(z,s) - Psi_{h/2}^{S,(2)}(z,s)||^2,
 
     which is solver-specific, budget-specific, path-distribution-based, and
-    training-free.
+    training-free. The actual defect step is terminal-aware:
+
+        h_eff(s) = min(1 / step_count, 1 - s).
     """
     budgets = sorted(int(budget) for budget in target_nfes)
     if not budgets:
@@ -469,9 +479,10 @@ def compute_defect_monitor(
             )
 
     logger.info(
-        "Computed path-based defect monitor for solver=%s over budgets=%s on path_family=%s.",
+        "Computed path-based defect monitor for solver=%s over raw_nfe_budgets=%s with budget_step_count_by_nfe=%s on path_family=%s.",
         target_solver,
         budgets,
+        budget_step_count_by_nfe,
         path_family,
     )
     if target_solver == "stork4":
@@ -502,5 +513,9 @@ def compute_defect_monitor(
             "batch_size": int(batch_size),
             "grid_size": int(grid_size),
             "fixed_path_batch": True,
+            "terminal_aware_step": True,
+            "effective_step_rule": "h_eff(s)=min(1/step_count,1-s)",
+            "target_nfe_budgets": [int(budget) for budget in budgets],
+            "budget_step_count_by_nfe": dict(budget_step_count_by_nfe),
         },
     )
