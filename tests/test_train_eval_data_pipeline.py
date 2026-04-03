@@ -28,6 +28,10 @@ class TrainEvalDataPipelineSourceTest(unittest.TestCase):
         self.assertIn("data_loader_eval = torch.utils.data.DataLoader(", source)
         self.assertIn("        dataset_eval,", source)
 
+    def test_eval_path_passes_train_loader_for_solver_aware_monitor(self):
+        source = TRAIN_SOURCE.read_text(encoding="utf-8")
+        self.assertIn("monitor_data_loader=data_loader_train", source)
+
 
 if __name__ == "__main__":
     unittest.main()

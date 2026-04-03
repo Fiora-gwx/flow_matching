@@ -354,3 +354,106 @@ class EvalLoopSolverStatsSidecarTest(unittest.TestCase):
             self.assertEqual(sidecar["solver"], "rk3")
             self.assertEqual(sidecar["actual_network_calls"], 12)
             self.assertTrue(sidecar["is_shared_budget"])
+
+
+@unittest.skipUnless(HAS_TORCH, "torch is required for solver-aware eval tests")
+class EvalLoopSolverAwareMonitorLoaderTest(unittest.TestCase):
+    def _run_monitor_loader_case(self, monitor_family: str):
+        from training import eval_loop
+
+        sample = torch.rand(1, 3, 8, 8, dtype=torch.float32)
+        labels = torch.zeros(1, dtype=torch.long)
+        data_loader = [(sample, labels)]
+        monitor_loader = object()
+
+        class DummyModel(torch.nn.Module):
+            def forward(self, x, t, extra=None):
+                return x
+
+        class FakeMetricBackend:
+            def update(self, images, real):
+                return None
+
+            def compute(self):
+                return torch.tensor(0.0)
+
+        fake_sampling = types.SimpleNamespace(
+            sample=torch.rand(1, 3, 8, 8, dtype=torch.float32),
+            nfe=12,
+            step_count=12,
+            solver_stats=None,
+        )
+        fake_artifacts = types.SimpleNamespace(
+            nodes=torch.tensor([0.0, 1.0], dtype=torch.float32),
+            distribution_info={},
+        )
+        args = types.SimpleNamespace(
+            metrics=["fid"],
+            compute_fid=False,
+            discrete_flow_matching=False,
+            output_dir=None,
+            test_run=True,
+            save_fid_samples=False,
+            sampling_solver="euler",
+            eval_nfe=12,
+            cfg_scale=0.0,
+            path_family="linear",
+            clock_family="uniform",
+            clock_beta=None,
+            signal_scale_sq=None,
+            precision_recall_neighbors=3,
+            precision_recall_max_samples=16,
+            solver_aware_clock_mode="training_free",
+            solver_aware_target_solver="euler",
+            solver_aware_monitor_family=monitor_family,
+            solver_aware_budget_mode="single_budget",
+            solver_aware_target_nfe=0,
+            solver_aware_target_nfe_list=[],
+            solver_aware_target_nfe_weights=[],
+            solver_aware_k=0,
+            solver_aware_monitor_estimator="auto",
+            solver_aware_monitor_grid_size=65,
+            solver_aware_monitor_batch_size=64,
+            solver_aware_eps=1.0e-6,
+            solver_aware_cache_path="none",
+            solver_aware_allow_eval_loader_for_monitor=False,
+            solver_aware_stork_effective_order=4.0,
+            solver_aware_defect_subdivide=2,
+            solver_aware_use_nodes=True,
+            seed=0,
+            resume="checkpoint-499.pth",
+        )
+
+        with mock.patch.object(eval_loop, "_build_fid_metric", return_value=FakeMetricBackend()):
+            with mock.patch.object(
+                eval_loop,
+                "maybe_build_solver_aware_artifacts",
+                return_value=fake_artifacts,
+            ) as build_artifacts:
+                with mock.patch.object(
+                    eval_loop,
+                    "solve_fixed_budget",
+                    return_value=fake_sampling,
+                ):
+                    results = eval_loop.eval_model(
+                        model=DummyModel(),
+                        data_loader=data_loader,
+                        device=torch.device("cpu"),
+                        epoch=0,
+                        fid_samples=1,
+                        args=args,
+                        monitor_data_loader=monitor_loader,
+                    )
+
+        build_kwargs = build_artifacts.call_args.kwargs
+        self.assertIs(build_kwargs["data_loader"], monitor_loader)
+        self.assertFalse(build_kwargs["using_eval_loader_for_monitor"])
+        self.assertFalse(build_kwargs["require_cache_hit"])
+        self.assertEqual(results["nfe"], 12.0)
+        self.assertEqual(results["synthetic_samples"], 1.0)
+
+    def test_eval_model_uses_provided_monitor_loader_for_defect_based_solver_aware(self):
+        self._run_monitor_loader_case(monitor_family="defect_based")
+
+    def test_eval_model_uses_provided_monitor_loader_for_legacy_solver_aware(self):
+        self._run_monitor_loader_case(monitor_family="legacy_continuous")

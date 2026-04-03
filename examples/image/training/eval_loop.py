@@ -210,6 +210,7 @@ def eval_model(
     epoch: int,
     fid_samples: int,
     args: Namespace,
+    monitor_data_loader: Optional[Iterable] = None,
 ):
     gc.collect()
     active_metrics = requested_metrics(args)
@@ -279,8 +280,13 @@ def eval_model(
             nfe_budget=args.eval_nfe,
         )
         if distributed_mode.is_main_process():
-            use_eval_loader_for_monitor = allow_eval_loader_for_monitor
-            if not allow_eval_loader_for_monitor:
+            use_eval_loader_for_monitor = monitor_data_loader is None
+            if not use_eval_loader_for_monitor:
+                logger.info(
+                    "Solver-aware monitor will use the provided calibration/train loader for monitor_family=%s.",
+                    solver_aware_monitor_family,
+                )
+            elif not allow_eval_loader_for_monitor:
                 logger.info(
                     "Solver-aware monitor safety gate is active for monitor_family=%s: a valid cache hit is required and the current eval/test loader will not be used.",
                     solver_aware_monitor_family,
@@ -290,10 +296,11 @@ def eval_model(
                     "Solver-aware monitor is allowed to use the current eval/test loader because "
                     "--solver_aware_allow_eval_loader_for_monitor was set. This may cause evaluation leakage."
                 )
-            monitor_loader = (
-                _build_monitor_loader(args=args, data_loader=data_loader)
-                if use_eval_loader_for_monitor
-                else data_loader
+            monitor_loader = _build_monitor_loader(
+                args=args,
+                data_loader=(
+                    data_loader if use_eval_loader_for_monitor else monitor_data_loader
+                ),
             )
             with torch.enable_grad():
                 solver_aware_artifacts = maybe_build_solver_aware_artifacts(
@@ -340,7 +347,10 @@ def eval_model(
                     cache_path=args.solver_aware_cache_path,
                     sampling_solver=args.sampling_solver,
                     using_eval_loader_for_monitor=use_eval_loader_for_monitor,
-                    require_cache_hit=bool(not allow_eval_loader_for_monitor),
+                    require_cache_hit=bool(
+                        use_eval_loader_for_monitor
+                        and not allow_eval_loader_for_monitor
+                    ),
                     refuse_recompute_when_cache_exists=True,
                     stork_effective_order=float(
                         getattr(args, "solver_aware_stork_effective_order", 4.0)

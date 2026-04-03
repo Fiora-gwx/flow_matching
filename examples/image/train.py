@@ -349,6 +349,7 @@ def main(args):
                 epoch=epoch,
                 fid_samples=fid_samples,
                 args=args,
+                monitor_data_loader=data_loader_train,
             )
             log_stats.update({f"eval_{k}": v for k, v in eval_stats.items()})
 

@@ -82,11 +82,11 @@ class SolverAwareProfile:
 
 @dataclass
 class SolverAwareArtifacts(SolverAwareProfile):
-    sampling_solver: str
-    sampling_nfe_budget: int
-    step_count: int
-    r_grid: Tensor
-    nodes: Tensor
+    sampling_solver: str = ""
+    sampling_nfe_budget: int = 0
+    step_count: int = 0
+    r_grid: Tensor = field(default_factory=lambda: torch.empty(0))
+    nodes: Tensor = field(default_factory=lambda: torch.empty(0))
 
     def to_dict(self) -> Dict[str, object]:
         payload = asdict(self)
