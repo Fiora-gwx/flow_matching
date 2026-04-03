@@ -21,6 +21,10 @@ from training.solver_aware.monitors import (
     compute_euler_monitor,
     compute_heun2_monitor,
 )
+from training.solver_aware.stork_hybrid import (
+    build_stork_hybrid_metadata,
+    build_stork_hybrid_nodes,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -195,8 +199,24 @@ def _compute_step_sizes(nodes: Tensor) -> Tensor:
     return step_sizes
 
 
-def _build_artifact_json_payload(artifacts: SolverAwareArtifacts) -> Dict[str, object]:
+def _stork_payload_fields(artifacts: SolverAwareArtifacts) -> Dict[str, object]:
+    distribution_info = artifacts.distribution_info
     return {
+        "stork_hybrid_clock": bool(distribution_info.get("stork_hybrid_clock", False)),
+        "cold_start_threshold": float(distribution_info.get("cold_start_threshold", 0.0)),
+        "warm_region_start": float(distribution_info.get("warm_region_start", 0.0)),
+        "warm_region_enabled": bool(distribution_info.get("warm_region_enabled", False)),
+        "warm_macro_step_count": int(distribution_info.get("warm_macro_step_count", 0)),
+        "cold_start_fixed_step": bool(distribution_info.get("cold_start_fixed_step", False)),
+        "stork_warm_defect": bool(distribution_info.get("stork_warm_defect", False)),
+        "stork_warm_state_heuristic": bool(
+            distribution_info.get("stork_warm_state_heuristic", False)
+        ),
+    }
+
+
+def _build_artifact_json_payload(artifacts: SolverAwareArtifacts) -> Dict[str, object]:
+    payload = {
         "mode": artifacts.mode,
         "target_solver": artifacts.target_solver,
         "monitor_solver": artifacts.monitor_solver,
@@ -247,6 +267,8 @@ def _build_artifact_json_payload(artifacts: SolverAwareArtifacts) -> Dict[str, o
         ),
         "warning_messages": list(artifacts.distribution_info.get("warning_messages", [])),
     }
+    payload.update(_stork_payload_fields(artifacts))
+    return payload
 
 
 def _build_artifact_csv_text(artifacts: SolverAwareArtifacts) -> str:
@@ -275,7 +297,7 @@ def _build_node_json_payload(artifacts: SolverAwareArtifacts) -> Dict[str, objec
         if positive_steps.numel() > 0
         else 0.0
     )
-    return {
+    payload = {
         "mode": artifacts.mode,
         "target_solver": artifacts.target_solver,
         "monitor_solver": artifacts.monitor_solver,
@@ -297,6 +319,7 @@ def _build_node_json_payload(artifacts: SolverAwareArtifacts) -> Dict[str, objec
         "r_grid": [float(value) for value in artifacts.r_grid.detach().cpu().tolist()],
         "nodes": [float(value) for value in artifacts.nodes.detach().cpu().tolist()],
         "step_sizes": [float(value) for value in step_sizes.detach().cpu().tolist()],
+        "warning_messages": list(artifacts.distribution_info.get("warning_messages", [])),
         "diagnostics": {
             "uniform_step": float(uniform_step),
             "max_step": float(max_step),
@@ -307,6 +330,8 @@ def _build_node_json_payload(artifacts: SolverAwareArtifacts) -> Dict[str, objec
             ),
         },
     }
+    payload.update(_stork_payload_fields(artifacts))
+    return payload
 
 
 def _build_node_csv_text(artifacts: SolverAwareArtifacts) -> str:
@@ -322,7 +347,7 @@ def _build_node_csv_text(artifacts: SolverAwareArtifacts) -> str:
 
 
 def _build_budget_curve_json_payload(artifacts: SolverAwareArtifacts) -> Dict[str, object]:
-    return {
+    payload = {
         "monitor_family": artifacts.monitor_family,
         "budget_mode": artifacts.budget_mode,
         "target_solver": artifacts.target_solver,
@@ -344,6 +369,8 @@ def _build_budget_curve_json_payload(artifacts: SolverAwareArtifacts) -> Dict[st
         "notes": artifacts.notes,
         "distribution_info": artifacts.distribution_info,
     }
+    payload.update(_stork_payload_fields(artifacts))
+    return payload
 
 
 def _build_budget_curve_csv_text(artifacts: SolverAwareArtifacts) -> str:
@@ -492,8 +519,10 @@ def _resolve_monitor(target_solver: str) -> Dict[str, object]:
             "theorem_backed": False,
             "notes": (
                 "Phase-1 STORK4 does not claim a solver-specific optimal monitor theorem. "
-                "It reuses the Heun2 monitor as a heuristic node generator while STORK4 itself "
-                "consumes arbitrary non-uniform nodes with first-order Taylor virtual stages."
+                "It reuses the Heun2 monitor as a heuristic node generator, but STORK first macro-step "
+                "is a fixed cold-start Euler step and only warm-stage macro-steps participate in hybrid "
+                "warm-only solver-aware allocation on [1 / K_STORK(B), 1]. The theorem-backed "
+                "interpretation does not apply."
             ),
         }
     raise ValueError(f"Unsupported solver-aware target solver {target_solver}.")
@@ -636,11 +665,28 @@ def _materialize_solver_aware_artifacts(
     sampling_nfe_budget: int,
     step_count: int,
 ) -> SolverAwareArtifacts:
-    r_grid, nodes = build_solver_aware_nodes(
-        s_grid=profile.s_grid,
-        phi=profile.phi,
-        node_count=step_count + 1,
-    )
+    stork_context = str(sampling_solver) == "stork4" or str(profile.target_solver) == "stork4"
+    distribution_info = dict(profile.distribution_info)
+    if stork_context:
+        r_grid, nodes, stork_metadata = build_stork_hybrid_nodes(
+            s_grid=profile.s_grid,
+            phi=profile.phi,
+            step_count=step_count,
+        )
+    else:
+        r_grid, nodes = build_solver_aware_nodes(
+            s_grid=profile.s_grid,
+            phi=profile.phi,
+            node_count=step_count + 1,
+        )
+        stork_metadata = build_stork_hybrid_metadata(
+            step_count=step_count,
+            stork_context=False,
+            hybrid_used=False,
+            warm_defect=False,
+            warm_state_heuristic=False,
+        )
+    distribution_info.update(stork_metadata)
     return SolverAwareArtifacts(
         mode=profile.mode,
         target_solver=profile.target_solver,
@@ -675,7 +721,7 @@ def _materialize_solver_aware_artifacts(
         q_values_by_budget=profile.q_values_by_budget,
         q_normalized_by_budget=profile.q_normalized_by_budget,
         budget_weights=profile.budget_weights,
-        distribution_info=profile.distribution_info,
+        distribution_info=distribution_info,
         step_count=step_count,
         r_grid=r_grid,
         nodes=nodes,
@@ -937,6 +983,21 @@ def maybe_build_solver_aware_artifacts(
             "budget_step_count_by_nfe": dict(artifacts.budget_step_count_by_nfe),
         }
     )
+    stork_context = bool(
+        str(sampling_solver) == "stork4" or str(target_solver) == "stork4"
+    )
+    if stork_context:
+        runtime_metadata.update(
+            build_stork_hybrid_metadata(
+                step_count=step_count,
+                stork_context=True,
+                hybrid_used=bool(runtime_metadata.get("stork_hybrid_clock", False)),
+                warm_defect=resolved_monitor_family == "defect_based" and target_solver == "stork4",
+                warm_state_heuristic=(
+                    resolved_monitor_family == "defect_based" and target_solver == "stork4"
+                ),
+            )
+        )
 
     if using_eval_loader_for_monitor and not loaded_from_cache:
         runtime_warning_messages.append(
@@ -962,19 +1023,53 @@ def maybe_build_solver_aware_artifacts(
         runtime_metadata.update(budget_warning_metadata)
         runtime_metadata.update(cross_solver_metadata)
 
+    if stork_context:
+        runtime_warning_messages.append(
+            "STORK first macro-step is a fixed cold-start Euler step, and only warm-stage macro-steps "
+            "participate in solver-aware allocation."
+        )
+        if bool(runtime_metadata.get("stork_hybrid_clock", False)):
+            runtime_warning_messages.append(
+                "STORK hybrid clock is active: the cold-start interval [0, 1 / K_STORK(B)] is fixed, "
+                "and warm-stage allocation only applies on [1 / K_STORK(B), 1]."
+            )
+        else:
+            runtime_warning_messages.append(
+                "STORK warm region is too short to optimize, so node allocation falls back to uniform "
+                "spacing after keeping the fixed cold-start step."
+            )
+        if resolved_monitor_family == "legacy_continuous" and target_solver == "stork4":
+            runtime_warning_messages.append(
+                "Legacy continuous STORK uses a Heun2-monitor heuristic plus hybrid warm-only node "
+                "allocation; theorem-backed interpretation does not apply."
+            )
+        if resolved_monitor_family == "defect_based" and target_solver == "stork4":
+            runtime_warning_messages.append(
+                "Defect-based STORK uses a configured-order warm-state heuristic defect, not a strict "
+                "theorem-backed STORK defect expansion."
+            )
+
     runtime_metadata["warning_messages"] = list(runtime_warning_messages)
     artifacts.distribution_info = runtime_metadata
     semantic_note_segments = [
+        "Here B denotes the raw NFE budget and K_S(B) the solver-specific effective macro-step count.",
         f"Current sampling consumes this clock with sampling_solver={artifacts.sampling_solver}, "
-        f"raw_nfe_budget={int(artifacts.sampling_nfe_budget)}, and effective step_count={int(artifacts.step_count)}."
+        f"raw_nfe_budget={int(artifacts.sampling_nfe_budget)}, and effective step_count=K_S(B)={int(artifacts.step_count)}."
     ]
     if resolved_monitor_family == "defect_based":
         semantic_note_segments.extend(
             [
-                "The actual defect step is terminal-aware with h_eff(s) = min(1 / step_count, 1 - s).",
+                "The actual defect step is terminal-aware with h_eff(s) = min(1 / K_S(B), 1 - s).",
                 "Raw NFE budget B is mapped to the solver-specific effective step count K_S(B). "
                 "Normalized defect curves use effective step count scaling K_S(B)^(2p+2) rather than raw-NFE scaling. "
                 f"The primary target_nfe_budget={int(artifacts.target_nfe)} uses target_step_count={int(artifacts.target_step_count)}.",
+            ]
+        )
+    if stork_context:
+        semantic_note_segments.extend(
+            [
+                f"STORK cold-start threshold is 1 / K_STORK(B) = {float(runtime_metadata.get('cold_start_threshold', 0.0))}.",
+                "Only warm-stage macro-steps participate in solver-aware allocation on [1 / K_STORK(B), 1].",
             ]
         )
     artifacts.notes = _append_note_segments(

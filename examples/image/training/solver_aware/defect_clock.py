@@ -9,6 +9,7 @@ from training.solver_aware.clock import (
     build_solver_aware_clock_profile,
     build_solver_aware_nodes,
 )
+from training.solver_aware.stork_hybrid import build_stork_hybrid_nodes
 
 
 @dataclass
@@ -215,6 +216,7 @@ def build_defect_clock(
     order: float,
     eps: float,
     node_count: int,
+    target_solver: Optional[str] = None,
     target_nfe_weights: Optional[Sequence[float]] = None,
     smoothing_window: Optional[int] = None,
 ) -> DefectClockArtifacts:
@@ -228,11 +230,18 @@ def build_defect_clock(
         target_nfe_weights=target_nfe_weights,
         smoothing_window=smoothing_window,
     )
-    r_grid, nodes = build_solver_aware_nodes(
-        s_grid=profile.s_grid,
-        phi=profile.phi,
-        node_count=node_count,
-    )
+    if str(target_solver or "") == "stork4":
+        r_grid, nodes, _ = build_stork_hybrid_nodes(
+            s_grid=profile.s_grid,
+            phi=profile.phi,
+            step_count=max(1, int(node_count) - 1),
+        )
+    else:
+        r_grid, nodes = build_solver_aware_nodes(
+            s_grid=profile.s_grid,
+            phi=profile.phi,
+            node_count=node_count,
+        )
     return DefectClockArtifacts(
         budget_mode=profile.budget_mode,
         order=profile.order,
