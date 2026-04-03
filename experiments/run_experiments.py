@@ -38,6 +38,11 @@ logger = logging.getLogger(__name__)
 LEGACY_CONFIG_KEYS = {"alpha", "use_ft_eqm", "use_nt_ft_fm", "importance_weighting"}
 LEGACY_CLOCK_FAMILIES = {"ft_linear_beta", "ft_vp_beta"}
 CURRICULUM_SIGNATURE = "warmup0.3_linear_to1"
+EVAL_ONLY_SOLVER_AWARE_CHECKPOINT_FLAG_PREFIXES = (
+    "--solver_aware_checkpoint_path",
+    "--solver_aware_checkpoint_from_experiment",
+    "--solver_aware_checkpoint_epoch",
+)
 SOLVER_AWARE_DEFAULTS = {
     "solver_aware_clock_mode": "off",
     "solver_aware_target_solver": "",
@@ -433,6 +438,17 @@ class ExperimentManager:
             return "python3"
         return f"torchrun --standalone --nproc_per_node={num_gpus}"
 
+    @staticmethod
+    def _drop_flag_prefixes(flags: List[str], blocked_prefixes: tuple[str, ...]) -> List[str]:
+        return [
+            flag
+            for flag in flags
+            if not any(
+                flag == prefix or flag.startswith(prefix + " ")
+                for prefix in blocked_prefixes
+            )
+        ]
+
     def _base_flags(self, spec: Dict, output_dir: Path) -> List[str]:
         flags = [
             f"--dataset {spec['dataset']}",
@@ -576,7 +592,16 @@ class ExperimentManager:
         eval_spec = dict(spec)
         if metrics_override is not None:
             eval_spec["metrics"] = metrics_override
+        if (
+            eval_spec.get("solver_aware_clock_mode") not in {None, "", "off"}
+            and eval_spec.get("solver_aware_cache_path") in {None, ""}
+        ):
+            eval_spec["solver_aware_cache_path"] = str(output_dir / "solver_aware_profile.pt")
         flags = self._base_flags(eval_spec, output_dir)
+        flags = self._drop_flag_prefixes(
+            flags,
+            blocked_prefixes=EVAL_ONLY_SOLVER_AWARE_CHECKPOINT_FLAG_PREFIXES,
+        )
         flags.extend(
             [
                 "--eval_only",
@@ -764,7 +789,8 @@ class ExperimentManager:
             ):
                 logger.error(
                     "Checkpoint reuse is required for %s, but no compatible checkpoint was found. "
-                    "reference=%s. Refusing to fall back to training.",
+                    "reference=%s. See checkpoint resolution warnings above for whether the path "
+                    "was missing or the checkpoint semantics were incompatible. Refusing to fall back to training.",
                     spec["name"],
                     spec["checkpoint_from"],
                 )

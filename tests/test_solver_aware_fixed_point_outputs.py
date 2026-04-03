@@ -12,6 +12,7 @@ try:
         _build_node_csv_text,
         _build_node_json_payload,
         _load_cache,
+        _resolve_profile_cache_path,
     )
 except ModuleNotFoundError:  # pragma: no cover - depends on local runtime.
     torch = None
@@ -19,6 +20,43 @@ except ModuleNotFoundError:  # pragma: no cover - depends on local runtime.
 
 @unittest.skipIf(torch is None, "torch is required for solver-aware output tests")
 class SolverAwareFixedPointOutputsTest(unittest.TestCase):
+    def test_resolve_profile_cache_path_uses_budget_specific_suffixes_for_defect_profiles(self):
+        with TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir) / "eval_ep499_nfe12"
+            single_budget_path = _resolve_profile_cache_path(
+                cache_path="none",
+                output_dir=output_dir,
+                monitor_family="defect_based",
+                target_solver="euler",
+                monitor_solver="euler",
+                budget_mode="single_budget",
+                target_nfe=12,
+                target_nfe_list=(12,),
+                target_nfe_weights={"12": 1.0},
+            )
+            multi_budget_path = _resolve_profile_cache_path(
+                cache_path="none",
+                output_dir=output_dir,
+                monitor_family="defect_based",
+                target_solver="euler",
+                monitor_solver="euler",
+                budget_mode="multi_budget",
+                target_nfe=12,
+                target_nfe_list=(6, 12, 18, 24),
+                target_nfe_weights={"6": 1.0, "12": 1.0, "18": 1.0, "24": 1.0},
+            )
+
+        self.assertEqual(
+            single_budget_path,
+            output_dir.parent / "solver_aware_profile_defect_based_euler_euler_single_nfe12.pt",
+        )
+        self.assertIsNotNone(multi_budget_path)
+        self.assertIn(
+            "solver_aware_profile_defect_based_euler_euler_multi_",
+            multi_budget_path.name,
+        )
+        self.assertNotEqual(single_budget_path, multi_budget_path)
+
     def test_payloads_include_curves_and_step_sizes(self):
         artifacts = SolverAwareArtifacts(
             mode="training_free",

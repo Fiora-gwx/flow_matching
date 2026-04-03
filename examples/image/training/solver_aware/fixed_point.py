@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 from dataclasses import asdict, dataclass, field, fields
@@ -453,15 +454,42 @@ def _resolve_profile_cache_path(
     monitor_family: str,
     target_solver: str,
     monitor_solver: str,
+    budget_mode: str,
+    target_nfe: int,
+    target_nfe_list,
+    target_nfe_weights: Optional[Dict[str, float]] = None,
 ) -> Optional[Path]:
     explicit_path = _normalize_cache_path(cache_path=cache_path)
     if explicit_path is not None:
         return explicit_path
     if output_dir is None:
         return None
+    filename = f"solver_aware_profile_{monitor_family}_{target_solver}_{monitor_solver}"
+    if monitor_family == "defect_based":
+        if budget_mode == "multi_budget":
+            normalized_budgets = tuple(int(value) for value in (target_nfe_list or ()))
+            normalized_weights = {
+                str(int(budget)): float(weight)
+                for budget, weight in (target_nfe_weights or {}).items()
+            }
+            budget_prefix = "-".join(str(value) for value in normalized_budgets[:4]) or "none"
+            if len(normalized_budgets) > 4:
+                budget_prefix += f"-plus{len(normalized_budgets) - 4}"
+            budget_payload = json.dumps(
+                {
+                    "budgets": normalized_budgets,
+                    "weights": normalized_weights,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            budget_hash = hashlib.sha1(budget_payload.encode("utf-8")).hexdigest()[:10]
+            filename += f"_multi_{budget_prefix}_{budget_hash}"
+        else:
+            filename += f"_single_nfe{int(target_nfe)}"
     return (
         output_dir.parent
-        / f"solver_aware_profile_{monitor_family}_{target_solver}_{monitor_solver}.pt"
+        / f"{filename}.pt"
     )
 
 
@@ -852,6 +880,10 @@ def maybe_build_solver_aware_artifacts(
         monitor_family=resolved_monitor_family,
         target_solver=target_solver,
         monitor_solver=str(monitor_spec["monitor_solver"]),
+        budget_mode=str(budget_mode),
+        target_nfe=effective_target_nfe,
+        target_nfe_list=effective_target_nfe_list,
+        target_nfe_weights=effective_target_nfe_weights,
     )
     profile: Optional[SolverAwareProfile] = None
     cache_file_exists = resolved_cache_path is not None and resolved_cache_path.exists()
