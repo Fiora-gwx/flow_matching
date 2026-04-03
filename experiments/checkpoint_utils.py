@@ -1,7 +1,7 @@
 import json
 import logging
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 CURRICULUM_SIGNATURE = "warmup0.3_linear_to1"
@@ -26,6 +26,42 @@ def _load_checkpoint_args(checkpoint_path: Path) -> Optional[Dict[str, object]]:
 def load_checkpoint_args(checkpoint_path: Path) -> Dict[str, object]:
     payload = _load_checkpoint_args(checkpoint_path)
     return {} if payload is None else payload
+
+
+def _candidate_experiment_dirs(
+    *,
+    base_dir: Path,
+    dataset: object,
+    name: object,
+) -> List[Path]:
+    nested_dir = base_dir / str(dataset) / str(name)
+    flat_dir = base_dir / str(name)
+    if flat_dir == nested_dir:
+        return [nested_dir]
+    return [nested_dir, flat_dir]
+
+
+def _checkpoint_candidate_paths(
+    exp_dir: Path,
+    epoch: Optional[int],
+) -> List[Path]:
+    candidates: List[Path] = []
+    if epoch is not None:
+        candidates.extend(
+            [
+                exp_dir / f"checkpoint-{epoch}.pth",
+                exp_dir / f"checkpoint{epoch}.pth",
+                exp_dir / f"checkpoint{epoch:04d}.pth",
+                exp_dir / f"checkpoint_{epoch}.pth",
+            ]
+        )
+    candidates.extend(
+        [
+            exp_dir / "checkpoint.pth",
+            exp_dir / "checkpoint_latest.pth",
+        ]
+    )
+    return candidates
 
 
 def checkpoint_matches_spec(
@@ -153,25 +189,21 @@ def find_checkpoint(
     epoch: Optional[int] = None,
     warn_on_fallback: bool = True,
 ) -> Optional[Path]:
-    if epoch is not None:
-        candidates = [
-            exp_dir / f"checkpoint-{epoch}.pth",
-            exp_dir / f"checkpoint{epoch}.pth",
-            exp_dir / f"checkpoint{epoch:04d}.pth",
-        ]
-        for path in candidates:
-            if path.exists():
-                return path
-    fallback = exp_dir / "checkpoint.pth"
-    if fallback.exists():
-        if epoch is not None and warn_on_fallback:
-            logger.warning(
-                "Requested checkpoint for epoch %s was not found in %s; falling back to latest checkpoint %s",
-                epoch,
-                exp_dir,
-                fallback,
-            )
-        return fallback
+    candidates = _checkpoint_candidate_paths(exp_dir=exp_dir, epoch=epoch)
+    epoch_candidates = candidates[:-2] if epoch is not None else []
+    for path in epoch_candidates:
+        if path.exists():
+            return path
+    for fallback in candidates[len(epoch_candidates) :]:
+        if fallback.exists():
+            if epoch is not None and warn_on_fallback:
+                logger.warning(
+                    "Requested checkpoint for epoch %s was not found in %s; falling back to latest checkpoint %s",
+                    epoch,
+                    exp_dir,
+                    fallback,
+                )
+            return fallback
     return None
 
 
@@ -187,12 +219,20 @@ def resolve_checkpoint_path(
         if not checkpoint_path.is_absolute():
             checkpoint_path = workspace_root / checkpoint_path
         return checkpoint_path if checkpoint_path.exists() else None
-    exp_dir = base_dir / str(spec["dataset"]) / str(spec["name"])
     checkpoint_epoch = spec.get("checkpoint_epoch")
-    return find_checkpoint(
-        exp_dir=exp_dir,
-        epoch=None if checkpoint_epoch is None else int(checkpoint_epoch),
-    )
+    for exp_dir in _candidate_experiment_dirs(
+        base_dir=base_dir,
+        dataset=spec["dataset"],
+        name=spec["name"],
+    ):
+        checkpoint_path = find_checkpoint(
+            exp_dir=exp_dir,
+            epoch=None if checkpoint_epoch is None else int(checkpoint_epoch),
+            warn_on_fallback=False,
+        )
+        if checkpoint_path is not None:
+            return checkpoint_path
+    return None
 
 
 def _format_template_value(value: object) -> str:
@@ -234,6 +274,24 @@ def resolve_reused_checkpoint(
     source_dataset = str(reference.get("dataset", spec["dataset"]))
     checkpoint_epoch = reference.get("checkpoint_epoch")
     explicit_path = reference.get("checkpoint_path")
+    if explicit_path:
+        explicit_candidate = Path(str(explicit_path))
+        if not explicit_candidate.is_absolute():
+            explicit_candidate = workspace_root / explicit_candidate
+        candidate_paths = [explicit_candidate]
+    else:
+        candidate_paths = []
+        for exp_dir in _candidate_experiment_dirs(
+            base_dir=base_dir,
+            dataset=source_dataset,
+            name=source_name,
+        ):
+            candidate_paths.extend(
+                _checkpoint_candidate_paths(
+                    exp_dir=exp_dir,
+                    epoch=None if checkpoint_epoch is None else int(checkpoint_epoch),
+                )
+            )
 
     checkpoint_path = resolve_checkpoint_path(
         base_dir=base_dir,
@@ -246,27 +304,32 @@ def resolve_reused_checkpoint(
         workspace_root=workspace_root,
     )
     if checkpoint_path is None:
-        if explicit_path:
-            candidate_path = Path(str(explicit_path))
-            if not candidate_path.is_absolute():
-                candidate_path = workspace_root / candidate_path
-        else:
-            exp_dir = base_dir / str(source_dataset) / str(source_name)
-            epoch_suffix = "checkpoint.pth" if checkpoint_epoch is None else f"checkpoint-{int(checkpoint_epoch)}.pth"
-            candidate_path = exp_dir / epoch_suffix
         logger.warning(
-            "Checkpoint reference for %s did not resolve to an existing file. candidate=%s",
+            "Checkpoint reference for %s did not resolve to an existing file. "
+            "reference=%s artifact_group=%s source_dataset=%s source_name=%s checkpoint_epoch=%s candidate_paths=%s",
             spec.get("name", "<unnamed>"),
-            candidate_path,
+            reference,
+            artifact_group,
+            source_dataset,
+            source_name,
+            checkpoint_epoch,
+            [str(path) for path in candidate_paths],
         )
         return None
 
     checkpoint_args = _load_checkpoint_args(checkpoint_path)
     if not _is_semantically_compatible(spec, checkpoint_args):
         logger.warning(
-            "Rejected reused checkpoint %s for %s because checkpoint semantics do not match the requested spec.",
+            "Rejected reused checkpoint %s for %s because checkpoint semantics do not match the requested spec. "
+            "reference=%s artifact_group=%s source_dataset=%s source_name=%s checkpoint_epoch=%s candidate_paths=%s",
             checkpoint_path,
             spec.get("name", "<unnamed>"),
+            reference,
+            artifact_group,
+            source_dataset,
+            source_name,
+            checkpoint_epoch,
+            [str(path) for path in candidate_paths],
         )
         return None
     return checkpoint_path
