@@ -1,6 +1,6 @@
 import json
 import logging
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Dict, Iterable, Optional
 
@@ -11,6 +11,7 @@ from training.solver_aware.clock import (
     build_solver_aware_clock_profile,
     build_solver_aware_nodes,
 )
+from training.solver_aware.fixed_point_defect import build_defect_fixed_point_profile
 from training.solver_aware.monitors import (
     MonitorArtifacts,
     compute_euler_monitor,
@@ -40,11 +41,34 @@ class SolverAwareProfile:
     phi: Tensor
     density_exponent: float
     smoothing_window: int
+    monitor_family: str = "legacy_continuous"
+    budget_mode: str = "single_budget"
+    target_nfe: int = 0
+    target_nfe_list: tuple[int, ...] = ()
+    target_nfe_weights: Dict[str, float] = field(default_factory=dict)
+    target_step_count: int = 0
+    budget_step_count_by_nfe: Dict[str, int] = field(default_factory=dict)
+    defect_subdivide: int = 2
+    solver_order: float = 0.0
+    q_curve_name: str = "Q"
+    aggregation_name: str = ""
+    q_values_by_budget: Dict[str, Tensor] = field(default_factory=dict)
+    q_normalized_by_budget: Dict[str, Tensor] = field(default_factory=dict)
+    budget_weights: Dict[str, float] = field(default_factory=dict)
+    distribution_info: Dict[str, object] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, object]:
         payload = asdict(self)
         for key in ("q_values", "q_smoothed", "density", "s_grid", "phi"):
             payload[key] = payload[key].detach().cpu()
+        payload["q_values_by_budget"] = {
+            key: value.detach().cpu()
+            for key, value in self.q_values_by_budget.items()
+        }
+        payload["q_normalized_by_budget"] = {
+            key: value.detach().cpu()
+            for key, value in self.q_normalized_by_budget.items()
+        }
         return payload
 
 
@@ -58,7 +82,22 @@ class SolverAwareArtifacts(SolverAwareProfile):
         payload = asdict(self)
         for key in ("q_values", "q_smoothed", "density", "s_grid", "phi", "r_grid", "nodes"):
             payload[key] = payload[key].detach().cpu()
+        payload["q_values_by_budget"] = {
+            key: value.detach().cpu()
+            for key, value in self.q_values_by_budget.items()
+        }
+        payload["q_normalized_by_budget"] = {
+            key: value.detach().cpu()
+            for key, value in self.q_normalized_by_budget.items()
+        }
         return payload
+
+
+def _tensor_dict_to_lists(values: Dict[str, Tensor]) -> Dict[str, list[float]]:
+    return {
+        str(key): [float(item) for item in tensor.detach().cpu().tolist()]
+        for key, tensor in values.items()
+    }
 
 
 def _curve_summary(values: Tensor) -> Dict[str, float]:
@@ -95,22 +134,37 @@ def _build_artifact_json_payload(artifacts: SolverAwareArtifacts) -> Dict[str, o
         "batch_size": artifacts.batch_size,
         "eps": artifacts.eps,
         "step_count": artifacts.step_count,
+        "monitor_family": artifacts.monitor_family,
+        "budget_mode": artifacts.budget_mode,
+        "target_nfe": artifacts.target_nfe,
+        "target_nfe_list": [int(value) for value in artifacts.target_nfe_list],
+        "target_nfe_weights": artifacts.target_nfe_weights,
+        "target_step_count": artifacts.target_step_count,
+        "budget_step_count_by_nfe": artifacts.budget_step_count_by_nfe,
+        "defect_subdivide": artifacts.defect_subdivide,
+        "solver_order": artifacts.solver_order,
+        "q_curve_name": artifacts.q_curve_name,
+        "aggregation_name": artifacts.aggregation_name,
         "density_exponent": artifacts.density_exponent,
         "smoothing_window": artifacts.smoothing_window,
         "s_grid": [float(value) for value in artifacts.s_grid.detach().cpu().tolist()],
         "q_values": [float(value) for value in artifacts.q_values.detach().cpu().tolist()],
         "q_smoothed": [float(value) for value in artifacts.q_smoothed.detach().cpu().tolist()],
+        "q_values_by_budget": _tensor_dict_to_lists(artifacts.q_values_by_budget),
+        "q_normalized_by_budget": _tensor_dict_to_lists(artifacts.q_normalized_by_budget),
+        "budget_weights": artifacts.budget_weights,
         "density": [float(value) for value in artifacts.density.detach().cpu().tolist()],
         "phi": [float(value) for value in artifacts.phi.detach().cpu().tolist()],
         "q_summary": _curve_summary(artifacts.q_values),
         "q_smoothed_summary": _curve_summary(artifacts.q_smoothed),
         "density_summary": _curve_summary(artifacts.density),
         "phi_summary": _curve_summary(artifacts.phi),
+        "distribution_info": artifacts.distribution_info,
     }
 
 
 def _build_artifact_csv_text(artifacts: SolverAwareArtifacts) -> str:
-    rows = ["grid_index,s_value,q_value,q_smoothed,density,phi"]
+    rows = ["grid_index,s_value,q_value,q_smoothed,density,phi,q_curve_name"]
     s_values = artifacts.s_grid.detach().cpu().tolist()
     q_values = artifacts.q_values.detach().cpu().tolist()
     q_smoothed = artifacts.q_smoothed.detach().cpu().tolist()
@@ -120,7 +174,7 @@ def _build_artifact_csv_text(artifacts: SolverAwareArtifacts) -> str:
         zip(s_values, q_values, q_smoothed, density, phi)
     ):
         rows.append(
-            f"{index},{float(s_value)},{float(q_value)},{float(q_smooth)},{float(density_value)},{float(phi_value)}"
+            f"{index},{float(s_value)},{float(q_value)},{float(q_smooth)},{float(density_value)},{float(phi_value)},{artifacts.q_curve_name}"
         )
     return "\n".join(rows) + "\n"
 
@@ -143,6 +197,12 @@ def _build_node_json_payload(artifacts: SolverAwareArtifacts) -> Dict[str, objec
         "theorem_backed": artifacts.theorem_backed,
         "notes": artifacts.notes,
         "checkpoint_source": artifacts.checkpoint_source,
+        "monitor_family": artifacts.monitor_family,
+        "budget_mode": artifacts.budget_mode,
+        "target_nfe": artifacts.target_nfe,
+        "target_nfe_list": [int(value) for value in artifacts.target_nfe_list],
+        "target_step_count": artifacts.target_step_count,
+        "budget_step_count_by_nfe": artifacts.budget_step_count_by_nfe,
         "step_count": artifacts.step_count,
         "r_grid": [float(value) for value in artifacts.r_grid.detach().cpu().tolist()],
         "nodes": [float(value) for value in artifacts.nodes.detach().cpu().tolist()],
@@ -171,18 +231,62 @@ def _build_node_csv_text(artifacts: SolverAwareArtifacts) -> str:
     return "\n".join(rows) + "\n"
 
 
+def _build_budget_curve_json_payload(artifacts: SolverAwareArtifacts) -> Dict[str, object]:
+    return {
+        "monitor_family": artifacts.monitor_family,
+        "budget_mode": artifacts.budget_mode,
+        "target_solver": artifacts.target_solver,
+        "solver_order": artifacts.solver_order,
+        "s_grid": [float(value) for value in artifacts.s_grid.detach().cpu().tolist()],
+        "q_values_by_budget": _tensor_dict_to_lists(artifacts.q_values_by_budget),
+        "q_normalized_by_budget": _tensor_dict_to_lists(artifacts.q_normalized_by_budget),
+        "budget_step_count_by_nfe": artifacts.budget_step_count_by_nfe,
+        "budget_weights": artifacts.budget_weights,
+        "q_curve_name": artifacts.q_curve_name,
+        "aggregation_name": artifacts.aggregation_name,
+    }
+
+
+def _build_budget_curve_csv_text(artifacts: SolverAwareArtifacts) -> str:
+    rows = ["grid_index,s_value,budget,q_value,q_normalized"]
+    s_values = artifacts.s_grid.detach().cpu().tolist()
+    for budget, q_curve in sorted(artifacts.q_values_by_budget.items(), key=lambda item: int(item[0])):
+        normalized_curve = artifacts.q_normalized_by_budget.get(
+            budget,
+            torch.zeros_like(q_curve),
+        )
+        for index, (s_value, q_value, q_normalized) in enumerate(
+            zip(
+                s_values,
+                q_curve.detach().cpu().tolist(),
+                normalized_curve.detach().cpu().tolist(),
+            )
+        ):
+            rows.append(
+                f"{index},{float(s_value)},{int(budget)},{float(q_value)},{float(q_normalized)}"
+            )
+    return "\n".join(rows) + "\n"
+
+
 def _cache_signature(
     *,
     mode: str,
     target_solver: str,
     monitor_solver: str,
     estimator: str,
+    monitor_family: str,
+    budget_mode: str,
+    target_nfe: int,
+    target_nfe_list: tuple[int, ...],
+    target_nfe_weights: Dict[str, float],
     checkpoint_source: str,
     path_family: str,
     clock_family: str,
     grid_size: int,
     batch_size: int,
     eps: float,
+    defect_subdivide: int,
+    solver_order: float,
     seed: int,
 ) -> Dict[str, object]:
     return {
@@ -190,12 +294,19 @@ def _cache_signature(
         "target_solver": target_solver,
         "monitor_solver": monitor_solver,
         "estimator": estimator,
+        "monitor_family": monitor_family,
+        "budget_mode": budget_mode,
+        "target_nfe": int(target_nfe),
+        "target_nfe_list": [int(value) for value in target_nfe_list],
+        "target_nfe_weights": dict(target_nfe_weights),
         "checkpoint_source": checkpoint_source,
         "path_family": path_family,
         "clock_family": clock_family,
         "grid_size": int(grid_size),
         "batch_size": int(batch_size),
         "eps": float(eps),
+        "defect_subdivide": int(defect_subdivide),
+        "solver_order": float(solver_order),
         "seed": int(seed),
     }
 
@@ -210,6 +321,7 @@ def _resolve_profile_cache_path(
     *,
     cache_path: str,
     output_dir: Optional[Path],
+    monitor_family: str,
     target_solver: str,
     monitor_solver: str,
 ) -> Optional[Path]:
@@ -218,7 +330,10 @@ def _resolve_profile_cache_path(
         return explicit_path
     if output_dir is None:
         return None
-    return output_dir.parent / f"solver_aware_profile_{target_solver}_{monitor_solver}.pt"
+    return (
+        output_dir.parent
+        / f"solver_aware_profile_{monitor_family}_{target_solver}_{monitor_solver}.pt"
+    )
 
 
 def _load_cache(cache_path: Path, signature: Dict[str, object]) -> Optional[SolverAwareProfile]:
@@ -358,6 +473,60 @@ def _merge_monitor_and_clock_profile(
         phi=phi,
         density_exponent=float(density_exponent),
         smoothing_window=int(smoothing_window),
+        monitor_family="legacy_continuous",
+        budget_mode="single_budget",
+        target_step_count=0,
+        solver_order=1.0 if target_solver == "euler" else 2.0,
+        q_curve_name="Q_continuous",
+        aggregation_name="legacy_continuous",
+    )
+
+
+def _merge_defect_profile(
+    defect_profile,
+    *,
+    estimator: str,
+    grid_size: int,
+    batch_size: int,
+    eps: float,
+) -> SolverAwareProfile:
+    target_nfe = int(defect_profile.target_nfes[0]) if defect_profile.target_nfes else 0
+    target_step_count = int(
+        defect_profile.budget_step_count_by_nfe.get(str(target_nfe), 0)
+    )
+    return SolverAwareProfile(
+        mode=defect_profile.mode,
+        target_solver=defect_profile.target_solver,
+        monitor_solver=defect_profile.target_solver,
+        estimator=str(estimator),
+        theorem_backed=bool(defect_profile.theorem_backed),
+        notes=str(defect_profile.notes),
+        checkpoint_source=str(defect_profile.checkpoint_source),
+        grid_size=int(grid_size),
+        batch_size=int(batch_size),
+        eps=float(eps),
+        q_values=defect_profile.q_raw,
+        q_smoothed=defect_profile.q_smoothed,
+        density=defect_profile.density,
+        s_grid=defect_profile.s_grid,
+        phi=defect_profile.phi,
+        density_exponent=float(defect_profile.density_exponent),
+        smoothing_window=int(defect_profile.smoothing_window),
+        monitor_family="defect_based",
+        budget_mode=str(defect_profile.budget_mode),
+        target_nfe=target_nfe,
+        target_nfe_list=tuple(int(value) for value in defect_profile.target_nfes),
+        target_nfe_weights=dict(defect_profile.target_nfe_weights),
+        target_step_count=target_step_count,
+        budget_step_count_by_nfe=dict(defect_profile.budget_step_count_by_nfe),
+        defect_subdivide=int(defect_profile.defect_subdivide),
+        solver_order=float(defect_profile.solver_order),
+        q_curve_name=str(defect_profile.q_curve_name),
+        aggregation_name=str(defect_profile.aggregation_name),
+        q_values_by_budget=dict(defect_profile.q_values_by_budget),
+        q_normalized_by_budget=dict(defect_profile.q_normalized_by_budget),
+        budget_weights=dict(defect_profile.budget_weights),
+        distribution_info=dict(defect_profile.distribution_info),
     )
 
 
@@ -388,6 +557,21 @@ def _materialize_solver_aware_artifacts(
         phi=profile.phi,
         density_exponent=profile.density_exponent,
         smoothing_window=profile.smoothing_window,
+        monitor_family=profile.monitor_family,
+        budget_mode=profile.budget_mode,
+        target_nfe=profile.target_nfe,
+        target_nfe_list=profile.target_nfe_list,
+        target_nfe_weights=profile.target_nfe_weights,
+        target_step_count=profile.target_step_count,
+        budget_step_count_by_nfe=profile.budget_step_count_by_nfe,
+        defect_subdivide=profile.defect_subdivide,
+        solver_order=profile.solver_order,
+        q_curve_name=profile.q_curve_name,
+        aggregation_name=profile.aggregation_name,
+        q_values_by_budget=profile.q_values_by_budget,
+        q_normalized_by_budget=profile.q_normalized_by_budget,
+        budget_weights=profile.budget_weights,
+        distribution_info=profile.distribution_info,
         step_count=step_count,
         r_grid=r_grid,
         nodes=nodes,
@@ -406,14 +590,22 @@ def maybe_build_solver_aware_artifacts(
     clock_family: str,
     target_solver: str,
     estimator: str,
+    monitor_family: str,
+    budget_mode: str,
+    target_nfe: int,
+    target_nfe_list,
+    target_nfe_weights,
     grid_size: int,
     batch_size: int,
     eps: float,
     cfg_scale: float,
+    nfe_budget: int,
     step_count: int,
     checkpoint_source: str,
     seed: int,
     cache_path: str,
+    stork_effective_order: float,
+    defect_subdivide: int,
     output_dir: Optional[Path] = None,
 ) -> Optional[SolverAwareArtifacts]:
     """Build phase-1 solver-aware nodes without touching the legacy FT-clock branch.
@@ -438,23 +630,72 @@ def maybe_build_solver_aware_artifacts(
             k,
         )
 
-    monitor_spec = _resolve_monitor(target_solver=target_solver)
+    resolved_monitor_family = str(monitor_family or "legacy_continuous")
+    if resolved_monitor_family not in {"legacy_continuous", "defect_based"}:
+        raise ValueError(
+            f"Unsupported solver-aware monitor family {resolved_monitor_family}."
+        )
+
+    if resolved_monitor_family == "legacy_continuous":
+        monitor_spec = _resolve_monitor(target_solver=target_solver)
+        effective_target_nfe = 0
+        effective_target_nfe_list: tuple[int, ...] = ()
+        effective_target_nfe_weights: Dict[str, float] = {}
+        effective_defect_subdivide = 2
+        effective_solver_order = 1.0 if target_solver == "euler" else 2.0
+        effective_estimator = estimator
+    else:
+        monitor_spec = {
+            "monitor_solver": target_solver,
+            "theorem_backed": target_solver in {"euler", "heun2"},
+            "notes": "defect_based solver-aware monitor",
+        }
+        effective_target_nfe = int(target_nfe) if int(target_nfe) > 0 else int(nfe_budget)
+        if str(budget_mode) == "multi_budget":
+            effective_target_nfe_list = tuple(
+                int(value) for value in (target_nfe_list or ()) if int(value) > 0
+            )
+        else:
+            effective_target_nfe_list = (effective_target_nfe,)
+        if target_nfe_weights is not None and len(target_nfe_weights) == len(effective_target_nfe_list):
+            effective_target_nfe_weights = {
+                str(int(budget)): float(weight)
+                for budget, weight in zip(effective_target_nfe_list, target_nfe_weights)
+            }
+        else:
+            effective_target_nfe_weights = {}
+        effective_defect_subdivide = int(defect_subdivide)
+        effective_solver_order = (
+            float(stork_effective_order)
+            if target_solver == "stork4"
+            else (1.0 if target_solver == "euler" else 2.0)
+        )
+        effective_estimator = "defect"
+
     signature = _cache_signature(
         mode=effective_mode,
         target_solver=target_solver,
         monitor_solver=monitor_spec["monitor_solver"],
-        estimator=estimator,
+        estimator=effective_estimator,
+        monitor_family=resolved_monitor_family,
+        budget_mode=str(budget_mode),
+        target_nfe=effective_target_nfe,
+        target_nfe_list=effective_target_nfe_list,
+        target_nfe_weights=effective_target_nfe_weights,
         checkpoint_source=checkpoint_source,
         path_family=path_family,
         clock_family=clock_family,
         grid_size=grid_size,
         batch_size=batch_size,
         eps=eps,
+        defect_subdivide=effective_defect_subdivide,
+        solver_order=effective_solver_order,
         seed=seed,
     )
     resolved_cache_path = _resolve_profile_cache_path(
         cache_path=cache_path,
         output_dir=output_dir,
+        monitor_family=resolved_monitor_family,
         target_solver=target_solver,
         monitor_solver=str(monitor_spec["monitor_solver"]),
     )
@@ -469,45 +710,79 @@ def maybe_build_solver_aware_artifacts(
             )
 
     if profile is None:
-        monitor = _compute_monitor(
-            velocity_model=velocity_model,
-            data_loader=data_loader,
-            device=device,
-            path_family=path_family,
-            target_solver=monitor_spec["monitor_solver"],
-            grid_size=grid_size,
-            batch_size=batch_size,
-            estimator=estimator,
-            cfg_scale=cfg_scale,
-            seed=seed,
-        )
-        clock_profile = build_solver_aware_clock_profile(
-            s_grid=monitor.s_grid,
-            q_values=monitor.q_values,
-            density_exponent=monitor.density_exponent,
-            eps=eps,
-        )
-        profile = _merge_monitor_and_clock_profile(
-            mode=effective_mode,
-            target_solver=target_solver,
-            monitor_solver=monitor_spec["monitor_solver"],
-            theorem_backed=bool(monitor_spec["theorem_backed"]),
-            notes=str(monitor_spec["notes"]),
-            checkpoint_source=checkpoint_source,
-            grid_size=grid_size,
-            batch_size=batch_size,
-            eps=eps,
-            monitor=monitor,
-            q_smoothed=clock_profile.q_smoothed,
-            density=clock_profile.density,
-            phi=clock_profile.phi,
-            density_exponent=clock_profile.density_exponent,
-            smoothing_window=clock_profile.smoothing_window,
-        )
+        if resolved_monitor_family == "legacy_continuous":
+            monitor = _compute_monitor(
+                velocity_model=velocity_model,
+                data_loader=data_loader,
+                device=device,
+                path_family=path_family,
+                target_solver=monitor_spec["monitor_solver"],
+                grid_size=grid_size,
+                batch_size=batch_size,
+                estimator=estimator,
+                cfg_scale=cfg_scale,
+                seed=seed,
+            )
+            clock_profile = build_solver_aware_clock_profile(
+                s_grid=monitor.s_grid,
+                q_values=monitor.q_values,
+                density_exponent=monitor.density_exponent,
+                eps=eps,
+            )
+            profile = _merge_monitor_and_clock_profile(
+                mode=effective_mode,
+                target_solver=target_solver,
+                monitor_solver=monitor_spec["monitor_solver"],
+                theorem_backed=bool(monitor_spec["theorem_backed"]),
+                notes=str(monitor_spec["notes"]),
+                checkpoint_source=checkpoint_source,
+                grid_size=grid_size,
+                batch_size=batch_size,
+                eps=eps,
+                monitor=monitor,
+                q_smoothed=clock_profile.q_smoothed,
+                density=clock_profile.density,
+                phi=clock_profile.phi,
+                density_exponent=clock_profile.density_exponent,
+                smoothing_window=clock_profile.smoothing_window,
+            )
+        else:
+            defect_profile = build_defect_fixed_point_profile(
+                mode=effective_mode,
+                current_nfe_budget=nfe_budget,
+                velocity_model=velocity_model,
+                data_loader=data_loader,
+                device=device,
+                path_family=path_family,
+                target_solver=target_solver,
+                budget_mode=str(budget_mode),
+                target_nfe=int(target_nfe),
+                target_nfe_list=tuple(int(value) for value in (target_nfe_list or ())),
+                target_nfe_weights=tuple(float(value) for value in target_nfe_weights)
+                if target_nfe_weights is not None
+                else None,
+                grid_size=grid_size,
+                batch_size=batch_size,
+                eps=eps,
+                cfg_scale=cfg_scale,
+                checkpoint_source=checkpoint_source,
+                seed=seed,
+                defect_subdivide=int(defect_subdivide),
+                stork_effective_order=float(stork_effective_order),
+                output_dir=output_dir,
+            )
+            profile = _merge_defect_profile(
+                defect_profile,
+                estimator=effective_estimator,
+                grid_size=grid_size,
+                batch_size=batch_size,
+                eps=eps,
+            )
         if resolved_cache_path is not None:
             _save_cache(cache_path=resolved_cache_path, signature=signature, artifacts=profile)
             logger.info(
-                "Saved solver-aware continuous profile cache to %s; future NFEs will reuse the same monitor/clock profile.",
+                "Saved solver-aware %s profile cache to %s; future NFEs will reuse the same monitor/clock profile.",
+                resolved_monitor_family,
                 resolved_cache_path,
             )
 
@@ -517,8 +792,9 @@ def maybe_build_solver_aware_artifacts(
     )
 
     logger.info(
-        "Materialized solver-aware nodes for target_solver=%s using a continuous profile shared across NFEs (step_count=%d).",
+        "Materialized solver-aware nodes for target_solver=%s using %s profile (step_count=%d).",
         target_solver,
+        profile.monitor_family,
         step_count,
     )
     step_sizes = _compute_step_sizes(artifacts.nodes)
@@ -578,12 +854,45 @@ def maybe_build_solver_aware_artifacts(
             _build_node_csv_text(artifacts),
             encoding="utf-8",
         )
+        if artifacts.q_values_by_budget:
+            (output_dir / "solver_aware_budget_curves.json").write_text(
+                json.dumps(
+                    _build_budget_curve_json_payload(artifacts),
+                    indent=2,
+                    sort_keys=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (output_dir / "solver_aware_budget_curves.csv").write_text(
+                _build_budget_curve_csv_text(artifacts),
+                encoding="utf-8",
+            )
+        if artifacts.distribution_info:
+            (output_dir / "solver_aware_distribution_info.json").write_text(
+                json.dumps(
+                    artifacts.distribution_info,
+                    indent=2,
+                    sort_keys=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
 
-    logger.info(
-        "Built solver-aware nodes for target_solver=%s using monitor_solver=%s and estimator=%s.",
-        target_solver,
-        monitor_spec["monitor_solver"],
-        profile.estimator,
-    )
-    logger.info("Solver-aware note: %s", monitor_spec["notes"])
+    if resolved_monitor_family == "legacy_continuous":
+        logger.info(
+            "Built legacy continuous solver-aware nodes for target_solver=%s using monitor_solver=%s and estimator=%s.",
+            target_solver,
+            monitor_spec["monitor_solver"],
+            profile.estimator,
+        )
+        logger.info("Solver-aware note: %s", monitor_spec["notes"])
+    else:
+        logger.info(
+            "Built path-based defect solver-aware nodes for target_solver=%s with budget_mode=%s and target_nfe_list=%s.",
+            target_solver,
+            profile.budget_mode,
+            list(profile.target_nfe_list),
+        )
+        logger.info("Solver-aware defect note: %s", profile.notes)
     return artifacts
