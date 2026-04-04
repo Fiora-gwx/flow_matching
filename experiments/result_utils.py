@@ -60,7 +60,20 @@ SOLVER_AWARE_RESULT_FIELDS = [
     "solver_aware_stork_effective_order",
     "solver_aware_q_curve_name",
 ]
-RESULT_FIELDS = BASE_RESULT_FIELDS + SOLVER_AWARE_RESULT_FIELDS
+TACK_RESULT_FIELDS = [
+    "requested_eval_nfe",
+    "realized_nfe",
+    "tack_num_accepted_steps",
+    "tack_num_heun_steps",
+    "tack_num_ab2_steps",
+    "tack_num_ab3_steps",
+    "tack_num_halvings",
+    "tack_num_doublings",
+    "tack_mean_defect",
+    "tack_mean_chi",
+]
+LEGACY_CURRENT_RESULT_FIELDS = BASE_RESULT_FIELDS + SOLVER_AWARE_RESULT_FIELDS
+RESULT_FIELDS = LEGACY_CURRENT_RESULT_FIELDS + TACK_RESULT_FIELDS
 
 NUMERIC_FIELDS = {
     "seed": int,
@@ -86,6 +99,16 @@ OPTIONAL_NUMERIC_FIELDS = {
     "solver_aware_reference_grid_size": int,
     "solver_aware_defect_subdivide": int,
     "solver_aware_stork_effective_order": float,
+    "requested_eval_nfe": float,
+    "realized_nfe": float,
+    "tack_num_accepted_steps": float,
+    "tack_num_heun_steps": float,
+    "tack_num_ab2_steps": float,
+    "tack_num_ab3_steps": float,
+    "tack_num_halvings": float,
+    "tack_num_doublings": float,
+    "tack_mean_defect": float,
+    "tack_mean_chi": float,
 }
 METRIC_OUTPUTS = {
     "fid": ("fid",),
@@ -135,6 +158,7 @@ def validate_results_schema(csv_path: Path) -> None:
     accepted_headers = {
         tuple(BASE_RESULT_FIELDS),
         tuple(BASE_RESULT_FIELDS + legacy_solver_aware_fields),
+        tuple(LEGACY_CURRENT_RESULT_FIELDS),
         tuple(RESULT_FIELDS),
     }
     if tuple(header) not in accepted_headers:
@@ -160,11 +184,12 @@ def append_result_rows(csv_path: Path, rows: Iterable[Dict[str, object]]) -> Non
     rows = list(rows)
     ensure_results_file(csv_path)
     fieldnames = _read_header(csv_path) or RESULT_FIELDS
-    if fieldnames == BASE_RESULT_FIELDS:
+    missing_extra_fields = [field for field in RESULT_FIELDS if field not in fieldnames]
+    if missing_extra_fields:
         for row in rows:
-            if any(row.get(field) not in {"", None, False} for field in SOLVER_AWARE_RESULT_FIELDS):
+            if any(row.get(field) not in {"", None, False} for field in missing_extra_fields):
                 raise ValueError(
-                    f"Cannot append solver-aware rows to legacy-schema CSV {csv_path}. "
+                    f"Cannot append rows with fields {missing_extra_fields} to legacy-schema CSV {csv_path}. "
                     "Use a fresh artifact_group/results.csv so the extended schema can be written."
                 )
     with open(csv_path, "a", newline="", encoding="utf-8") as handle:
@@ -189,6 +214,8 @@ def _coerce_row(row: Dict[str, str]) -> Dict[str, object]:
             result[field] = None
     for field in SOLVER_AWARE_RESULT_FIELDS:
         result.setdefault(field, "")
+    for field in TACK_RESULT_FIELDS:
+        result.setdefault(field, None)
     return result
 
 
@@ -352,10 +379,25 @@ def aggregate_seed_rows(
     if not rows:
         return []
     if group_fields is None:
+        average_fields = {
+            "real_samples",
+            "synthetic_samples",
+            "step_count",
+            "requested_eval_nfe",
+            "realized_nfe",
+            "tack_num_accepted_steps",
+            "tack_num_heun_steps",
+            "tack_num_ab2_steps",
+            "tack_num_ab3_steps",
+            "tack_num_halvings",
+            "tack_num_doublings",
+            "tack_mean_defect",
+            "tack_mean_chi",
+        }
         group_fields = [
             field
             for field in RESULT_FIELDS
-            if field not in {"run_id", "seed", "value", "real_samples", "synthetic_samples"}
+            if field not in {"run_id", "seed", "value"} and field not in average_fields
         ]
     grouped: Dict[tuple, List[Dict[str, object]]] = defaultdict(list)
     for row in rows:
@@ -372,14 +414,36 @@ def aggregate_seed_rows(
         result["value_mean"] = statistics.mean(values)
         result["value_std"] = statistics.stdev(values) if len(values) > 1 else 0.0
         result["num_seeds"] = len(values)
-        for sample_field in ("real_samples", "synthetic_samples"):
+        for sample_field in (
+            "real_samples",
+            "synthetic_samples",
+            "step_count",
+            "requested_eval_nfe",
+            "realized_nfe",
+            "tack_num_accepted_steps",
+            "tack_num_heun_steps",
+            "tack_num_ab2_steps",
+            "tack_num_ab3_steps",
+            "tack_num_halvings",
+            "tack_num_doublings",
+            "tack_mean_defect",
+            "tack_mean_chi",
+        ):
             observed = [
-                int(row[sample_field])
+                float(row[sample_field])
                 for row in group_rows
                 if row.get(sample_field) not in {"", None}
             ]
             if observed:
-                result[sample_field] = round(statistics.mean(observed))
+                mean_value = statistics.mean(observed)
+                if sample_field in {
+                    "real_samples",
+                    "synthetic_samples",
+                    "step_count",
+                }:
+                    result[sample_field] = round(mean_value)
+                else:
+                    result[sample_field] = mean_value
         aggregated_rows.append(result)
     return aggregated_rows
 

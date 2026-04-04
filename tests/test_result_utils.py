@@ -192,6 +192,36 @@ class ResultUtilsTest(unittest.TestCase):
             csv_path.write_text(','.join(legacy_header) + '\n', encoding='utf-8')
             validate_results_schema(csv_path)
 
+    def test_aggregate_seed_rows_averages_tack_runtime_fields(self):
+        rows = [
+            {
+                **make_row('t0', 0, 'uniform', None, 10.0),
+                'solver': 'tack',
+                'requested_eval_nfe': 12.0,
+                'realized_nfe': 11.0,
+                'tack_num_accepted_steps': 10.0,
+                'tack_num_heun_steps': 2.0,
+                'tack_mean_defect': 0.04,
+            },
+            {
+                **make_row('t1', 1, 'uniform', None, 8.0),
+                'solver': 'tack',
+                'requested_eval_nfe': 12.0,
+                'realized_nfe': 13.0,
+                'tack_num_accepted_steps': 12.0,
+                'tack_num_heun_steps': 3.0,
+                'tack_mean_defect': 0.06,
+            },
+        ]
+        aggregated = aggregate_seed_rows(rows)
+        self.assertEqual(len(aggregated), 1)
+        self.assertEqual(aggregated[0]['solver'], 'tack')
+        self.assertEqual(aggregated[0]['requested_eval_nfe'], 12.0)
+        self.assertEqual(aggregated[0]['realized_nfe'], 12.0)
+        self.assertEqual(aggregated[0]['tack_num_accepted_steps'], 11.0)
+        self.assertEqual(aggregated[0]['tack_num_heun_steps'], 2.5)
+        self.assertAlmostEqual(aggregated[0]['tack_mean_defect'], 0.05)
+
 
 if __name__ == '__main__':
     unittest.main()

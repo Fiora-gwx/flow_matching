@@ -410,6 +410,64 @@ class RunExperimentsTest(unittest.TestCase):
                 cmd,
             )
 
+    def test_build_eval_cmd_includes_tack_flags(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            config_path = workspace / 'config.json'
+            config_path.write_text(json.dumps({
+                'experiment_name': 'demo_group',
+                'base_config': {},
+                'experiments': [],
+            }), encoding='utf-8')
+            cwd = os.getcwd()
+            os.chdir(workspace)
+            try:
+                manager = ExperimentManager(config_path)
+                cmd = manager.build_eval_cmd(
+                    {
+                        'dataset': 'cifar10',
+                        'data_path': './data/cifar10',
+                        'batch_size': 8,
+                        'epochs': 2,
+                        'seed': 0,
+                        'num_gpus': 1,
+                        'path_family': 'linear',
+                        'clock_family': 'uniform',
+                        'sampling_solver': 'tack',
+                        'model_output_type': 'base_velocity',
+                        'time_sampling_strategy': 'ds_dr_sq',
+                        'metrics': ['fid'],
+                        'tack_profile_grid_size': 64,
+                        'tack_profile_batch_size': 128,
+                        'tack_profile_num_batches': 4,
+                        'tack_profile_eps': 1.0e-8,
+                        'tack_lambda': 1.0,
+                        'tack_eta': 0.25,
+                        'tack_profile_cache': True,
+                        'tack_force_recompute_profile': False,
+                        'tack_chi_lo': 0.1,
+                        'tack_chi_hi': 0.5,
+                        'tack_tau': 0.05,
+                        'tack_startup_steps': 2,
+                        'tack_enable_dyadic': True,
+                        'tack_batch_shared_adapt': True,
+                        'tack_min_dr_scale': 0.25,
+                        'tack_max_dr_scale': 4.0,
+                        'tack_monitor_estimator': 'auto',
+                        'tack_mode': 'full',
+                    },
+                    workspace / 'out',
+                    workspace / 'checkpoint.pth',
+                    12,
+                )
+            finally:
+                os.chdir(cwd)
+            self.assertIn('--sampling_solver tack', cmd)
+            self.assertIn('--tack_profile_grid_size 64', cmd)
+            self.assertIn('--tack_profile_cache true', cmd)
+            self.assertIn('--tack_enable_dyadic true', cmd)
+            self.assertIn('--tack_mode full', cmd)
+
     def test_experiment_manager_resumes_training_when_checkpoint_exists(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace = Path(tmpdir)

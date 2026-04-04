@@ -1,5 +1,6 @@
 import os
 import sys
+import types
 import unittest
 
 import torch
@@ -10,6 +11,7 @@ if IMAGE_ROOT not in sys.path:
     sys.path.insert(0, IMAGE_ROOT)
 
 from training.fixed_step_solver import build_step_methods, solve_fixed_budget
+from training.tack import build_tack_config_from_namespace
 
 
 class DummyModel:
@@ -163,6 +165,52 @@ class FixedStepSolverTest(unittest.TestCase):
         self.assertTrue(torch.allclose(result.time_grid, time_grid))
         self.assertEqual(result.step_count, 3)
         self.assertGreater(result.solver_stats['virtual_stage_count'], 0)
+
+    def test_tack_online_only_respects_requested_nfe_without_profile(self):
+        model = DummyModel()
+        x_init = torch.zeros(1, 1)
+        args = types.SimpleNamespace(
+            path_family="linear",
+            clock_family="uniform",
+            clock_beta=None,
+            signal_scale_sq=None,
+            cfg_scale=0.0,
+            eval_nfe=6,
+            tack_profile_grid_size=16,
+            tack_profile_batch_size=8,
+            tack_profile_num_batches=2,
+            tack_profile_eps=1.0e-8,
+            tack_lambda=1.0,
+            tack_eta=0.25,
+            tack_profile_cache=False,
+            tack_force_recompute_profile=False,
+            tack_chi_lo=0.10,
+            tack_chi_hi=0.50,
+            tack_tau=0.05,
+            tack_startup_steps=2,
+            tack_enable_dyadic=False,
+            tack_batch_shared_adapt=True,
+            tack_min_dr_scale=0.25,
+            tack_max_dr_scale=4.0,
+            tack_monitor_estimator="auto",
+            tack_mode="online_only",
+            seed=0,
+            resume="checkpoint-499.pth",
+        )
+        result = solve_fixed_budget(
+            model,
+            x_init,
+            "tack",
+            6,
+            tack_config=build_tack_config_from_namespace(args),
+        )
+        self.assertEqual(result.nfe, 6)
+        self.assertEqual(result.step_count, 5)
+        self.assertEqual(result.solver_stats["requested_eval_nfe"], 6)
+        self.assertEqual(result.solver_stats["realized_nfe"], 6)
+        self.assertEqual(result.solver_stats["tack_num_accepted_steps"], 5)
+        self.assertEqual(result.solver_stats["tack_num_heun_steps"], 2)
+        self.assertEqual(result.time_grid.shape[0], result.step_count + 1)
 
 
 if __name__ == '__main__':

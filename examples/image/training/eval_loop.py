@@ -38,6 +38,11 @@ from training.metric_utils import (
     requested_metrics,
 )
 from training.solver_aware.fixed_point import maybe_build_solver_aware_artifacts
+from training.tack import (
+    TACKProfile,
+    build_tack_config_from_namespace,
+    maybe_build_tack_profile,
+)
 from training.train_loop import MASK_TOKEN
 
 try:
@@ -52,6 +57,25 @@ except ImportError:  # pragma: no cover - depends on runtime environment.
 
 logger = logging.getLogger(__name__)
 PRINT_FREQUENCY = 50
+TACK_NUMERIC_SUMMARY_KEYS = {
+    "requested_eval_nfe",
+    "realized_nfe",
+    "tack_num_accepted_steps",
+    "tack_num_heun_steps",
+    "tack_num_ab2_steps",
+    "tack_num_ab3_steps",
+    "tack_num_halvings",
+    "tack_num_doublings",
+    "tack_mean_defect",
+    "tack_mean_chi",
+}
+SOLVER_STATS_DICT_KEYS = {"mode_histogram", "dyadic_step_histogram"}
+SOLVER_STATS_BOOL_KEYS = {
+    "used_tail_step",
+    "is_exact_budget",
+    "is_shared_budget",
+    "tack_profile_loaded_from_cache",
+}
 
 
 def _autocast_context(device: torch.device, enabled: bool):
@@ -162,13 +186,26 @@ def _solver_step_count(solver_name: str, nfe_budget: int) -> int:
     return len(build_step_methods(solver_name=solver_name, nfe_budget=nfe_budget))
 
 
-def _build_monitor_loader(args: Namespace, data_loader: Iterable):
+def _build_monitor_loader(
+    args: Namespace,
+    data_loader: Iterable,
+    *,
+    batch_size: Optional[int] = None,
+):
     dataset = getattr(data_loader, "dataset", None)
+    resolved_batch_size = max(
+        1,
+        int(
+            batch_size
+            if batch_size is not None
+            else args.solver_aware_monitor_batch_size
+        ),
+    )
     if dataset is None or not distributed_mode.is_dist_avail_and_initialized():
         return data_loader
     return torch.utils.data.DataLoader(
         dataset,
-        batch_size=max(1, int(args.solver_aware_monitor_batch_size)),
+        batch_size=resolved_batch_size,
         shuffle=False,
         num_workers=0,
         pin_memory=bool(getattr(args, "pin_mem", True)),
@@ -182,6 +219,79 @@ def _broadcast_tensor(tensor: torch.Tensor, device: torch.device) -> torch.Tenso
     broadcast = tensor.to(device=device)
     torch.distributed.broadcast(broadcast, src=0)
     return broadcast
+
+
+def _broadcast_optional_object(payload):
+    if not distributed_mode.is_dist_avail_and_initialized():
+        return payload
+    objects = [payload if distributed_mode.is_main_process() else None]
+    torch.distributed.broadcast_object_list(objects, src=0)
+    return objects[0]
+
+
+def _update_solver_stats_accumulator(
+    accumulator: Optional[Dict[str, object]],
+    solver_stats: Optional[Dict[str, object]],
+    weight: int,
+) -> Optional[Dict[str, object]]:
+    if solver_stats is None or weight <= 0:
+        return accumulator
+    if accumulator is None:
+        accumulator = {
+            "weight": 0.0,
+            "scalar_sums": {},
+            "dict_sums": {},
+        }
+    accumulator["weight"] = float(accumulator["weight"]) + float(weight)
+    scalar_sums = dict(accumulator["scalar_sums"])
+    dict_sums = {
+        key: dict(value)
+        for key, value in dict(accumulator["dict_sums"]).items()
+    }
+    for key, value in solver_stats.items():
+        if key in SOLVER_STATS_DICT_KEYS and isinstance(value, dict):
+            current = dict(dict_sums.get(key, {}))
+            for sub_key, sub_value in value.items():
+                current[str(sub_key)] = current.get(str(sub_key), 0.0) + float(sub_value)
+            dict_sums[key] = current
+            continue
+        if isinstance(value, bool):
+            scalar_sums[key] = scalar_sums.get(key, 0.0) + float(int(value)) * float(weight)
+            continue
+        if isinstance(value, (int, float)):
+            scalar_sums[key] = scalar_sums.get(key, 0.0) + float(value) * float(weight)
+    accumulator["scalar_sums"] = scalar_sums
+    accumulator["dict_sums"] = dict_sums
+    return accumulator
+
+
+def _finalize_solver_stats(
+    accumulator: Optional[Dict[str, object]],
+    last_solver_stats: Optional[Dict[str, object]],
+) -> Optional[Dict[str, object]]:
+    if last_solver_stats is None:
+        return None
+    if accumulator is None or float(accumulator.get("weight", 0.0)) <= 0.0:
+        return dict(last_solver_stats)
+    result = dict(last_solver_stats)
+    weight = float(accumulator["weight"])
+    for key, value in dict(accumulator["scalar_sums"]).items():
+        averaged = float(value) / weight
+        if key in {
+            "requested_nfe_budget",
+            "requested_eval_nfe",
+        }:
+            result[key] = int(round(averaged))
+        elif key in SOLVER_STATS_BOOL_KEYS:
+            result[key] = bool(round(averaged))
+        else:
+            result[key] = averaged
+    for key, value in dict(accumulator["dict_sums"]).items():
+        result[key] = {
+            sub_key: int(round(float(sub_value)))
+            for sub_key, sub_value in value.items()
+        }
+    return result
 
 
 def _build_fid_metric(device: torch.device):
@@ -264,6 +374,7 @@ def eval_model(
     )
     if (
         not args.discrete_flow_matching
+        and str(getattr(args, "sampling_solver", "")) != "tack"
         and getattr(args, "solver_aware_clock_mode", "off") != "off"
         and getattr(args, "solver_aware_use_nodes", False)
     ):
@@ -395,6 +506,42 @@ def eval_model(
                     device=device,
                 )
 
+    tack_config = None
+    tack_profile = None
+    if not args.discrete_flow_matching and str(getattr(args, "sampling_solver", "")) == "tack":
+        tack_config = build_tack_config_from_namespace(
+            args,
+            requested_nfe=int(args.eval_nfe),
+            checkpoint_source=str(getattr(args, "resume", "") or ""),
+        )
+        if str(tack_config.mode) != "online_only":
+            use_eval_loader_for_tack = monitor_data_loader is None
+            tack_loader = _build_monitor_loader(
+                args=args,
+                data_loader=(
+                    data_loader if use_eval_loader_for_tack else monitor_data_loader
+                ),
+                batch_size=int(tack_config.profile_batch_size),
+            )
+            profile_payload = None
+            if distributed_mode.is_main_process():
+                logger.info(
+                    "TACK offline profile will use %s loader.",
+                    "eval/test" if use_eval_loader_for_tack else "calibration/train",
+                )
+                with torch.enable_grad():
+                    tack_profile = maybe_build_tack_profile(
+                        config=tack_config,
+                        velocity_model=solver_aware_monitor_model,
+                        data_loader=tack_loader,
+                        device=device,
+                        output_dir=Path(args.output_dir) if args.output_dir else None,
+                    )
+                profile_payload = None if tack_profile is None else tack_profile.to_dict()
+            profile_payload = _broadcast_optional_object(profile_payload)
+            if profile_payload is not None and not distributed_mode.is_main_process():
+                tack_profile = TACKProfile(**profile_payload)
+
     metric_backend = None
     if "fid" in active_metrics or "precision_recall" in active_metrics:
         metric_backend = _build_fid_metric(device=device)
@@ -412,6 +559,7 @@ def eval_model(
     last_nfe = 0
     last_step_count = 0
     last_solver_stats = None
+    solver_stats_accumulator = None
 
     loader_length = len(data_loader) if hasattr(data_loader, "__len__") else "?"
     for data_iter_step, batch in iter_batches_until_target(
@@ -451,6 +599,15 @@ def eval_model(
             synthetic_samples = synthetic_samples.to(torch.float32) / 255.0
         else:
             x_0 = torch.randn(samples.shape, dtype=torch.float32, device=device)
+            solve_kwargs = {
+                "label": labels,
+                "cfg_scale": args.cfg_scale,
+            }
+            if args.sampling_solver == "tack":
+                solve_kwargs["tack_config"] = tack_config
+                solve_kwargs["tack_profile"] = tack_profile
+                if args.output_dir and distributed_mode.is_main_process():
+                    solve_kwargs["artifact_dir"] = Path(args.output_dir)
             sampling = solve_fixed_budget(
                 velocity_model=cfg_scaled_model,
                 x_init=x_0,
@@ -458,8 +615,7 @@ def eval_model(
                 nfe_budget=args.eval_nfe,
                 return_trajectory=False,
                 time_grid=solver_aware_time_grid,
-                label=labels,
-                cfg_scale=args.cfg_scale,
+                **solve_kwargs,
             )
             synthetic_samples = sampling.sample
             last_nfe = sampling.nfe
@@ -473,6 +629,11 @@ def eval_model(
         )
         if num_synthetic + synthetic_samples.shape[0] > fid_samples:
             synthetic_samples = synthetic_samples[: fid_samples - num_synthetic]
+        solver_stats_accumulator = _update_solver_stats_accumulator(
+            solver_stats_accumulator,
+            last_solver_stats,
+            weight=int(synthetic_samples.shape[0]),
+        )
 
         if metric_backend is not None and "fid" in active_metrics:
             metric_backend.update(synthetic_samples, real=False)
@@ -516,18 +677,39 @@ def eval_model(
                 f"Evaluating [{data_iter_step}/{loader_length}] samples generated [{num_synthetic}/{fid_samples}] running fid {running_fid}"
             )
 
-    if args.output_dir and last_solver_stats is not None:
+    finalized_solver_stats = _finalize_solver_stats(
+        solver_stats_accumulator,
+        last_solver_stats,
+    )
+    if args.output_dir and finalized_solver_stats is not None:
         solver_stats_path = Path(args.output_dir) / "solver_stats.json"
         with open(solver_stats_path, "w", encoding="utf-8") as handle:
-            json.dump(last_solver_stats, handle, indent=2, sort_keys=True)
+            json.dump(finalized_solver_stats, handle, indent=2, sort_keys=True)
+
+    realized_nfe = float(
+        finalized_solver_stats.get("realized_nfe")
+        if finalized_solver_stats is not None and finalized_solver_stats.get("realized_nfe") is not None
+        else last_nfe
+    )
+    summarized_step_count = float(
+        finalized_solver_stats.get("step_count")
+        if finalized_solver_stats is not None and finalized_solver_stats.get("step_count") is not None
+        else last_step_count
+    )
 
     results = {
-        "nfe": float(last_nfe),
+        "nfe": float(args.eval_nfe),
         "requested_nfe_budget": float(args.eval_nfe),
-        "step_count": float(last_step_count),
+        "requested_eval_nfe": float(args.eval_nfe),
+        "realized_nfe": realized_nfe,
+        "step_count": summarized_step_count,
         "real_samples": float(num_real),
         "synthetic_samples": float(num_synthetic),
     }
+    if finalized_solver_stats is not None:
+        for key in TACK_NUMERIC_SUMMARY_KEYS:
+            if key in finalized_solver_stats:
+                results[key] = float(finalized_solver_stats[key])
     if metric_backend is not None and "fid" in active_metrics:
         results["fid"] = float(metric_backend.compute().detach().cpu())
     if metric_backend is not None and "precision_recall" in active_metrics:
