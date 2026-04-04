@@ -73,6 +73,18 @@ SOLVER_AWARE_DEFAULTS = {
     "solver_aware_stork_effective_order": None,
     "solver_aware_q_curve_name": "",
 }
+TACK_RESULT_DEFAULTS = {
+    "requested_eval_nfe": None,
+    "realized_nfe": None,
+    "tack_num_accepted_steps": None,
+    "tack_num_heun_steps": None,
+    "tack_num_ab2_steps": None,
+    "tack_num_ab3_steps": None,
+    "tack_num_halvings": None,
+    "tack_num_doublings": None,
+    "tack_mean_defect": None,
+    "tack_mean_chi": None,
+}
 
 
 def _solver_aware_step_count(target_solver: str, nfe_budget: int) -> int:
@@ -450,6 +462,9 @@ class ExperimentManager:
         ]
 
     def _base_flags(self, spec: Dict, output_dir: Path) -> List[str]:
+        def _bool_flag_value(value: object) -> str:
+            return "true" if bool(value) else "false"
+
         flags = [
             f"--dataset {spec['dataset']}",
             f"--data_path {spec['data_path']}",
@@ -474,6 +489,31 @@ class ExperimentManager:
             )
             if spec.get("clock_beta") is not None:
                 flags.append(f"--clock_beta {spec['clock_beta']}")
+            if spec.get("sampling_solver") == "tack" or any(
+                str(key).startswith("tack_") for key in spec.keys()
+            ):
+                flags.extend(
+                    [
+                        f"--tack_profile_grid_size {spec.get('tack_profile_grid_size', 64)}",
+                        f"--tack_profile_batch_size {spec.get('tack_profile_batch_size', 256)}",
+                        f"--tack_profile_num_batches {spec.get('tack_profile_num_batches', 8)}",
+                        f"--tack_profile_eps {spec.get('tack_profile_eps', 1.0e-8)}",
+                        f"--tack_lambda {spec.get('tack_lambda', 1.0)}",
+                        f"--tack_eta {spec.get('tack_eta', 0.25)}",
+                        f"--tack_profile_cache {_bool_flag_value(spec.get('tack_profile_cache', True))}",
+                        f"--tack_force_recompute_profile {_bool_flag_value(spec.get('tack_force_recompute_profile', False))}",
+                        f"--tack_chi_lo {spec.get('tack_chi_lo', 0.10)}",
+                        f"--tack_chi_hi {spec.get('tack_chi_hi', 0.50)}",
+                        f"--tack_tau {spec.get('tack_tau', 0.05)}",
+                        f"--tack_startup_steps {spec.get('tack_startup_steps', 2)}",
+                        f"--tack_enable_dyadic {_bool_flag_value(spec.get('tack_enable_dyadic', True))}",
+                        f"--tack_batch_shared_adapt {_bool_flag_value(spec.get('tack_batch_shared_adapt', True))}",
+                        f"--tack_min_dr_scale {spec.get('tack_min_dr_scale', 0.25)}",
+                        f"--tack_max_dr_scale {spec.get('tack_max_dr_scale', 4.0)}",
+                        f"--tack_monitor_estimator {spec.get('tack_monitor_estimator', 'auto')}",
+                        f"--tack_mode {spec.get('tack_mode', 'full')}",
+                    ]
+                )
         if spec.get("metrics"):
             flags.append("--metrics " + " ".join(spec["metrics"]))
         if spec.get("precision_recall_neighbors") is not None:
@@ -637,7 +677,14 @@ class ExperimentManager:
             effective_spec.get("clock_beta"),
         )
         for metric_name, value in stats.items():
-            if metric_name in {"nfe", "step_count", "real_samples", "synthetic_samples"}:
+            if metric_name in {
+                "nfe",
+                "step_count",
+                "real_samples",
+                "synthetic_samples",
+                *TACK_RESULT_DEFAULTS.keys(),
+                "requested_nfe_budget",
+            }:
                 continue
             rows.append(
                 {
@@ -652,8 +699,8 @@ class ExperimentManager:
                     "clock_param_name": clock_param_name,
                     "clock_param_value": clock_param_value,
                     "solver": spec.get("sampling_solver", "heun2"),
-                    "nfe": int(stats.get("nfe", nfe)),
-                    "step_count": int(stats.get("step_count", 0)),
+                    "nfe": int(nfe),
+                    "step_count": int(round(float(stats.get("step_count", 0)))),
                     "real_samples": int(stats.get("real_samples", 0)),
                     "synthetic_samples": int(stats.get("synthetic_samples", 0)),
                     "metric": metric_name,
@@ -666,6 +713,20 @@ class ExperimentManager:
                     "mixed_lambda": effective_spec.get("mixed_lambda", 0.5),
                     "stratified_bins": effective_spec.get("stratified_bins", 16),
                     **solver_aware_fields,
+                    "requested_eval_nfe": float(stats.get("requested_eval_nfe", nfe)),
+                    "realized_nfe": (
+                        None
+                        if stats.get("realized_nfe") in {"", None}
+                        else float(stats.get("realized_nfe"))
+                    ),
+                    "tack_num_accepted_steps": stats.get("tack_num_accepted_steps"),
+                    "tack_num_heun_steps": stats.get("tack_num_heun_steps"),
+                    "tack_num_ab2_steps": stats.get("tack_num_ab2_steps"),
+                    "tack_num_ab3_steps": stats.get("tack_num_ab3_steps"),
+                    "tack_num_halvings": stats.get("tack_num_halvings"),
+                    "tack_num_doublings": stats.get("tack_num_doublings"),
+                    "tack_mean_defect": stats.get("tack_mean_defect"),
+                    "tack_mean_chi": stats.get("tack_mean_chi"),
                 }
             )
         return rows

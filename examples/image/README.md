@@ -53,7 +53,10 @@ python3 examples/image/train.py \
 python3 experiments/run_experiments.py --config experiments/configs/ft_clock/linear_main.yaml
 python3 experiments/run_experiments.py --config experiments/configs/ft_clock/trig_vp.yaml
 python3 experiments/run_experiments.py --config experiments/configs/ft_clock/solver_sensitivity.yaml
+python3 experiments/run_experiments.py --config experiments/configs/ft_clock/tack_solver_sensitivity.yaml
 ```
+
+`tack` 采样器和参数说明见 [`docs/tack.md`](../../docs/tack.md)。
 
 如果某个实验组已经训练完成，后续只是在 YAML 的 `metrics` 中新增了 `inception_score`，重新执行同一个 `run_experiments.py --config ...` 即可；runner 会复用现有 checkpoint，只回填缺失评估，不会重新训练。
 

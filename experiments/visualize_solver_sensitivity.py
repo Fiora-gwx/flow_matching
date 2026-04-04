@@ -28,21 +28,30 @@ SHARED_FAIR_BUDGETS = frozenset({6, 12, 18, 24, 30, 48, 96})
 REQUIRED_METRICS = {"fid", "precision", "recall", "is_mean", "is_std"}
 
 
-def solver_budget_flags(solver: str, nfe: int) -> Dict[str, object]:
+def solver_budget_flags(
+    solver: str,
+    requested_nfe: int,
+    realized_nfe: Optional[float] = None,
+) -> Dict[str, object]:
     if solver == "euler":
         is_exact_budget = True
     elif solver == "heun2":
-        is_exact_budget = nfe % 2 == 0
+        is_exact_budget = requested_nfe % 2 == 0
     elif solver == "rk3":
-        is_exact_budget = nfe % 3 == 0
+        is_exact_budget = requested_nfe % 3 == 0
     elif solver == "stork4":
         is_exact_budget = True
+    elif solver == "tack":
+        if realized_nfe is None:
+            is_exact_budget = False
+        else:
+            is_exact_budget = abs(float(realized_nfe) - float(requested_nfe)) < 1.0e-6
     else:
         raise ValueError(f"Unsupported solver={solver}.")
     return {
         "used_tail_step": not is_exact_budget and solver in {"heun2", "rk3"},
         "is_exact_budget": is_exact_budget,
-        "is_shared_budget": is_exact_budget and nfe in SHARED_FAIR_BUDGETS,
+        "is_shared_budget": is_exact_budget and requested_nfe in SHARED_FAIR_BUDGETS,
     }
 
 
@@ -84,7 +93,12 @@ def pivot_metric_rows(rows: Sequence[Dict[str, object]]) -> List[Dict[str, objec
             row.get("stratified_bins"),
         )
         if key not in grouped:
-            flags = solver_budget_flags(str(row["solver"]), int(row["nfe"]))
+            realized_nfe = row.get("realized_nfe")
+            flags = solver_budget_flags(
+                str(row["solver"]),
+                int(row["nfe"]),
+                None if realized_nfe in {"", None} else float(realized_nfe),
+            )
             beta = row.get("clock_param_value")
             grouped[key] = {
                 "dataset": row.get("dataset"),
@@ -94,8 +108,12 @@ def pivot_metric_rows(rows: Sequence[Dict[str, object]]) -> List[Dict[str, objec
                 "beta": beta,
                 "solver": row.get("solver"),
                 "nfe": int(row.get("nfe", 0)),
-                "actual_network_calls": int(row.get("nfe", 0)),
-                "step_count": int(row.get("step_count", 0)),
+                "actual_network_calls": float(
+                    row.get("realized_nfe")
+                    if row.get("realized_nfe") not in {"", None}
+                    else row.get("nfe", 0)
+                ),
+                "step_count": float(row.get("step_count", 0)),
                 "checkpoint_epoch": int(row.get("checkpoint_epoch", 0)),
                 "artifact_group": row.get("artifact_group"),
                 "strategy_id": row.get("strategy_id", ""),

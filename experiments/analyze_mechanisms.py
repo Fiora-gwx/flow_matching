@@ -197,6 +197,26 @@ def main(config_path: Path):
             eval_nfes=spec.get('eval_nfes', [10, 20, 50]),
             sampling_solver=spec.get('sampling_solver', 'heun2'),
             cfg_scale=spec.get('cfg_scale', 0.0),
+            tack_profile_grid_size=spec.get('tack_profile_grid_size', 64),
+            tack_profile_batch_size=spec.get('tack_profile_batch_size', 256),
+            tack_profile_num_batches=spec.get('tack_profile_num_batches', 8),
+            tack_profile_eps=spec.get('tack_profile_eps', 1.0e-8),
+            tack_lambda=spec.get('tack_lambda', 1.0),
+            tack_eta=spec.get('tack_eta', 0.25),
+            tack_profile_cache=spec.get('tack_profile_cache', True),
+            tack_force_recompute_profile=spec.get('tack_force_recompute_profile', False),
+            tack_chi_lo=spec.get('tack_chi_lo', 0.10),
+            tack_chi_hi=spec.get('tack_chi_hi', 0.50),
+            tack_tau=spec.get('tack_tau', 0.05),
+            tack_startup_steps=spec.get('tack_startup_steps', 2),
+            tack_enable_dyadic=spec.get('tack_enable_dyadic', True),
+            tack_batch_shared_adapt=spec.get('tack_batch_shared_adapt', True),
+            tack_min_dr_scale=spec.get('tack_min_dr_scale', 0.25),
+            tack_max_dr_scale=spec.get('tack_max_dr_scale', 4.0),
+            tack_monitor_estimator=spec.get('tack_monitor_estimator', 'auto'),
+            tack_mode=spec.get('tack_mode', 'full'),
+            seed=spec.get('seed', 0),
+            resume=str(checkpoint_path),
         )
         output_dir = base_dir / spec['dataset'] / spec['name'] / 'analysis'
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -222,6 +242,8 @@ def main(config_path: Path):
             args,
             sample_shape=sample_shape,
             labels=labels,
+            profile_data_loader=loader,
+            artifact_root=output_dir / 'tack_profiles' if args.sampling_solver == 'tack' else None,
         )
         write_csv(output_dir / 'trajectory_profile.csv', trajectory_rows)
         plot_trajectory(trajectory_rows, output_dir / 'terminal_budget_ratio_vs_nfe.png')

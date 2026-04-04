@@ -17,7 +17,7 @@ CLOCK_FAMILIES = [
     "sigmoid_k8",
     "exp_l3",
 ]
-SAMPLING_SOLVERS = ["euler", "heun2", "rk3", "stork4"]
+SAMPLING_SOLVERS = ["euler", "heun2", "rk3", "stork4", "tack"]
 SUPPORTED_METRICS = ["fid", "precision_recall", "inception_score"]
 MODEL_OUTPUT_TYPES = ["velocity", "base_velocity"]
 TIME_SAMPLING_STRATEGIES = [
@@ -33,6 +33,19 @@ SOLVER_AWARE_TARGET_SOLVERS = ["euler", "heun2", "stork4"]
 SOLVER_AWARE_MONITOR_ESTIMATORS = ["auto", "jvp", "fd"]
 SOLVER_AWARE_MONITOR_FAMILIES = ["legacy_continuous", "defect_based"]
 SOLVER_AWARE_BUDGET_MODES = ["single_budget", "multi_budget"]
+TACK_MONITOR_ESTIMATORS = ["auto", "finite_diff", "jvp"]
+TACK_MODES = ["full", "clock_only", "online_only"]
+
+
+def str2bool(value):
+    if isinstance(value, bool):
+        return value
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "y", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "n", "off"}:
+        return False
+    raise argparse.ArgumentTypeError(f"Expected a boolean value, got {value}.")
 
 
 def get_args_parser():
@@ -124,6 +137,114 @@ def get_args_parser():
         default=50,
         type=int,
         help="Evaluation NFE budget counted as real network forward calls.",
+    )
+    parser.add_argument(
+        "--tack_profile_grid_size",
+        default=64,
+        type=int,
+        help="Grid size used by the TACK offline profile.",
+    )
+    parser.add_argument(
+        "--tack_profile_batch_size",
+        default=256,
+        type=int,
+        help="Batch size used for each TACK offline profile estimate.",
+    )
+    parser.add_argument(
+        "--tack_profile_num_batches",
+        default=8,
+        type=int,
+        help="Number of Monte Carlo batches used per TACK profile grid point.",
+    )
+    parser.add_argument(
+        "--tack_profile_eps",
+        default=1.0e-8,
+        type=float,
+        help="Numerical epsilon used by the TACK offline profile.",
+    )
+    parser.add_argument(
+        "--tack_lambda",
+        default=1.0,
+        type=float,
+        help="Lambda coefficient in the TACK error-equidistribution density term.",
+    )
+    parser.add_argument(
+        "--tack_eta",
+        default=0.25,
+        type=float,
+        help="Eta coefficient in the TACK stiff-floor density term.",
+    )
+    parser.add_argument(
+        "--tack_profile_cache",
+        default=True,
+        type=str2bool,
+        help="Whether TACK should reuse the offline profile cache when available.",
+    )
+    parser.add_argument(
+        "--tack_force_recompute_profile",
+        default=False,
+        type=str2bool,
+        help="Force TACK to recompute the offline profile instead of loading cache.",
+    )
+    parser.add_argument(
+        "--tack_chi_lo",
+        default=0.10,
+        type=float,
+        help="Lower curvature threshold for the TACK AB3/AB2 switch.",
+    )
+    parser.add_argument(
+        "--tack_chi_hi",
+        default=0.50,
+        type=float,
+        help="Upper curvature threshold for the TACK AB2/Heun switch.",
+    )
+    parser.add_argument(
+        "--tack_tau",
+        default=0.05,
+        type=float,
+        help="Defect target used by TACK dyadic step control.",
+    )
+    parser.add_argument(
+        "--tack_startup_steps",
+        default=2,
+        type=int,
+        help="Number of TACK startup steps that always use Heun.",
+    )
+    parser.add_argument(
+        "--tack_enable_dyadic",
+        default=True,
+        type=str2bool,
+        help="Enable dyadic step-size updates for TACK.",
+    )
+    parser.add_argument(
+        "--tack_batch_shared_adapt",
+        default=True,
+        type=str2bool,
+        help="Use batch-shared adaptive decisions for TACK.",
+    )
+    parser.add_argument(
+        "--tack_min_dr_scale",
+        default=0.25,
+        type=float,
+        help="Minimum dyadic step scale relative to the TACK base step.",
+    )
+    parser.add_argument(
+        "--tack_max_dr_scale",
+        default=4.0,
+        type=float,
+        help="Maximum dyadic step scale relative to the TACK base step.",
+    )
+    parser.add_argument(
+        "--tack_monitor_estimator",
+        default="auto",
+        choices=TACK_MONITOR_ESTIMATORS,
+        help="Estimator used by the TACK offline profile.",
+    )
+    parser.add_argument(
+        "--tack_mode",
+        default="full",
+        choices=TACK_MODES,
+        help="TACK ablation mode.",
     )
     parser.add_argument(
         "--solver_aware_clock_mode",
