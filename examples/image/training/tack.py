@@ -78,6 +78,94 @@ def _moving_average(values: Tensor, window: int) -> Tensor:
     return smoothed.view(-1)
 
 
+def _compute_chi(g_history: list[Tensor], eps: float) -> Optional[float]:
+    if len(g_history) < 3:
+        return None
+    numerator = _batch_l2_norm_mean(g_history[-1] - 2.0 * g_history[-2] + g_history[-3])
+    denominator = _batch_l2_norm_mean(g_history[-1] - g_history[-2])
+    denominator_value = float(denominator.item())
+    if not math.isfinite(denominator_value) or denominator_value <= float(eps):
+        return None
+    chi_value = float((numerator / denominator).item())
+    if not math.isfinite(chi_value):
+        return None
+    return chi_value
+
+
+def _ab2_predict_uniform(
+    z_n: Tensor,
+    g_n: Tensor,
+    g_nm1: Tensor,
+    h: float,
+) -> Tensor:
+    return z_n + float(h) * (1.5 * g_n - 0.5 * g_nm1)
+
+
+def _ab3_predict_uniform(
+    z_n: Tensor,
+    g_n: Tensor,
+    g_nm1: Tensor,
+    g_nm2: Tensor,
+    h: float,
+) -> Tensor:
+    return z_n + float(h) * (
+        (23.0 / 12.0) * g_n
+        - (16.0 / 12.0) * g_nm1
+        + (5.0 / 12.0) * g_nm2
+    )
+
+
+def _ab2_predict_nonuniform(
+    z_n: Tensor,
+    g_n: Tensor,
+    g_nm1: Tensor,
+    h: float,
+    beta1: float,
+    eps: float,
+) -> Optional[Tensor]:
+    if (
+        not math.isfinite(float(h))
+        or not math.isfinite(float(beta1))
+        or float(h) <= 0.0
+        or float(beta1) <= float(eps)
+    ):
+        return None
+    h_over_two_beta1 = float(h) / (2.0 * float(beta1))
+    return z_n + float(h) * ((1.0 + h_over_two_beta1) * g_n - h_over_two_beta1 * g_nm1)
+
+
+def _ab3_predict_nonuniform(
+    z_n: Tensor,
+    g_n: Tensor,
+    g_nm1: Tensor,
+    g_nm2: Tensor,
+    h: float,
+    beta1: float,
+    beta0: float,
+    eps: float,
+) -> Optional[Tensor]:
+    if (
+        not math.isfinite(float(h))
+        or not math.isfinite(float(beta1))
+        or not math.isfinite(float(beta0))
+        or float(h) <= 0.0
+        or float(beta1) <= float(eps)
+        or float(beta0) <= float(eps)
+        or float(beta0 + beta1) <= float(eps)
+    ):
+        return None
+    h_sq = float(h) * float(h)
+    beta_sum = float(beta0 + beta1)
+    coeff_nm2 = h_sq * (2.0 * float(h) + 3.0 * float(beta1)) / (6.0 * float(beta0) * beta_sum)
+    coeff_nm1 = -h_sq * (2.0 * float(h) + 3.0 * beta_sum) / (6.0 * float(beta0) * float(beta1))
+    coeff_n = float(h) * (
+        h_sq / 3.0
+        + (float(beta0) + 2.0 * float(beta1)) * float(h) / 2.0
+        + float(beta1) * beta_sum
+    ) / (beta_sum * float(beta1))
+    return z_n + coeff_nm2 * g_nm2 + coeff_nm1 * g_nm1 + coeff_n * g_n
+
+
 def _strictly_monotone(values: Tensor) -> Tensor:
     monotone = values.clone()
     min_step = max(torch.finfo(monotone.dtype).eps, EPS)
@@ -103,6 +191,46 @@ def _interp_lookup(query: Tensor, x_grid: Tensor, y_grid: Tensor) -> Tensor:
     weight = (flat_query - x_left) / (x_right - x_left).clamp(min=EPS)
     values = y_left + weight * (y_right - y_left)
     return values.reshape_as(query)
+
+
+def _stabilize_rho_star(
+    rho_raw: Tensor,
+    rho_floor_raw: Tensor,
+    *,
+    smoothing_window: int,
+    eps: float,
+) -> tuple[Tensor, Tensor, Tensor]:
+    floor_raw = rho_floor_raw.to(dtype=torch.float64).clamp(min=float(eps))
+    rho_smoothed = _moving_average(
+        rho_raw.to(dtype=torch.float64).clamp(min=float(eps)),
+        smoothing_window,
+    ).clamp(min=float(eps))
+    floor_smoothed = _moving_average(floor_raw, smoothing_window).clamp(min=float(eps))
+    rho_star = torch.maximum(rho_smoothed, floor_raw).clamp(min=float(eps))
+    return floor_smoothed, rho_smoothed, rho_star
+
+
+def _stabilize_psi_prime(
+    *,
+    psi_values: Tensor,
+    r_grid: Tensor,
+    rho_star: Tensor,
+    rho_floor_raw: Tensor,
+    total_mass: float,
+    eps: float,
+) -> tuple[Tensor, float, float]:
+    rho_lookup = _interp_lookup(psi_values, r_grid, rho_star)
+    rho_floor_lookup = _interp_lookup(psi_values, r_grid, rho_floor_raw)
+    floor_scale = max(float(torch.median(rho_floor_raw).item()), float(eps))
+    psi_prime_regularizer = max(float(eps), 0.05 * floor_scale)
+    stable_denominator = torch.maximum(rho_lookup, rho_floor_lookup).clamp(min=float(eps))
+    stable_denominator = stable_denominator + float(psi_prime_regularizer)
+    raw_psi_prime = float(total_mass) / stable_denominator
+    median_prime = max(float(torch.median(raw_psi_prime).item()), 1.0)
+    quantile_prime = max(float(torch.quantile(raw_psi_prime, 0.95).item()), median_prime)
+    psi_prime_cap = max(quantile_prime, 4.0 * median_prime)
+    psi_prime_values = raw_psi_prime.clamp(max=float(psi_prime_cap)).to(dtype=torch.float64)
+    return psi_prime_values, float(psi_prime_regularizer), float(psi_prime_cap)
 
 
 def _resolve_tack_estimator(estimator: str) -> tuple[str, str]:
@@ -180,12 +308,17 @@ class TACKConfig:
 
 @dataclass
 class TACKProfile:
+    # Legacy field name kept for artifact/cache compatibility.
+    # This tensor is the uniform FT-clock input r-grid, not the original physical time s.
     s_grid: Tensor
     q1_values: Tensor
     q2_values: Tensor
     q1_smoothed: Tensor
     q2_smoothed: Tensor
+    rho_floor_raw: Tensor
+    rho_floor_smoothed: Tensor
     rho_raw: Tensor
+    rho_smoothed: Tensor
     rho_star: Tensor
     phi_values: Tensor
     psi_query_grid: Tensor
@@ -205,7 +338,13 @@ class TACKProfile:
     signal_scale_sq: Optional[float]
     checkpoint_source: str
     smoothing_window: int
+    psi_prime_regularizer: float = 0.0
+    psi_prime_cap: float = 0.0
     distribution_info: Dict[str, object] = field(default_factory=dict)
+
+    @property
+    def r_grid(self) -> Tensor:
+        return self.s_grid
 
     def to_dict(self) -> Dict[str, object]:
         payload = asdict(self)
@@ -215,7 +354,10 @@ class TACKProfile:
             "q2_values",
             "q1_smoothed",
             "q2_smoothed",
+            "rho_floor_raw",
+            "rho_floor_smoothed",
             "rho_raw",
+            "rho_smoothed",
             "rho_star",
             "phi_values",
             "psi_query_grid",
@@ -328,7 +470,10 @@ def _load_profile_from_cache(
         "q2_values",
         "q1_smoothed",
         "q2_smoothed",
+        "rho_floor_raw",
+        "rho_floor_smoothed",
         "rho_raw",
+        "rho_smoothed",
         "rho_star",
         "phi_values",
         "psi_query_grid",
@@ -348,6 +493,8 @@ def _load_profile_from_cache(
         "signal_scale_sq",
         "checkpoint_source",
         "smoothing_window",
+        "psi_prime_regularizer",
+        "psi_prime_cap",
         "distribution_info",
     }
     if not expected_fields.issubset(profile_payload.keys()):
@@ -382,14 +529,14 @@ def _save_profile_plot(profile: TACKProfile, output_dir: Path) -> None:
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    s_grid = profile.s_grid.detach().cpu()
+    r_grid = profile.r_grid.detach().cpu()
     psi_query = profile.psi_query_grid.detach().cpu()
     fig, axes = plt.subplots(3, 2, figsize=(12, 12))
     plots = [
-        (axes[0, 0], s_grid, profile.q1_values.detach().cpu(), profile.q1_smoothed.detach().cpu(), "Q1"),
-        (axes[0, 1], s_grid, profile.q2_values.detach().cpu(), profile.q2_smoothed.detach().cpu(), "Q2"),
-        (axes[1, 0], s_grid, profile.rho_raw.detach().cpu(), profile.rho_star.detach().cpu(), "rho"),
-        (axes[1, 1], s_grid, profile.phi_values.detach().cpu(), None, "phi"),
+        (axes[0, 0], r_grid, profile.q1_values.detach().cpu(), profile.q1_smoothed.detach().cpu(), "Q1(r)"),
+        (axes[0, 1], r_grid, profile.q2_values.detach().cpu(), profile.q2_smoothed.detach().cpu(), "Q2(r)"),
+        (axes[1, 0], r_grid, profile.rho_raw.detach().cpu(), profile.rho_star.detach().cpu(), "rho(r)"),
+        (axes[1, 1], r_grid, profile.phi_values.detach().cpu(), None, "phi(r)"),
         (axes[2, 0], psi_query, profile.psi_values.detach().cpu(), None, "psi"),
         (axes[2, 1], psi_query, profile.psi_prime_values.detach().cpu(), None, "psi_prime"),
     ]
@@ -415,16 +562,20 @@ def _save_profile_artifacts(
     output_dir.mkdir(parents=True, exist_ok=True)
     torch.save(profile.to_dict(), output_dir / PROFILE_FILENAME)
     profile_rows = []
-    for index in range(profile.s_grid.numel()):
+    for index in range(profile.r_grid.numel()):
         profile_rows.append(
             {
                 "grid_index": int(index),
-                "s_grid": float(profile.s_grid[index].item()),
+                "r_grid": float(profile.r_grid[index].item()),
+                "grid_domain": "uniform_r_input_domain",
                 "q1_values": float(profile.q1_values[index].item()),
                 "q2_values": float(profile.q2_values[index].item()),
                 "q1_smoothed": float(profile.q1_smoothed[index].item()),
                 "q2_smoothed": float(profile.q2_smoothed[index].item()),
+                "rho_floor_raw": float(profile.rho_floor_raw[index].item()),
+                "rho_floor_smoothed": float(profile.rho_floor_smoothed[index].item()),
                 "rho_raw": float(profile.rho_raw[index].item()),
+                "rho_smoothed": float(profile.rho_smoothed[index].item()),
                 "rho_star": float(profile.rho_star[index].item()),
                 "phi_values": float(profile.phi_values[index].item()),
             }
@@ -445,14 +596,21 @@ def _save_profile_artifacts(
         "signal_scale_sq": profile.signal_scale_sq,
         "checkpoint_source": profile.checkpoint_source,
         "smoothing_window": int(profile.smoothing_window),
+        "grid_domain": "uniform_r_input_domain",
+        "grid_note": "profile.s_grid is a legacy field name for the uniform FT-clock input r-grid; it is not the original physical time s.",
         "cache_loaded": bool(loaded_from_cache),
         "cache_path": str(cache_path) if cache_path is not None else "",
-        "s_grid": [float(value) for value in profile.s_grid.detach().cpu().tolist()],
+        "r_grid": [float(value) for value in profile.r_grid.detach().cpu().tolist()],
         "q1_values": [float(value) for value in profile.q1_values.detach().cpu().tolist()],
         "q2_values": [float(value) for value in profile.q2_values.detach().cpu().tolist()],
         "q1_smoothed": [float(value) for value in profile.q1_smoothed.detach().cpu().tolist()],
         "q2_smoothed": [float(value) for value in profile.q2_smoothed.detach().cpu().tolist()],
+        "rho_floor_raw": [float(value) for value in profile.rho_floor_raw.detach().cpu().tolist()],
+        "rho_floor_smoothed": [
+            float(value) for value in profile.rho_floor_smoothed.detach().cpu().tolist()
+        ],
         "rho_raw": [float(value) for value in profile.rho_raw.detach().cpu().tolist()],
+        "rho_smoothed": [float(value) for value in profile.rho_smoothed.detach().cpu().tolist()],
         "rho_star": [float(value) for value in profile.rho_star.detach().cpu().tolist()],
         "phi_values": [float(value) for value in profile.phi_values.detach().cpu().tolist()],
         "psi_query_grid": [float(value) for value in profile.psi_query_grid.detach().cpu().tolist()],
@@ -460,6 +618,8 @@ def _save_profile_artifacts(
         "psi_prime_values": [
             float(value) for value in profile.psi_prime_values.detach().cpu().tolist()
         ],
+        "psi_prime_regularizer": float(profile.psi_prime_regularizer),
+        "psi_prime_cap": float(profile.psi_prime_cap),
         "distribution_info": dict(profile.distribution_info),
     }
     (output_dir / PROFILE_JSON_FILENAME).write_text(
@@ -504,21 +664,21 @@ def maybe_build_tack_profile(
         )
         loader_iter = _cycle_loader(data_loader)
         noise_generator = _make_generator(device=device, seed=int(config.seed) + 24017)
-        s_grid = torch.linspace(
+        r_grid = torch.linspace(
             0.0,
             1.0,
             int(config.profile_grid_size),
             device=device,
             dtype=torch.float32,
         )
-        q1_values = torch.zeros_like(s_grid)
-        q2_values = torch.zeros_like(s_grid)
+        q1_values = torch.zeros_like(r_grid)
+        q2_values = torch.zeros_like(r_grid)
         microbatch_size = _resolve_monitor_microbatch_size(
             batch_size=int(config.profile_batch_size),
             estimator=internal_estimator,
         )
 
-        for index, s_value in enumerate(s_grid):
+        for index, r_value in enumerate(r_grid):
             q1_sum = torch.zeros((), device=device, dtype=torch.float32)
             q2_sum = torch.zeros((), device=device, dtype=torch.float32)
             sample_count = 0
@@ -536,7 +696,7 @@ def maybe_build_tack_profile(
                 ):
                     s_batch = torch.full(
                         (sample_chunk.shape[0],),
-                        float(s_value.item()),
+                        float(r_value.item()),
                         device=device,
                         dtype=sample_chunk.dtype,
                     )
@@ -634,36 +794,50 @@ def maybe_build_tack_profile(
         profile_eps = float(config.profile_eps)
         target_steps = max(1, int(config.requested_nfe) - 1)
         rho_error = float(config.lambda_value) * torch.pow(q1_smoothed + profile_eps, 0.25)
-        rho_floor = (
+        rho_floor_raw = (
             1.0
             / (3.0 * float(config.eta) * float(target_steps))
         ) * torch.sqrt((q2_smoothed + profile_eps) / (q1_smoothed + profile_eps))
-        rho_raw = torch.maximum(rho_error, rho_floor)
-        rho_star = _moving_average(rho_raw, smoothing_window).clamp(min=profile_eps)
+        rho_raw = torch.maximum(rho_error, rho_floor_raw)
+        rho_floor_smoothed, rho_smoothed, rho_star = _stabilize_rho_star(
+            rho_raw=rho_raw,
+            rho_floor_raw=rho_floor_raw,
+            smoothing_window=smoothing_window,
+            eps=profile_eps,
+        )
 
-        ds = s_grid[1:] - s_grid[:-1]
-        phi_values = torch.zeros_like(s_grid, dtype=torch.float64)
-        trapezoids = 0.5 * (rho_star[1:] + rho_star[:-1]) * ds.to(dtype=torch.float64)
+        dr = r_grid[1:] - r_grid[:-1]
+        phi_values = torch.zeros_like(r_grid, dtype=torch.float64)
+        trapezoids = 0.5 * (rho_star[1:] + rho_star[:-1]) * dr.to(dtype=torch.float64)
         phi_values[1:] = torch.cumsum(trapezoids, dim=0)
         total_mass = float(phi_values[-1].item())
         phi_values = phi_values / max(total_mass, profile_eps)
         phi_values = _strictly_monotone(phi_values)
         psi_query_grid = torch.linspace(0.0, 1.0, int(config.profile_grid_size), device=device, dtype=torch.float64)
         psi_values = monotone_inverse_lookup(
-            x_grid=s_grid.to(dtype=torch.float64),
+            x_grid=r_grid.to(dtype=torch.float64),
             y_grid=phi_values,
             query=psi_query_grid,
         )
-        rho_lookup = _interp_lookup(psi_values, s_grid.to(dtype=torch.float64), rho_star)
-        psi_prime_values = (float(total_mass) / rho_lookup.clamp(min=profile_eps)).to(dtype=torch.float64)
+        psi_prime_values, psi_prime_regularizer, psi_prime_cap = _stabilize_psi_prime(
+            psi_values=psi_values,
+            r_grid=r_grid.to(dtype=torch.float64),
+            rho_star=rho_star,
+            rho_floor_raw=rho_floor_raw.to(dtype=torch.float64),
+            total_mass=total_mass,
+            eps=profile_eps,
+        )
 
         profile = TACKProfile(
-            s_grid=s_grid.detach(),
+            s_grid=r_grid.detach(),
             q1_values=q1_values.detach(),
             q2_values=q2_values.detach(),
             q1_smoothed=q1_smoothed.to(dtype=torch.float32).detach(),
             q2_smoothed=q2_smoothed.to(dtype=torch.float32).detach(),
+            rho_floor_raw=rho_floor_raw.to(dtype=torch.float32).detach(),
+            rho_floor_smoothed=rho_floor_smoothed.to(dtype=torch.float32).detach(),
             rho_raw=rho_raw.to(dtype=torch.float32).detach(),
+            rho_smoothed=rho_smoothed.to(dtype=torch.float32).detach(),
             rho_star=rho_star.to(dtype=torch.float32).detach(),
             phi_values=phi_values.to(dtype=torch.float32).detach(),
             psi_query_grid=psi_query_grid.to(dtype=torch.float32).detach(),
@@ -683,6 +857,8 @@ def maybe_build_tack_profile(
             signal_scale_sq=config.signal_scale_sq,
             checkpoint_source=str(config.checkpoint_source),
             smoothing_window=int(smoothing_window),
+            psi_prime_regularizer=float(psi_prime_regularizer),
+            psi_prime_cap=float(psi_prime_cap),
             distribution_info={
                 "loaded_from_cache": False,
                 "cache_path": str(cache_path) if cache_path is not None else "",
@@ -726,7 +902,10 @@ def _build_identity_profile(
         q2_values=zeros,
         q1_smoothed=zeros,
         q2_smoothed=zeros,
+        rho_floor_raw=ones,
+        rho_floor_smoothed=ones,
         rho_raw=ones,
+        rho_smoothed=ones,
         rho_star=ones,
         phi_values=query_grid,
         psi_query_grid=query_grid,
@@ -841,6 +1020,9 @@ def solve_tack(
     current_level = 0
     current_units = 0
     q_current = 0.0
+    use_clock_only = str(config.mode) == "clock_only"
+    use_dyadic_step_control = bool(config.enable_dyadic) and not use_clock_only
+    use_nonuniform_ab = not use_clock_only
     startup_steps = max(1, int(config.startup_steps))
     trajectory_states = [x_init.clone()] if return_trajectory else None
     time_history = [0.0]
@@ -850,6 +1032,8 @@ def solve_tack(
     chi_values: list[float] = []
     mode_histogram = {"heun": 0, "ab2": 0, "ab3": 0}
     dyadic_step_histogram: Dict[str, int] = {}
+    dq_history: list[float] = []
+    defect_forced_heun_next = False
     z_t = x_init
 
     def eval_g(
@@ -891,7 +1075,7 @@ def solve_tack(
     g_history = [eval_g(z_t, q_value=q_current, physical_step=1.0 / float(target_steps))]
 
     while current_units < total_units:
-        if bool(config.enable_dyadic) and str(config.mode) != "clock_only":
+        if use_dyadic_step_control:
             unit_count = 2 ** (current_level - min_level)
         else:
             unit_count = base_divisor
@@ -916,33 +1100,65 @@ def solve_tack(
         dt = float(mapped_time_next.item() - mapped_time_current.item())
         g_n = g_history[-1]
 
-        chi_value = 0.0
-        if str(config.mode) == "clock_only" or len(step_methods) < startup_steps:
-            mode = "heun"
-        else:
-            if len(g_history) >= 3:
-                numerator = _batch_l2_norm_mean(g_history[-1] - 2.0 * g_history[-2] + g_history[-3])
-                denominator = _batch_l2_norm_mean(g_history[-1] - g_history[-2])
-                chi_value = float((numerator / denominator.clamp(min=float(config.profile_eps))).item())
-                chi_values.append(chi_value)
-            if chi_value <= float(config.chi_lo):
-                mode = "ab3"
-            elif chi_value <= float(config.chi_hi):
-                mode = "ab2"
-            else:
-                mode = "heun"
+        chi_value = _compute_chi(g_history, eps=float(config.profile_eps))
+        chi_valid = chi_value is not None
+        if chi_valid:
+            chi_values.append(float(chi_value))
 
-        if mode == "ab3" and len(g_history) >= 3:
-            z_predict = z_t + dq * (
-                (23.0 / 12.0) * g_history[-1]
-                - (16.0 / 12.0) * g_history[-2]
-                + (5.0 / 12.0) * g_history[-3]
-            )
-        elif mode == "ab2" and len(g_history) >= 2:
-            z_predict = z_t + dq * (
-                (3.0 / 2.0) * g_history[-1] - 0.5 * g_history[-2]
-            )
+        if len(step_methods) < startup_steps:
+            mode = "heun"
+        elif use_clock_only and defect_forced_heun_next:
+            mode = "heun"
+        elif not chi_valid:
+            mode = "heun"
+        elif float(chi_value) <= float(config.chi_lo):
+            mode = "ab3"
+        elif float(chi_value) <= float(config.chi_hi):
+            mode = "ab2"
         else:
+            mode = "heun"
+
+        z_predict: Optional[Tensor] = None
+        if mode == "ab3" and len(g_history) >= 3:
+            if use_nonuniform_ab:
+                if len(dq_history) >= 2:
+                    z_predict = _ab3_predict_nonuniform(
+                        z_n=z_t,
+                        g_n=g_history[-1],
+                        g_nm1=g_history[-2],
+                        g_nm2=g_history[-3],
+                        h=dq,
+                        beta1=dq_history[-1],
+                        beta0=dq_history[-2],
+                        eps=float(config.profile_eps),
+                    )
+            else:
+                z_predict = _ab3_predict_uniform(
+                    z_n=z_t,
+                    g_n=g_history[-1],
+                    g_nm1=g_history[-2],
+                    g_nm2=g_history[-3],
+                    h=dq,
+                )
+        elif mode == "ab2" and len(g_history) >= 2:
+            if use_nonuniform_ab:
+                if len(dq_history) >= 1:
+                    z_predict = _ab2_predict_nonuniform(
+                        z_n=z_t,
+                        g_n=g_history[-1],
+                        g_nm1=g_history[-2],
+                        h=dq,
+                        beta1=dq_history[-1],
+                        eps=float(config.profile_eps),
+                    )
+            else:
+                z_predict = _ab2_predict_uniform(
+                    z_n=z_t,
+                    g_n=g_history[-1],
+                    g_nm1=g_history[-2],
+                    h=dq,
+                )
+        if z_predict is None:
             mode = "heun"
             z_predict = z_t + dq * g_n
 
@@ -957,7 +1173,8 @@ def solve_tack(
 
         alpha = 1.0
         next_level = current_level
-        if bool(config.enable_dyadic) and str(config.mode) != "clock_only":
+        next_defect_forced_heun = False
+        if use_dyadic_step_control:
             alpha = float(
                 math.pow(
                     float(config.tau) / max(defect_value + float(config.profile_eps), float(config.profile_eps)),
@@ -968,6 +1185,9 @@ def solve_tack(
                 next_level = min(current_level + 1, max_level)
             elif alpha < 0.7:
                 next_level = max(current_level - 1, min_level)
+        elif use_clock_only and mode in {"ab2", "ab3"} and defect_value > float(config.tau):
+            # Keep the one-query-per-step contract: a large defect only downgrades the next step to Heun.
+            next_defect_forced_heun = True
 
         if next_level > current_level:
             doubling = 1
@@ -994,7 +1214,9 @@ def solve_tack(
                 "t_end": float(mapped_time_next.item()),
                 "dq": float(dq),
                 "dt": float(dt),
-                "chi": float(chi_value),
+                "dq_history_depth": int(len(dq_history)),
+                "chi": None if chi_value is None else float(chi_value),
+                "chi_valid": bool(chi_valid),
                 "defect": float(defect_value),
                 "step_scale": float(2 ** current_level),
                 "unit_count": int(unit_count),
@@ -1002,6 +1224,8 @@ def solve_tack(
                 "next_step_scale": float(2 ** next_level),
                 "triggered_halving": int(halving),
                 "triggered_doubling": int(doubling),
+                "defect_forced_heun": int(defect_forced_heun_next),
+                "defect_will_force_heun_next": int(next_defect_forced_heun),
             }
         )
 
@@ -1009,6 +1233,10 @@ def solve_tack(
         q_current = q_next
         current_units += unit_count
         current_level = next_level
+        defect_forced_heun_next = bool(next_defect_forced_heun)
+        dq_history.append(float(dq))
+        if len(dq_history) > 2:
+            dq_history = dq_history[-2:]
         g_history.append(g_next)
         if len(g_history) > 3:
             g_history = g_history[-3:]
@@ -1054,8 +1282,12 @@ def solve_tack(
         "tack_num_heun_steps": int(mode_histogram["heun"]),
         "tack_num_ab2_steps": int(mode_histogram["ab2"]),
         "tack_num_ab3_steps": int(mode_histogram["ab3"]),
+        "tack_num_valid_chi_steps": int(len(chi_values)),
         "tack_num_halvings": int(sum(int(row["triggered_halving"]) for row in step_records)),
         "tack_num_doublings": int(sum(int(row["triggered_doubling"]) for row in step_records)),
+        "tack_num_defect_heun_fallbacks": int(
+            sum(int(row["defect_will_force_heun_next"]) for row in step_records)
+        ),
         "tack_mean_defect": float(mean_defect),
         "tack_mean_chi": float(mean_chi),
         "mode_histogram": dict(mode_histogram),

@@ -58,30 +58,3 @@ experiments:
       artifact_group: ft_clock_linear_main
       source_exp_name: linear_uniform
       checkpoint_epoch: 499
-
-  - name: trig_vp_uniform_tack_full
-    path_family: trig_vp
-    clock_family: uniform
-    tack_mode: full
-    checkpoint_from:
-      artifact_group: ft_clock_trig_vp
-      source_exp_name: trig_vp_uniform
-      checkpoint_epoch: 499
-
-  - name: trig_vp_uniform_tack_clock_only
-    path_family: trig_vp
-    clock_family: uniform
-    tack_mode: clock_only
-    checkpoint_from:
-      artifact_group: ft_clock_trig_vp
-      source_exp_name: trig_vp_uniform
-      checkpoint_epoch: 499
-
-  - name: trig_vp_uniform_tack_online_only
-    path_family: trig_vp
-    clock_family: uniform
-    tack_mode: online_only
-    checkpoint_from:
-      artifact_group: ft_clock_trig_vp
-      source_exp_name: trig_vp_uniform
-      checkpoint_epoch: 499
