@@ -73,6 +73,23 @@ SOLVER_AWARE_DEFAULTS = {
     "solver_aware_stork_effective_order": None,
     "solver_aware_q_curve_name": "",
 }
+SHARED_CLOCK_DEFAULTS = {
+    "shared_clock_mode": "off",
+    "shared_clock_family": "",
+    "shared_clock_tag": "",
+    "shared_clock_pilot_solver": "",
+    "shared_clock_pilot_nfe_budget": None,
+    "shared_clock_pilot_step_count": None,
+    "shared_clock_physical_grid_size": None,
+    "shared_clock_pilot_batch_size": None,
+    "shared_clock_pilot_num_batches": None,
+    "shared_clock_eps": None,
+    "shared_clock_jacobian_backend": "",
+    "shared_clock_jacobian_num_probes": None,
+    "shared_clock_optimizer_steps": None,
+    "shared_clock_optimizer_lr": None,
+    "shared_clock_cache_path": "",
+}
 TACK_RESULT_DEFAULTS = {
     "requested_eval_nfe": None,
     "realized_nfe": None,
@@ -85,6 +102,22 @@ TACK_RESULT_DEFAULTS = {
     "tack_mean_defect": None,
     "tack_mean_chi": None,
 }
+
+
+def _shared_clock_family_tag(clock_family: str) -> str:
+    return {
+        "va": "V-a",
+        "vb": "V-b",
+        "aa": "A-a",
+        "ab": "A-b",
+    }[str(clock_family)]
+
+
+def _shared_clock_pilot_nfe_budget(pilot_solver: str, physical_grid_size: int) -> int:
+    step_count = max(1, int(physical_grid_size) - 1)
+    if str(pilot_solver) == "heun2":
+        return step_count * 2
+    return step_count
 
 
 def _solver_aware_step_count(target_solver: str, nfe_budget: int) -> int:
@@ -385,6 +418,36 @@ def _resolve_solver_aware_result_fields(
     }
 
 
+def _resolve_shared_clock_result_fields(spec: Dict[str, object]) -> Dict[str, object]:
+    mode = str(spec.get("shared_clock_mode", "off"))
+    if mode == "off":
+        return dict(SHARED_CLOCK_DEFAULTS)
+
+    shared_clock_family = str(spec.get("shared_clock_family", "ab"))
+    physical_grid_size = int(spec.get("shared_clock_physical_grid_size", 65))
+    pilot_solver = str(spec.get("shared_clock_pilot_solver", "heun2"))
+    return {
+        "shared_clock_mode": mode,
+        "shared_clock_family": shared_clock_family,
+        "shared_clock_tag": _shared_clock_family_tag(shared_clock_family),
+        "shared_clock_pilot_solver": pilot_solver,
+        "shared_clock_pilot_nfe_budget": _shared_clock_pilot_nfe_budget(
+            pilot_solver=pilot_solver,
+            physical_grid_size=physical_grid_size,
+        ),
+        "shared_clock_pilot_step_count": max(1, physical_grid_size - 1),
+        "shared_clock_physical_grid_size": physical_grid_size,
+        "shared_clock_pilot_batch_size": int(spec.get("shared_clock_pilot_batch_size", 16)),
+        "shared_clock_pilot_num_batches": int(spec.get("shared_clock_pilot_num_batches", 4)),
+        "shared_clock_eps": float(spec.get("shared_clock_eps", 1.0e-6)),
+        "shared_clock_jacobian_backend": str(spec.get("shared_clock_jacobian_backend", "probe")),
+        "shared_clock_jacobian_num_probes": int(spec.get("shared_clock_jacobian_num_probes", 4)),
+        "shared_clock_optimizer_steps": int(spec.get("shared_clock_optimizer_steps", 200)),
+        "shared_clock_optimizer_lr": float(spec.get("shared_clock_optimizer_lr", 0.05)),
+        "shared_clock_cache_path": str(spec.get("shared_clock_cache_path", "none")),
+    }
+
+
 def _solver_aware_fields_match(row: Dict[str, object], spec: Dict[str, object]) -> bool:
     expected = _resolve_solver_aware_result_fields(
         spec=spec,
@@ -413,6 +476,37 @@ def _solver_aware_fields_match(row: Dict[str, object], spec: Dict[str, object]) 
                 return False
             continue
         if field in {"solver_aware_eps", "solver_aware_stork_effective_order"}:
+            if float(observed) != float(expected_value):
+                return False
+            continue
+        if str(observed) != str(expected_value):
+            return False
+    return True
+
+
+def _shared_clock_fields_match(row: Dict[str, object], spec: Dict[str, object]) -> bool:
+    expected = _resolve_shared_clock_result_fields(spec)
+    for field, expected_value in expected.items():
+        observed = row.get(field, SHARED_CLOCK_DEFAULTS.get(field, ""))
+        if observed in {"", None}:
+            observed = SHARED_CLOCK_DEFAULTS.get(field, "")
+        if expected_value in {"", None}:
+            if observed not in {"", None}:
+                return False
+            continue
+        if field in {
+            "shared_clock_pilot_nfe_budget",
+            "shared_clock_pilot_step_count",
+            "shared_clock_physical_grid_size",
+            "shared_clock_pilot_batch_size",
+            "shared_clock_pilot_num_batches",
+            "shared_clock_jacobian_num_probes",
+            "shared_clock_optimizer_steps",
+        }:
+            if int(observed) != int(expected_value):
+                return False
+            continue
+        if field in {"shared_clock_eps", "shared_clock_optimizer_lr"}:
             if float(observed) != float(expected_value):
                 return False
             continue
@@ -596,6 +690,36 @@ class ExperimentManager:
                 flags.append(
                     f"--solver_aware_checkpoint_epoch {spec['solver_aware_checkpoint_epoch']}"
                 )
+        if spec.get("shared_clock_mode") not in {None, "", "off"}:
+            flags.append(f"--shared_clock_mode {spec['shared_clock_mode']}")
+            flags.append(f"--shared_clock_family {spec.get('shared_clock_family', 'ab')}")
+            flags.append(
+                f"--shared_clock_physical_grid_size {spec.get('shared_clock_physical_grid_size', 65)}"
+            )
+            flags.append(
+                f"--shared_clock_pilot_solver {spec.get('shared_clock_pilot_solver', 'heun2')}"
+            )
+            flags.append(
+                f"--shared_clock_pilot_batch_size {spec.get('shared_clock_pilot_batch_size', 16)}"
+            )
+            flags.append(
+                f"--shared_clock_pilot_num_batches {spec.get('shared_clock_pilot_num_batches', 4)}"
+            )
+            flags.append(f"--shared_clock_eps {spec.get('shared_clock_eps', 1.0e-6)}")
+            flags.append(
+                f"--shared_clock_jacobian_backend {spec.get('shared_clock_jacobian_backend', 'probe')}"
+            )
+            flags.append(
+                f"--shared_clock_jacobian_num_probes {spec.get('shared_clock_jacobian_num_probes', 4)}"
+            )
+            flags.append(
+                f"--shared_clock_optimizer_steps {spec.get('shared_clock_optimizer_steps', 200)}"
+            )
+            flags.append(
+                f"--shared_clock_optimizer_lr {spec.get('shared_clock_optimizer_lr', 0.05)}"
+            )
+            if spec.get("shared_clock_cache_path") not in {None, ""}:
+                flags.append(f"--shared_clock_cache_path {spec['shared_clock_cache_path']}")
         return flags
 
     def build_train_cmd(
@@ -672,6 +796,7 @@ class ExperimentManager:
             checkpoint_path=checkpoint_path,
             current_nfe=int(stats.get("nfe", nfe)),
         )
+        shared_clock_fields = _resolve_shared_clock_result_fields(spec)
         clock_param_name, clock_param_value = infer_clock_parameter(
             effective_spec.get("clock_family", "uniform"),
             effective_spec.get("clock_beta"),
@@ -713,6 +838,7 @@ class ExperimentManager:
                     "mixed_lambda": effective_spec.get("mixed_lambda", 0.5),
                     "stratified_bins": effective_spec.get("stratified_bins", 16),
                     **solver_aware_fields,
+                    **shared_clock_fields,
                     "requested_eval_nfe": float(stats.get("requested_eval_nfe", nfe)),
                     "realized_nfe": (
                         None
@@ -765,6 +891,7 @@ class ExperimentManager:
             and float(_row_strategy_fields(row).get("mixed_lambda", 0.5)) == float(spec.get("mixed_lambda", 0.5))
             and int(_row_strategy_fields(row).get("stratified_bins", 16)) == int(spec.get("stratified_bins", 16))
             and _solver_aware_fields_match(row=row, spec=spec)
+            and _shared_clock_fields_match(row=row, spec=spec)
         ]
         return sorted({str(row["metric"]) for row in matching_rows})
 
@@ -804,6 +931,14 @@ class ExperimentManager:
             spec.setdefault("eval_nfes", [base_config.get("eval_nfe", 50)])
             spec.setdefault("artifact_group", self.exp_group_name)
             spec = _resolve_strategy_fields(spec)
+            if (
+                spec.get("shared_clock_mode") not in {None, "", "off"}
+                and spec.get("solver_aware_clock_mode") not in {None, "", "off"}
+            ):
+                raise ValueError(
+                    "shared_clock_mode and solver_aware_clock_mode are mutually exclusive. "
+                    f"exp_name={spec.get('name', '<unnamed>')}."
+                )
 
             exp_dir = self.base_dir / spec["dataset"] / spec["name"]
             exp_dir.mkdir(parents=True, exist_ok=True)

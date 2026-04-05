@@ -60,6 +60,23 @@ SOLVER_AWARE_RESULT_FIELDS = [
     "solver_aware_stork_effective_order",
     "solver_aware_q_curve_name",
 ]
+SHARED_CLOCK_RESULT_FIELDS = [
+    "shared_clock_mode",
+    "shared_clock_family",
+    "shared_clock_tag",
+    "shared_clock_pilot_solver",
+    "shared_clock_pilot_nfe_budget",
+    "shared_clock_pilot_step_count",
+    "shared_clock_physical_grid_size",
+    "shared_clock_pilot_batch_size",
+    "shared_clock_pilot_num_batches",
+    "shared_clock_eps",
+    "shared_clock_jacobian_backend",
+    "shared_clock_jacobian_num_probes",
+    "shared_clock_optimizer_steps",
+    "shared_clock_optimizer_lr",
+    "shared_clock_cache_path",
+]
 TACK_RESULT_FIELDS = [
     "requested_eval_nfe",
     "realized_nfe",
@@ -73,7 +90,8 @@ TACK_RESULT_FIELDS = [
     "tack_mean_chi",
 ]
 LEGACY_CURRENT_RESULT_FIELDS = BASE_RESULT_FIELDS + SOLVER_AWARE_RESULT_FIELDS
-RESULT_FIELDS = LEGACY_CURRENT_RESULT_FIELDS + TACK_RESULT_FIELDS
+CURRENT_RESULT_FIELDS = LEGACY_CURRENT_RESULT_FIELDS + SHARED_CLOCK_RESULT_FIELDS
+RESULT_FIELDS = CURRENT_RESULT_FIELDS + TACK_RESULT_FIELDS
 
 NUMERIC_FIELDS = {
     "seed": int,
@@ -99,6 +117,15 @@ OPTIONAL_NUMERIC_FIELDS = {
     "solver_aware_reference_grid_size": int,
     "solver_aware_defect_subdivide": int,
     "solver_aware_stork_effective_order": float,
+    "shared_clock_pilot_nfe_budget": int,
+    "shared_clock_pilot_step_count": int,
+    "shared_clock_physical_grid_size": int,
+    "shared_clock_pilot_batch_size": int,
+    "shared_clock_pilot_num_batches": int,
+    "shared_clock_eps": float,
+    "shared_clock_jacobian_num_probes": int,
+    "shared_clock_optimizer_steps": int,
+    "shared_clock_optimizer_lr": float,
     "requested_eval_nfe": float,
     "realized_nfe": float,
     "tack_num_accepted_steps": float,
@@ -159,6 +186,7 @@ def validate_results_schema(csv_path: Path) -> None:
         tuple(BASE_RESULT_FIELDS),
         tuple(BASE_RESULT_FIELDS + legacy_solver_aware_fields),
         tuple(LEGACY_CURRENT_RESULT_FIELDS),
+        tuple(CURRENT_RESULT_FIELDS),
         tuple(RESULT_FIELDS),
     }
     if tuple(header) not in accepted_headers:
@@ -213,6 +241,8 @@ def _coerce_row(row: Dict[str, str]) -> Dict[str, object]:
         else:
             result[field] = None
     for field in SOLVER_AWARE_RESULT_FIELDS:
+        result.setdefault(field, "")
+    for field in SHARED_CLOCK_RESULT_FIELDS:
         result.setdefault(field, "")
     for field in TACK_RESULT_FIELDS:
         result.setdefault(field, None)

@@ -33,6 +33,10 @@ SOLVER_AWARE_TARGET_SOLVERS = ["euler", "heun2", "stork4"]
 SOLVER_AWARE_MONITOR_ESTIMATORS = ["auto", "jvp", "fd"]
 SOLVER_AWARE_MONITOR_FAMILIES = ["legacy_continuous", "defect_based"]
 SOLVER_AWARE_BUDGET_MODES = ["single_budget", "multi_budget"]
+SHARED_CLOCK_MODES = ["off", "ge_stork"]
+SHARED_CLOCK_FAMILIES = ["va", "vb", "aa", "ab"]
+SHARED_CLOCK_PILOT_SOLVERS = ["euler", "heun2", "stork4"]
+SHARED_CLOCK_JACOBIAN_BACKENDS = ["exact", "probe"]
 TACK_MONITOR_ESTIMATORS = ["auto", "finite_diff", "jvp"]
 TACK_MODES = ["full", "clock_only", "online_only"]
 
@@ -397,6 +401,82 @@ def get_args_parser():
         default=-1,
         type=int,
         help="Optional checkpoint epoch used with --solver_aware_checkpoint_from_experiment. -1 selects the latest checkpoint.",
+    )
+    parser.add_argument(
+        "--shared_clock_mode",
+        default="off",
+        choices=SHARED_CLOCK_MODES,
+        help=(
+            "Offline shared clock branch. "
+            "off keeps the existing runtime unchanged; ge_stork builds one shared clock "
+            "offline and reuses it for all evaluation budgets."
+        ),
+    )
+    parser.add_argument(
+        "--shared_clock_family",
+        default="ab",
+        choices=SHARED_CLOCK_FAMILIES,
+        help="Shared clock family: va, vb, aa, or ab.",
+    )
+    parser.add_argument(
+        "--shared_clock_physical_grid_size",
+        default=65,
+        type=int,
+        help="Number of physical-time nodes used by the offline pilot grid.",
+    )
+    parser.add_argument(
+        "--shared_clock_pilot_solver",
+        default="heun2",
+        choices=SHARED_CLOCK_PILOT_SOLVERS,
+        help="Baseline solver used to generate pilot trajectories on the physical grid.",
+    )
+    parser.add_argument(
+        "--shared_clock_pilot_batch_size",
+        default=16,
+        type=int,
+        help="Calibration batch size used when collecting pilot trajectories.",
+    )
+    parser.add_argument(
+        "--shared_clock_pilot_num_batches",
+        default=4,
+        type=int,
+        help="Number of calibration batches used to build the offline shared clock.",
+    )
+    parser.add_argument(
+        "--shared_clock_eps",
+        default=1.0e-6,
+        type=float,
+        help="Numerical epsilon used by the shared clock amplitude proxies.",
+    )
+    parser.add_argument(
+        "--shared_clock_jacobian_backend",
+        default="probe",
+        choices=SHARED_CLOCK_JACOBIAN_BACKENDS,
+        help="Backend used for generator-layer Jacobian extraction.",
+    )
+    parser.add_argument(
+        "--shared_clock_jacobian_num_probes",
+        default=4,
+        type=int,
+        help="Number of Hutchinson probes used by the probe Jacobian backend.",
+    )
+    parser.add_argument(
+        "--shared_clock_optimizer_steps",
+        default=200,
+        type=int,
+        help="Number of Adam steps used by the V-b / A-b shared clock optimizer.",
+    )
+    parser.add_argument(
+        "--shared_clock_optimizer_lr",
+        default=0.05,
+        type=float,
+        help="Adam learning rate used by the V-b / A-b shared clock optimizer.",
+    )
+    parser.add_argument(
+        "--shared_clock_cache_path",
+        default="none",
+        type=str,
+        help="Optional cache file for the offline shared clock profile. Use 'none' to disable caching.",
     )
     parser.add_argument(
         "--metrics",

@@ -225,6 +225,55 @@ class RunExperimentsTest(unittest.TestCase):
             self.assertIn('--mixed_lambda 0.7', cmd)
             self.assertIn('--stratified_bins 16', cmd)
 
+    def test_build_eval_cmd_preserves_shared_clock_flags(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            config_path = workspace / 'config.json'
+            config_path.write_text(json.dumps({
+                'experiment_name': 'demo_group',
+                'base_config': {},
+                'experiments': [],
+            }), encoding='utf-8')
+            cwd = os.getcwd()
+            os.chdir(workspace)
+            try:
+                manager = ExperimentManager(config_path)
+                cmd = manager.build_eval_cmd(
+                    {
+                        'dataset': 'cifar10',
+                        'data_path': './data/cifar10',
+                        'batch_size': 8,
+                        'epochs': 2,
+                        'seed': 0,
+                        'num_gpus': 1,
+                        'path_family': 'linear',
+                        'clock_family': 'uniform',
+                        'sampling_solver': 'heun2',
+                        'model_output_type': 'base_velocity',
+                        'time_sampling_strategy': 'ds_dr_sq',
+                        'shared_clock_mode': 'ge_stork',
+                        'shared_clock_family': 'ab',
+                        'shared_clock_physical_grid_size': 33,
+                        'shared_clock_pilot_solver': 'heun2',
+                        'shared_clock_pilot_batch_size': 8,
+                        'shared_clock_pilot_num_batches': 2,
+                        'shared_clock_eps': 1.0e-6,
+                        'shared_clock_jacobian_backend': 'probe',
+                        'shared_clock_jacobian_num_probes': 4,
+                        'shared_clock_optimizer_steps': 20,
+                        'shared_clock_optimizer_lr': 0.05,
+                    },
+                    workspace / 'out',
+                    workspace / 'checkpoint.pth',
+                    12,
+                )
+            finally:
+                os.chdir(cwd)
+            self.assertIn('--shared_clock_mode ge_stork', cmd)
+            self.assertIn('--shared_clock_family ab', cmd)
+            self.assertIn('--shared_clock_physical_grid_size 33', cmd)
+            self.assertIn('--shared_clock_pilot_num_batches 2', cmd)
+
     def test_build_train_cmd_preserves_accum_iter(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace = Path(tmpdir)

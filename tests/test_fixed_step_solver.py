@@ -3,23 +3,26 @@ import sys
 import types
 import unittest
 
-import torch
-
 ROOT = os.path.dirname(os.path.dirname(__file__))
 IMAGE_ROOT = os.path.join(ROOT, 'examples', 'image')
 if IMAGE_ROOT not in sys.path:
     sys.path.insert(0, IMAGE_ROOT)
 
-from training.fixed_step_solver import build_step_methods, solve_fixed_budget
-from training.tack import (
-    _ab2_predict_nonuniform,
-    _ab2_predict_uniform,
-    _ab3_predict_nonuniform,
-    _ab3_predict_uniform,
-    _stabilize_psi_prime,
-    _stabilize_rho_star,
-    build_tack_config_from_namespace,
-)
+try:
+    import torch
+
+    from training.fixed_step_solver import ReparameterizedSchedule, build_step_methods, solve_fixed_budget
+    from training.tack import (
+        _ab2_predict_nonuniform,
+        _ab2_predict_uniform,
+        _ab3_predict_nonuniform,
+        _ab3_predict_uniform,
+        _stabilize_psi_prime,
+        _stabilize_rho_star,
+        build_tack_config_from_namespace,
+    )
+except ModuleNotFoundError:  # pragma: no cover - depends on local runtime.
+    torch = None
 
 
 class DummyModel:
@@ -76,6 +79,7 @@ class EndpointAdaptiveModel(DummyModel):
         return torch.ones_like(x)
 
 
+@unittest.skipIf(torch is None, "torch is required for fixed-step solver tests")
 class FixedStepSolverTest(unittest.TestCase):
     def test_nonuniform_ab_coefficients_match_uniform_on_equal_steps(self):
         z_n = torch.zeros(1, 1)
@@ -231,6 +235,80 @@ class FixedStepSolverTest(unittest.TestCase):
         )
         self.assertTrue(torch.allclose(result.time_grid, time_grid))
         self.assertEqual(result.step_count, 3)
+        self.assertGreater(result.solver_stats['virtual_stage_count'], 0)
+
+    def test_euler_reparameterized_schedule_uses_uniform_tau_step(self):
+        model = RecordingModel()
+        x_init = torch.zeros(1, 1)
+        schedule = ReparameterizedSchedule(
+            tau_grid=torch.tensor([0.0, 0.5, 1.0], dtype=torch.float32),
+            t_grid=torch.tensor([0.0, 0.25, 1.0], dtype=torch.float32),
+            g_grid=torch.tensor([2.0, 4.0, 6.0], dtype=torch.float32),
+            dtau=0.5,
+            nfe_budget=2,
+            step_count=2,
+        )
+        result = solve_fixed_budget(
+            model,
+            x_init,
+            'euler',
+            2,
+            reparameterized_schedule=schedule,
+        )
+        self.assertAlmostEqual(float(result.sample.squeeze().item()), 3.0, places=6)
+        self.assertTrue(torch.allclose(result.time_grid, schedule.t_grid))
+        self.assertTrue(torch.allclose(result.tau_grid, schedule.tau_grid))
+        queried_times = torch.cat(model.queried_times)
+        self.assertTrue(torch.allclose(queried_times, schedule.t_grid[:-1]))
+
+    def test_heun2_reparameterized_schedule_uses_gn_and_gn1(self):
+        model = RecordingModel()
+        x_init = torch.zeros(1, 1)
+        schedule = ReparameterizedSchedule(
+            tau_grid=torch.tensor([0.0, 0.5, 1.0], dtype=torch.float32),
+            t_grid=torch.tensor([0.0, 0.3, 1.0], dtype=torch.float32),
+            g_grid=torch.tensor([2.0, 6.0, 10.0], dtype=torch.float32),
+            dtau=0.5,
+            nfe_budget=4,
+            step_count=2,
+        )
+        result = solve_fixed_budget(
+            model,
+            x_init,
+            'heun2',
+            4,
+            reparameterized_schedule=schedule,
+        )
+        self.assertAlmostEqual(float(result.sample.squeeze().item()), 6.0, places=6)
+        self.assertTrue(torch.allclose(result.tau_grid, schedule.tau_grid))
+        queried_times = torch.cat(model.queried_times)
+        self.assertTrue(
+            torch.allclose(
+                queried_times,
+                torch.tensor([0.0, 0.3, 0.3, 1.0], dtype=torch.float32),
+            )
+        )
+
+    def test_stork4_reparameterized_schedule_tracks_tau_grid(self):
+        model = DummyModel()
+        x_init = torch.zeros(1, 1)
+        schedule = ReparameterizedSchedule(
+            tau_grid=torch.tensor([0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0], dtype=torch.float32),
+            t_grid=torch.tensor([0.0, 0.1, 0.4, 1.0], dtype=torch.float32),
+            g_grid=torch.tensor([1.0, 1.5, 2.0, 2.5], dtype=torch.float32),
+            dtau=1.0 / 3.0,
+            nfe_budget=3,
+            step_count=3,
+        )
+        result = solve_fixed_budget(
+            model,
+            x_init,
+            'stork4',
+            3,
+            reparameterized_schedule=schedule,
+        )
+        self.assertTrue(torch.allclose(result.time_grid, schedule.t_grid))
+        self.assertTrue(torch.allclose(result.tau_grid, schedule.tau_grid))
         self.assertGreater(result.solver_stats['virtual_stage_count'], 0)
 
     def test_tack_online_only_respects_requested_nfe_without_profile(self):

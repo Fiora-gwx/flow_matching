@@ -9,7 +9,7 @@ import logging
 import os
 from argparse import Namespace
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Dict, Iterable, Optional
 
 import PIL.Image
 import torch
@@ -30,7 +30,12 @@ from training.continuous_runtime import (
     model_output_to_velocity,
 )
 from training.eval_utils import iter_batches_until_target
-from training.fixed_step_solver import build_step_methods, solve_fixed_budget
+from training.fixed_step_solver import ReparameterizedSchedule, build_step_methods, solve_fixed_budget
+from training.ge_stork import (
+    build_or_load_shared_clock,
+    get_time_grid_for_nfe,
+    save_shared_clock_schedule,
+)
 from training.metric_utils import (
     compute_precision_recall,
     extract_inception_features,
@@ -368,10 +373,20 @@ def eval_model(
     solver_aware_monitor_family = str(
         getattr(args, "solver_aware_monitor_family", "legacy_continuous")
     )
+    shared_clock_mode = str(getattr(args, "shared_clock_mode", "off"))
+    shared_clock_schedule = None
     defect_based_monitor = solver_aware_monitor_family == "defect_based"
     allow_eval_loader_for_monitor = bool(
         getattr(args, "solver_aware_allow_eval_loader_for_monitor", False)
     )
+    if (
+        shared_clock_mode != "off"
+        and getattr(args, "solver_aware_clock_mode", "off") != "off"
+    ):
+        raise ValueError(
+            "shared_clock_mode and solver_aware_clock_mode are mutually exclusive. "
+            "Choose exactly one offline clock branch."
+        )
     if (
         not args.discrete_flow_matching
         and str(getattr(args, "sampling_solver", "")) != "tack"
@@ -506,6 +521,82 @@ def eval_model(
                     device=device,
                 )
 
+    if (
+        not args.discrete_flow_matching
+        and str(getattr(args, "sampling_solver", "")) != "tack"
+        and shared_clock_mode != "off"
+    ):
+        if str(getattr(args, "sampling_solver", "")) not in {"euler", "heun2", "stork4"}:
+            raise ValueError(
+                "shared_clock_mode currently supports sampling_solver in {euler, heun2, stork4}."
+            )
+        step_count = _solver_step_count(
+            solver_name=args.sampling_solver,
+            nfe_budget=args.eval_nfe,
+        )
+        schedule_payload = None
+        if distributed_mode.is_main_process():
+            shared_clock_loader = _build_monitor_loader(
+                args=args,
+                data_loader=(monitor_data_loader if monitor_data_loader is not None else data_loader),
+                batch_size=int(getattr(args, "shared_clock_pilot_batch_size", args.batch_size)),
+            )
+            with torch.enable_grad():
+                shared_clock_profile = build_or_load_shared_clock(
+                    clock_family=str(getattr(args, "shared_clock_family", "ab")),
+                    velocity_model=solver_aware_monitor_model,
+                    data_loader=shared_clock_loader,
+                    device=device,
+                    path_family=args.path_family,
+                    pilot_solver=str(getattr(args, "shared_clock_pilot_solver", "heun2")),
+                    physical_grid_size=int(getattr(args, "shared_clock_physical_grid_size", 65)),
+                    pilot_batch_size=int(getattr(args, "shared_clock_pilot_batch_size", 16)),
+                    pilot_num_batches=int(getattr(args, "shared_clock_pilot_num_batches", 4)),
+                    cfg_scale=float(args.cfg_scale),
+                    eps=float(getattr(args, "shared_clock_eps", 1.0e-6)),
+                    jacobian_backend=str(getattr(args, "shared_clock_jacobian_backend", "probe")),
+                    jacobian_num_probes=int(getattr(args, "shared_clock_jacobian_num_probes", 4)),
+                    optimizer_steps=int(getattr(args, "shared_clock_optimizer_steps", 200)),
+                    optimizer_lr=float(getattr(args, "shared_clock_optimizer_lr", 0.05)),
+                    checkpoint_source=str(getattr(args, "resume", "") or ""),
+                    seed=int(getattr(args, "seed", 0)),
+                    cache_path=str(getattr(args, "shared_clock_cache_path", "none")),
+                    output_dir=Path(args.output_dir) if args.output_dir else None,
+                )
+            schedule_bundle = get_time_grid_for_nfe(
+                shared_clock_profile,
+                int(args.eval_nfe),
+                step_count=step_count,
+                device=device,
+                dtype=torch.float32,
+            )
+            shared_clock_schedule = schedule_bundle["schedule"]
+            if args.output_dir:
+                save_shared_clock_schedule(
+                    clock=shared_clock_profile,
+                    schedule=shared_clock_schedule,
+                    output_dir=Path(args.output_dir),
+                    solver_name=str(args.sampling_solver),
+                )
+            schedule_payload = {
+                "tau_grid": shared_clock_schedule.tau_grid.detach().cpu(),
+                "t_grid": shared_clock_schedule.t_grid.detach().cpu(),
+                "g_grid": shared_clock_schedule.g_grid.detach().cpu(),
+                "dtau": float(shared_clock_schedule.dtau),
+                "nfe_budget": int(shared_clock_schedule.nfe_budget or 0),
+                "step_count": int(shared_clock_schedule.step_count or 0),
+            }
+        schedule_payload = _broadcast_optional_object(schedule_payload)
+        if schedule_payload is not None and not distributed_mode.is_main_process():
+            shared_clock_schedule = ReparameterizedSchedule(
+                tau_grid=schedule_payload["tau_grid"].to(device=device, dtype=torch.float32),
+                t_grid=schedule_payload["t_grid"].to(device=device, dtype=torch.float32),
+                g_grid=schedule_payload["g_grid"].to(device=device, dtype=torch.float32),
+                dtau=float(schedule_payload["dtau"]),
+                nfe_budget=int(schedule_payload["nfe_budget"]),
+                step_count=int(schedule_payload["step_count"]),
+            )
+
     tack_config = None
     tack_profile = None
     if not args.discrete_flow_matching and str(getattr(args, "sampling_solver", "")) == "tack":
@@ -615,6 +706,7 @@ def eval_model(
                 nfe_budget=args.eval_nfe,
                 return_trajectory=False,
                 time_grid=solver_aware_time_grid,
+                reparameterized_schedule=shared_clock_schedule,
                 **solve_kwargs,
             )
             synthetic_samples = sampling.sample
