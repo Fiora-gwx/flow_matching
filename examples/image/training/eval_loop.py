@@ -526,6 +526,11 @@ def eval_model(
         and str(getattr(args, "sampling_solver", "")) != "tack"
         and shared_clock_mode != "off"
     ):
+        if monitor_data_loader is None:
+            raise ValueError(
+                "shared_clock_mode requires an explicit calibration/train loader. "
+                "Refusing to build a shared clock from the current eval/test loader."
+            )
         if str(getattr(args, "sampling_solver", "")) not in {"euler", "heun2", "stork4"}:
             raise ValueError(
                 "shared_clock_mode currently supports sampling_solver in {euler, heun2, stork4}."
@@ -536,9 +541,13 @@ def eval_model(
         )
         schedule_payload = None
         if distributed_mode.is_main_process():
+            logger.info(
+                "Shared clock build will use the provided calibration/train loader; "
+                "the current eval/test loader is not allowed for shared clock construction."
+            )
             shared_clock_loader = _build_monitor_loader(
                 args=args,
-                data_loader=(monitor_data_loader if monitor_data_loader is not None else data_loader),
+                data_loader=monitor_data_loader,
                 batch_size=int(getattr(args, "shared_clock_pilot_batch_size", args.batch_size)),
             )
             with torch.enable_grad():
@@ -552,6 +561,9 @@ def eval_model(
                     physical_grid_size=int(getattr(args, "shared_clock_physical_grid_size", 65)),
                     pilot_batch_size=int(getattr(args, "shared_clock_pilot_batch_size", 16)),
                     pilot_num_batches=int(getattr(args, "shared_clock_pilot_num_batches", 4)),
+                    observation_microbatch=int(
+                        getattr(args, "shared_clock_observation_microbatch", 4)
+                    ),
                     cfg_scale=float(args.cfg_scale),
                     eps=float(getattr(args, "shared_clock_eps", 1.0e-6)),
                     jacobian_backend=str(getattr(args, "shared_clock_jacobian_backend", "probe")),

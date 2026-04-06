@@ -257,6 +257,7 @@ class RunExperimentsTest(unittest.TestCase):
                         'shared_clock_pilot_solver': 'heun2',
                         'shared_clock_pilot_batch_size': 8,
                         'shared_clock_pilot_num_batches': 2,
+                        'shared_clock_observation_microbatch': 3,
                         'shared_clock_eps': 1.0e-6,
                         'shared_clock_jacobian_backend': 'probe',
                         'shared_clock_jacobian_num_probes': 4,
@@ -273,6 +274,7 @@ class RunExperimentsTest(unittest.TestCase):
             self.assertIn('--shared_clock_family ab', cmd)
             self.assertIn('--shared_clock_physical_grid_size 33', cmd)
             self.assertIn('--shared_clock_pilot_num_batches 2', cmd)
+            self.assertIn('--shared_clock_observation_microbatch 3', cmd)
 
     def test_build_train_cmd_preserves_accum_iter(self):
         with tempfile.TemporaryDirectory() as tmpdir:

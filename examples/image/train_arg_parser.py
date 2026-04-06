@@ -443,6 +443,12 @@ def get_args_parser():
         help="Number of calibration batches used to build the offline shared clock.",
     )
     parser.add_argument(
+        "--shared_clock_observation_microbatch",
+        default=4,
+        type=int,
+        help="Trajectory microbatch size used during shared clock local-object extraction.",
+    )
+    parser.add_argument(
         "--shared_clock_eps",
         default=1.0e-6,
         type=float,

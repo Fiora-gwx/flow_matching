@@ -83,6 +83,7 @@ SHARED_CLOCK_DEFAULTS = {
     "shared_clock_physical_grid_size": None,
     "shared_clock_pilot_batch_size": None,
     "shared_clock_pilot_num_batches": None,
+    "shared_clock_observation_microbatch": None,
     "shared_clock_eps": None,
     "shared_clock_jacobian_backend": "",
     "shared_clock_jacobian_num_probes": None,
@@ -439,6 +440,9 @@ def _resolve_shared_clock_result_fields(spec: Dict[str, object]) -> Dict[str, ob
         "shared_clock_physical_grid_size": physical_grid_size,
         "shared_clock_pilot_batch_size": int(spec.get("shared_clock_pilot_batch_size", 16)),
         "shared_clock_pilot_num_batches": int(spec.get("shared_clock_pilot_num_batches", 4)),
+        "shared_clock_observation_microbatch": int(
+            spec.get("shared_clock_observation_microbatch", 4)
+        ),
         "shared_clock_eps": float(spec.get("shared_clock_eps", 1.0e-6)),
         "shared_clock_jacobian_backend": str(spec.get("shared_clock_jacobian_backend", "probe")),
         "shared_clock_jacobian_num_probes": int(spec.get("shared_clock_jacobian_num_probes", 4)),
@@ -500,6 +504,7 @@ def _shared_clock_fields_match(row: Dict[str, object], spec: Dict[str, object]) 
             "shared_clock_physical_grid_size",
             "shared_clock_pilot_batch_size",
             "shared_clock_pilot_num_batches",
+            "shared_clock_observation_microbatch",
             "shared_clock_jacobian_num_probes",
             "shared_clock_optimizer_steps",
         }:
@@ -704,6 +709,10 @@ class ExperimentManager:
             )
             flags.append(
                 f"--shared_clock_pilot_num_batches {spec.get('shared_clock_pilot_num_batches', 4)}"
+            )
+            flags.append(
+                "--shared_clock_observation_microbatch "
+                + str(spec.get("shared_clock_observation_microbatch", 4))
             )
             flags.append(f"--shared_clock_eps {spec.get('shared_clock_eps', 1.0e-6)}")
             flags.append(

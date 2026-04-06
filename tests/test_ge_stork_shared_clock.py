@@ -64,6 +64,7 @@ class SharedClockProfileTest(unittest.TestCase):
             physical_grid_size=5,
             pilot_batch_size=2,
             pilot_num_batches=1,
+            observation_microbatch=1,
             cfg_scale=0.0,
             eps=1.0e-6,
             jacobian_backend="probe",
@@ -77,6 +78,7 @@ class SharedClockProfileTest(unittest.TestCase):
         total_mass = torch.sum(profile.density * trapz_weights(profile.physical_grid))
         self.assertAlmostEqual(float(total_mass.item()), 1.0, places=5)
         self.assertTrue(torch.all(profile.tau_grid[1:] > profile.tau_grid[:-1]))
+        self.assertEqual(profile.observation_microbatch, 1)
 
     def test_shared_clock_schedule_reuses_same_profile_across_step_counts(self):
         profile = build_shared_clock(
@@ -89,6 +91,7 @@ class SharedClockProfileTest(unittest.TestCase):
             physical_grid_size=5,
             pilot_batch_size=2,
             pilot_num_batches=1,
+            observation_microbatch=1,
             cfg_scale=0.0,
             eps=1.0e-6,
             jacobian_backend="exact",
@@ -106,6 +109,38 @@ class SharedClockProfileTest(unittest.TestCase):
         self.assertAlmostEqual(float(schedule4.tau_grid[-1].item()), 1.0, places=6)
         self.assertAlmostEqual(float(schedule8.tau_grid[-1].item()), 1.0, places=6)
 
+    def test_vb_uses_va_density_as_optimizer_init(self):
+        shared_kwargs = dict(
+            velocity_model=TinyVelocityModel(),
+            data_loader=self.data_loader,
+            device=self.device,
+            path_family="linear",
+            pilot_solver="euler",
+            physical_grid_size=5,
+            pilot_batch_size=2,
+            pilot_num_batches=1,
+            observation_microbatch=1,
+            cfg_scale=0.0,
+            eps=1.0e-6,
+            jacobian_backend="probe",
+            jacobian_num_probes=2,
+            checkpoint_source="checkpoint-499.pth",
+            seed=0,
+        )
+        va_profile = build_shared_clock(
+            clock_family="va",
+            optimizer_steps=4,
+            optimizer_lr=0.05,
+            **shared_kwargs,
+        )
+        vb_profile = build_shared_clock(
+            clock_family="vb",
+            optimizer_steps=0,
+            optimizer_lr=0.05,
+            **shared_kwargs,
+        )
+        self.assertTrue(torch.allclose(vb_profile.density, va_profile.density, atol=1.0e-5, rtol=1.0e-5))
+
     def test_build_or_load_shared_clock_reuses_cache(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             output_dir = Path(tmpdir) / "eval_ep499_nfe12"
@@ -120,6 +155,7 @@ class SharedClockProfileTest(unittest.TestCase):
                 physical_grid_size=5,
                 pilot_batch_size=2,
                 pilot_num_batches=1,
+                observation_microbatch=1,
                 cfg_scale=0.0,
                 eps=1.0e-6,
                 jacobian_backend="probe",
