@@ -191,25 +191,27 @@ def _probe_generator_actions(
     probe_vectors: Tensor,
 ) -> Tensor:
     actions = []
-    x_input = x.detach().requires_grad_(True)
-    for probe in probe_vectors:
-        batch_probe = probe.unsqueeze(0).expand_as(x_input)
+    with torch.enable_grad():
+        x_input = x.detach().requires_grad_(True)
+        resolved_probes = probe_vectors.to(device=x_input.device, dtype=x_input.dtype)
+        for probe in resolved_probes:
+            batch_probe = probe.unsqueeze(0).expand_as(x_input)
 
-        def wrapped(x_input_batch: Tensor) -> Tensor:
-            return _velocity_eval(
-                velocity_model=velocity_model,
-                x=x_input_batch,
-                t=t,
-                labels=labels,
-                cfg_scale=cfg_scale,
+            def wrapped(x_input_batch: Tensor) -> Tensor:
+                return _velocity_eval(
+                    velocity_model=velocity_model,
+                    x=x_input_batch,
+                    t=t,
+                    labels=labels,
+                    cfg_scale=cfg_scale,
+                )
+
+            _, action = _jvp(
+                wrapped,
+                (x_input,),
+                (batch_probe,),
             )
-
-        _, action = _jvp(
-            wrapped,
-            (x_input,),
-            (batch_probe,),
-        )
-        actions.append(action.detach())
+            actions.append(action.detach())
     return torch.stack(actions, dim=1)
 
 
@@ -221,27 +223,28 @@ def _exact_generator_actions(
     cfg_scale: float,
 ) -> Tensor:
     batch_actions = []
-    for sample_index in range(x.shape[0]):
-        x_single = x[sample_index].detach().requires_grad_(True)
-        t_single = t[sample_index : sample_index + 1]
-        label_single = labels[sample_index : sample_index + 1]
+    with torch.enable_grad():
+        for sample_index in range(x.shape[0]):
+            x_single = x[sample_index].detach().requires_grad_(True)
+            t_single = t[sample_index : sample_index + 1]
+            label_single = labels[sample_index : sample_index + 1]
 
-        def wrapped(x_input_single: Tensor) -> Tensor:
-            velocity = _velocity_eval(
-                velocity_model=velocity_model,
-                x=x_input_single.unsqueeze(0),
-                t=t_single,
-                labels=label_single,
-                cfg_scale=cfg_scale,
+            def wrapped(x_input_single: Tensor) -> Tensor:
+                velocity = _velocity_eval(
+                    velocity_model=velocity_model,
+                    x=x_input_single.unsqueeze(0),
+                    t=t_single,
+                    labels=label_single,
+                    cfg_scale=cfg_scale,
+                )
+                return velocity.reshape(-1)
+
+            jacobian = torch.autograd.functional.jacobian(
+                wrapped,
+                x_single,
+                vectorize=True,
             )
-            return velocity.reshape(-1)
-
-        jacobian = torch.autograd.functional.jacobian(
-            wrapped,
-            x_single,
-            vectorize=True,
-        )
-        batch_actions.append(jacobian.detach())
+            batch_actions.append(jacobian.detach())
     return torch.stack(batch_actions, dim=0)
 
 
@@ -290,6 +293,7 @@ class SharedClockProfile:
     pilot_step_count: int
     pilot_batch_size: int
     pilot_num_batches: int
+    observation_microbatch: int
     num_trajectories: int
     jacobian_backend: str
     jacobian_num_probes: int
@@ -317,6 +321,7 @@ class SharedClockProfile:
             "pilot_step_count": int(self.pilot_step_count),
             "pilot_batch_size": int(self.pilot_batch_size),
             "pilot_num_batches": int(self.pilot_num_batches),
+            "observation_microbatch": int(self.observation_microbatch),
             "num_trajectories": int(self.num_trajectories),
             "jacobian_backend": self.jacobian_backend,
             "jacobian_num_probes": int(self.jacobian_num_probes),
@@ -346,6 +351,12 @@ class SharedClockProfile:
             pilot_step_count=int(payload["pilot_step_count"]),
             pilot_batch_size=int(payload["pilot_batch_size"]),
             pilot_num_batches=int(payload["pilot_num_batches"]),
+            observation_microbatch=int(
+                payload.get(
+                    "observation_microbatch",
+                    payload.get("metadata", {}).get("observation_microbatch", 1),
+                )
+            ),
             num_trajectories=int(payload["num_trajectories"]),
             jacobian_backend=str(payload["jacobian_backend"]),
             jacobian_num_probes=int(payload["jacobian_num_probes"]),
@@ -450,13 +461,19 @@ def sample_pilot_trajectories(
         )
         if sample.trajectory is None:
             raise RuntimeError("Pilot trajectory sampling must return full trajectories.")
-        trajectory_batches.append(sample.trajectory.permute(1, 0, *range(2, sample.trajectory.dim())).detach())
-        label_batches.append(labels.detach())
+        trajectory_batches.append(
+            sample.trajectory.permute(1, 0, *range(2, sample.trajectory.dim())).detach().cpu()
+        )
+        label_batches.append(labels.detach().cpu())
+        del samples
+        del x_init
+        del labels
+        del sample
 
     trajectories = torch.cat(trajectory_batches, dim=0)
     labels = torch.cat(label_batches, dim=0)
     return PilotTrajectoryArtifacts(
-        physical_grid=physical_grid.detach(),
+        physical_grid=physical_grid.detach().cpu(),
         trajectories=trajectories.detach(),
         labels=labels.detach(),
         pilot_solver=str(pilot_solver),
@@ -473,70 +490,91 @@ def extract_local_objects(
     *,
     velocity_model,
     pilot: PilotTrajectoryArtifacts,
+    device: torch.device,
     cfg_scale: float,
     require_generator: bool,
     jacobian_backend: str,
     jacobian_num_probes: int,
+    observation_microbatch: int,
 ) -> SharedClockObservations:
     """Extract Q_V, Q_A and their finite-difference D_t Q values on pilot states."""
     jacobian_backend = normalize_jacobian_backend(jacobian_backend)
-    trajectories = pilot.trajectories.to(device=pilot.trajectories.device, dtype=torch.float32)
-    labels = pilot.labels.to(device=trajectories.device)
+    resolved_microbatch = int(observation_microbatch)
+    if resolved_microbatch <= 0:
+        raise ValueError(
+            f"observation_microbatch must be positive. Got {observation_microbatch}."
+        )
+    trajectories = pilot.trajectories.detach().to(device=torch.device("cpu"), dtype=torch.float32)
+    labels = pilot.labels.detach().to(device=torch.device("cpu"))
     num_trajectories = int(trajectories.shape[0])
     time_count = int(trajectories.shape[1])
-    physical_grid = pilot.physical_grid.to(device=trajectories.device, dtype=torch.float32)
+    physical_grid = pilot.physical_grid.detach().to(device=torch.device("cpu"), dtype=torch.float32)
 
     velocity_values = []
     generator_values = []
     probe_vectors = None
     if require_generator and jacobian_backend == "probe":
         probe_vectors = _sample_probe_vectors(
-            trajectories[:, 0],
+            trajectories[0, 0].unsqueeze(0),
             probe_count=int(jacobian_num_probes),
             seed=int(pilot.seed) + 23057,
         )
 
     for time_index in range(time_count):
-        state_batch = trajectories[:, time_index].detach()
-        time_batch = torch.full(
-            (num_trajectories,),
-            float(physical_grid[time_index].item()),
-            device=state_batch.device,
-            dtype=state_batch.dtype,
-        )
-        with torch.enable_grad():
-            velocity = _velocity_eval(
-                velocity_model=velocity_model,
-                x=state_batch,
-                t=time_batch,
-                labels=labels,
-                cfg_scale=cfg_scale,
-            ).detach()
-        velocity_values.append(velocity)
+        state_cpu = trajectories[:, time_index]
+        velocity_chunks = []
+        generator_chunks = []
+        for x_chunk, y_chunk in zip(
+            state_cpu.split(resolved_microbatch),
+            labels.split(resolved_microbatch),
+        ):
+            x = x_chunk.to(device=device, dtype=torch.float32, non_blocking=True)
+            y = y_chunk.to(device=device, non_blocking=True)
+            time_batch = torch.full(
+                (x.shape[0],),
+                float(physical_grid[time_index].item()),
+                device=device,
+                dtype=x.dtype,
+            )
+            with torch.no_grad():
+                velocity = _velocity_eval(
+                    velocity_model=velocity_model,
+                    x=x,
+                    t=time_batch,
+                    labels=y,
+                    cfg_scale=cfg_scale,
+                )
+            velocity_chunks.append(velocity.detach().cpu())
 
-        if not require_generator:
-            continue
-        if jacobian_backend == "probe":
-            with torch.enable_grad():
-                generator_action = _probe_generator_actions(
-                    velocity_model=velocity_model,
-                    x=state_batch,
-                    t=time_batch,
-                    labels=labels,
-                    cfg_scale=cfg_scale,
-                    probe_vectors=probe_vectors,
-                )
-            generator_values.append(generator_action.detach())
-        elif jacobian_backend == "exact":
-            with torch.enable_grad():
-                generator_action = _exact_generator_actions(
-                    velocity_model=velocity_model,
-                    x=state_batch,
-                    t=time_batch,
-                    labels=labels,
-                    cfg_scale=cfg_scale,
-                )
-            generator_values.append(generator_action.detach())
+            if require_generator:
+                if jacobian_backend == "probe":
+                    generator_action = _probe_generator_actions(
+                        velocity_model=velocity_model,
+                        x=x,
+                        t=time_batch,
+                        labels=y,
+                        cfg_scale=cfg_scale,
+                        probe_vectors=probe_vectors,
+                    )
+                else:
+                    generator_action = _exact_generator_actions(
+                        velocity_model=velocity_model,
+                        x=x,
+                        t=time_batch,
+                        labels=y,
+                        cfg_scale=cfg_scale,
+                    )
+                generator_chunks.append(generator_action.detach().cpu())
+                del generator_action
+
+            del x
+            del y
+            del time_batch
+            del velocity
+
+        velocity_values.append(torch.cat(velocity_chunks, dim=0))
+        if require_generator:
+            generator_values.append(torch.cat(generator_chunks, dim=0))
 
     velocity_tensor = torch.stack(velocity_values, dim=1)
     velocity_derivatives = _central_time_derivative(velocity_tensor, physical_grid)
@@ -605,6 +643,15 @@ def _softplus_normalized_density(raw_u: Tensor, physical_grid: Tensor) -> Tensor
     return unnormalized / normalization
 
 
+def _inverse_softplus_stable(x: Tensor) -> Tensor:
+    threshold = torch.tensor(20.0, device=x.device, dtype=x.dtype)
+    return torch.where(
+        x > threshold,
+        x,
+        torch.log(torch.expm1(x).clamp_min(EPS)),
+    )
+
+
 def _clock_time_derivative(density: Tensor, physical_grid: Tensor) -> Tensor:
     derivative = torch.zeros_like(density)
     derivative[0] = (density[1] - density[0]) / (physical_grid[1] - physical_grid[0]).clamp(min=EPS)
@@ -666,13 +713,19 @@ def _optimize_density(
     clock_family: str,
     optimizer_steps: int,
     optimizer_lr: float,
+    init_profile: Optional[Tensor] = None,
 ) -> Tuple[Tensor, Tensor]:
-    raw_u = torch.zeros_like(observations.physical_grid, dtype=torch.float64, requires_grad=True)
+    physical_grid64 = observations.physical_grid.to(dtype=torch.float64)
+    if init_profile is not None:
+        init_density = init_profile.to(device=physical_grid64.device, dtype=torch.float64).clamp(min=1.0e-6)
+        raw_u = _inverse_softplus_stable(init_density).detach().clone().requires_grad_(True)
+    else:
+        raw_u = torch.zeros_like(physical_grid64, requires_grad=True)
     optimizer = torch.optim.Adam([raw_u], lr=float(optimizer_lr))
     trace = []
     for _ in range(int(optimizer_steps)):
         optimizer.zero_grad(set_to_none=True)
-        density = _softplus_normalized_density(raw_u, observations.physical_grid.to(dtype=torch.float64))
+        density = _softplus_normalized_density(raw_u, physical_grid64)
         if clock_family == "vb":
             loss = _state_level_objective(
                 observations=observations,
@@ -688,7 +741,7 @@ def _optimize_density(
         loss.backward()
         optimizer.step()
         trace.append(float(loss.detach().item()))
-    density = _softplus_normalized_density(raw_u.detach(), observations.physical_grid.to(dtype=torch.float64))
+    density = _softplus_normalized_density(raw_u.detach(), physical_grid64)
     return density.to(dtype=observations.physical_grid.dtype), torch.tensor(trace, dtype=observations.physical_grid.dtype)
 
 
@@ -744,6 +797,7 @@ def build_shared_clock(
     physical_grid_size: int,
     pilot_batch_size: int,
     pilot_num_batches: int,
+    observation_microbatch: int,
     cfg_scale: float,
     eps: float,
     jacobian_backend: str,
@@ -754,11 +808,28 @@ def build_shared_clock(
     seed: int,
     output_dir: Optional[Path] = None,
 ) -> SharedClockProfile:
-    """Build one shared clock profile offline, independent of downstream eval NFE."""
+    """Build one shared clock profile offline on the main process, independent of downstream eval NFE."""
     clock_family = normalize_shared_clock_family(clock_family)
+    resolved_microbatch = int(observation_microbatch)
+    if resolved_microbatch <= 0:
+        raise ValueError(
+            f"observation_microbatch must be positive. Got {observation_microbatch}."
+        )
+    resolved_backend = normalize_jacobian_backend(jacobian_backend)
+    total_trajectories = int(pilot_batch_size) * int(pilot_num_batches)
+    logger.info(
+        "Shared clock build: family=%s, cache=MISS, total_trajectories=%d, "
+        "grid_size=%d, obs_microbatch=%d, backend=%s, probes=%d",
+        clock_family,
+        total_trajectories,
+        int(physical_grid_size),
+        resolved_microbatch,
+        resolved_backend,
+        int(jacobian_num_probes),
+    )
     physical_grid = build_uniform_time_grid(
         step_count=max(1, int(physical_grid_size) - 1),
-        device=device,
+        device=torch.device("cpu"),
         dtype=torch.float32,
     )
     pilot = sample_pilot_trajectories(
@@ -775,10 +846,12 @@ def build_shared_clock(
     observations = extract_local_objects(
         velocity_model=velocity_model,
         pilot=pilot,
+        device=device,
         cfg_scale=cfg_scale,
         require_generator=clock_family in GENERATOR_CLOCK_FAMILIES,
-        jacobian_backend=jacobian_backend,
+        jacobian_backend=resolved_backend,
         jacobian_num_probes=jacobian_num_probes,
+        observation_microbatch=resolved_microbatch,
     )
 
     if clock_family in {"va", "aa"}:
@@ -790,11 +863,20 @@ def build_shared_clock(
         density = _normalize_density_from_profile(alpha_profile, physical_grid)
         objective_trace = torch.empty(0, device=physical_grid.device, dtype=physical_grid.dtype)
     else:
+        init_profile = _normalize_density_from_profile(
+            _analytic_alpha_profile(
+                observations=observations,
+                clock_family=("va" if clock_family == "vb" else "aa"),
+                eps=eps,
+            ),
+            physical_grid,
+        )
         density, objective_trace = _optimize_density(
             observations=observations,
             clock_family=clock_family,
             optimizer_steps=optimizer_steps,
             optimizer_lr=optimizer_lr,
+            init_profile=init_profile,
         )
         alpha_profile = density.detach().clone()
 
@@ -813,8 +895,9 @@ def build_shared_clock(
         pilot_step_count=int(pilot.pilot_step_count),
         pilot_batch_size=int(pilot_batch_size),
         pilot_num_batches=int(pilot_num_batches),
+        observation_microbatch=int(resolved_microbatch),
         num_trajectories=int(observations.num_trajectories),
-        jacobian_backend=normalize_jacobian_backend(jacobian_backend),
+        jacobian_backend=resolved_backend,
         jacobian_num_probes=int(jacobian_num_probes),
         optimizer_steps=int(optimizer_steps),
         optimizer_lr=float(optimizer_lr),
@@ -830,7 +913,8 @@ def build_shared_clock(
             "pilot_nfe_budget": int(pilot.pilot_nfe_budget),
             "pilot_step_count": int(pilot.pilot_step_count),
             "physical_grid_size": int(physical_grid_size),
-            "jacobian_backend": normalize_jacobian_backend(jacobian_backend),
+            "observation_microbatch": int(resolved_microbatch),
+            "jacobian_backend": resolved_backend,
             "jacobian_num_probes": int(jacobian_num_probes),
             "optimizer_steps": int(optimizer_steps),
             "optimizer_lr": float(optimizer_lr),
@@ -848,6 +932,7 @@ def build_shared_clock(
                 "pilot_solver": pilot.pilot_solver,
                 "pilot_nfe_budget": pilot.pilot_nfe_budget,
                 "pilot_step_count": pilot.pilot_step_count,
+                "observation_microbatch": int(resolved_microbatch),
             },
             output_dir / "shared_clock_pilot_trajectories.pt",
         )
@@ -863,6 +948,7 @@ def _shared_clock_signature(
     physical_grid_size: int,
     pilot_batch_size: int,
     pilot_num_batches: int,
+    observation_microbatch: int,
     jacobian_backend: str,
     jacobian_num_probes: int,
     optimizer_steps: int,
@@ -879,6 +965,7 @@ def _shared_clock_signature(
         "physical_grid_size": int(physical_grid_size),
         "pilot_batch_size": int(pilot_batch_size),
         "pilot_num_batches": int(pilot_num_batches),
+        "observation_microbatch": int(observation_microbatch),
         "jacobian_backend": normalize_jacobian_backend(jacobian_backend),
         "jacobian_num_probes": int(jacobian_num_probes),
         "optimizer_steps": int(optimizer_steps),
@@ -923,6 +1010,7 @@ def build_or_load_shared_clock(
     physical_grid_size: int,
     pilot_batch_size: int,
     pilot_num_batches: int,
+    observation_microbatch: int,
     cfg_scale: float,
     eps: float,
     jacobian_backend: str,
@@ -942,6 +1030,7 @@ def build_or_load_shared_clock(
         physical_grid_size=physical_grid_size,
         pilot_batch_size=pilot_batch_size,
         pilot_num_batches=pilot_num_batches,
+        observation_microbatch=observation_microbatch,
         jacobian_backend=jacobian_backend,
         jacobian_num_probes=jacobian_num_probes,
         optimizer_steps=optimizer_steps,
@@ -959,7 +1048,17 @@ def build_or_load_shared_clock(
     if resolved_cache_path is not None and resolved_cache_path.exists():
         payload = torch.load(resolved_cache_path, map_location="cpu")
         if payload.get("signature") == signature:
-            logger.info("Loaded shared clock profile from cache %s.", resolved_cache_path)
+            logger.info(
+                "Shared clock build: family=%s, cache=HIT, total_trajectories=%d, "
+                "grid_size=%d, obs_microbatch=%d, backend=%s, probes=%d, path=%s",
+                normalize_shared_clock_family(clock_family),
+                int(pilot_batch_size) * int(pilot_num_batches),
+                int(physical_grid_size),
+                int(observation_microbatch),
+                normalize_jacobian_backend(jacobian_backend),
+                int(jacobian_num_probes),
+                resolved_cache_path,
+            )
             profile = SharedClockProfile.from_dict(payload["profile"])
             if output_dir is not None:
                 _write_shared_clock_profile_summary(profile=profile, output_dir=output_dir)
@@ -979,6 +1078,7 @@ def build_or_load_shared_clock(
         physical_grid_size=physical_grid_size,
         pilot_batch_size=pilot_batch_size,
         pilot_num_batches=pilot_num_batches,
+        observation_microbatch=observation_microbatch,
         cfg_scale=cfg_scale,
         eps=eps,
         jacobian_backend=jacobian_backend,

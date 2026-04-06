@@ -23,6 +23,7 @@ base_config:
   shared_clock_pilot_solver: heun2
   shared_clock_pilot_batch_size: 16
   shared_clock_pilot_num_batches: 4
+  shared_clock_observation_microbatch: 4
   shared_clock_eps: 1.0e-6
   shared_clock_jacobian_backend: probe
   shared_clock_jacobian_num_probes: 4
