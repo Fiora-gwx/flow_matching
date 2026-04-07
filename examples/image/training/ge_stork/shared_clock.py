@@ -4,20 +4,13 @@ import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Iterable, Optional, Tuple
+from typing import Dict, Iterable, Iterator, Optional, Tuple
 
 import torch
 from torch import Tensor
 
 from training.fixed_step_solver import ReparameterizedSchedule, solve_fixed_budget
 from training.nonuniform_nodes import build_uniform_time_grid
-from training.solver_aware.monitors import (
-    _cycle_loader,
-    _jvp,
-    _make_generator,
-    _take_monitor_batch,
-    _velocity_fn,
-)
 
 
 logger = logging.getLogger(__name__)
@@ -28,6 +21,66 @@ OPTIMIZED_CLOCK_FAMILIES = frozenset({"vb", "ab"})
 GENERATOR_CLOCK_FAMILIES = frozenset({"aa", "ab"})
 PILOT_SOLVERS = frozenset({"euler", "heun2", "stork4"})
 JACOBIAN_BACKENDS = frozenset({"exact", "probe"})
+
+
+def _make_generator(device: torch.device, seed: int) -> torch.Generator:
+    if device.type == "cuda":
+        generator = torch.Generator(device=device)
+    else:
+        generator = torch.Generator()
+    generator.manual_seed(int(seed))
+    return generator
+
+
+def _cycle_loader(data_loader: Iterable) -> Iterator[Tuple[Tensor, Tensor]]:
+    iterator = iter(data_loader)
+    while True:
+        try:
+            yield next(iterator)
+        except StopIteration:
+            iterator = iter(data_loader)
+
+
+def _take_monitor_batch(
+    loader_iter: Iterator[Tuple[Tensor, Tensor]],
+    batch_size: int,
+) -> Tuple[Tensor, Tensor]:
+    sample_chunks = []
+    label_chunks = []
+    total = 0
+    while total < batch_size:
+        samples, labels = next(loader_iter)
+        remaining = batch_size - total
+        take = min(int(samples.shape[0]), remaining)
+        sample_chunks.append(samples[:take])
+        label_chunks.append(labels[:take])
+        total += take
+    return torch.cat(sample_chunks, dim=0), torch.cat(label_chunks, dim=0)
+
+
+def _velocity_fn(
+    velocity_model,
+    x: Tensor,
+    s: Tensor,
+    labels: Tensor,
+    cfg_scale: float,
+) -> Tensor:
+    try:
+        return velocity_model(
+            x,
+            s,
+            cfg_scale=cfg_scale,
+            label=labels,
+            use_autocast=False,
+        )
+    except TypeError:
+        return velocity_model(x, s, cfg_scale=cfg_scale, label=labels)
+
+
+def _jvp(function, inputs, tangents):
+    if hasattr(torch, "func") and hasattr(torch.func, "jvp"):
+        return torch.func.jvp(function, inputs, tangents)
+    return torch.autograd.functional.jvp(function, inputs, tangents)
 
 
 def normalize_shared_clock_family(clock_family: str) -> str:
@@ -212,7 +265,7 @@ def _probe_generator_actions(
                 (batch_probe,),
             )
             actions.append(action.detach())
-    return torch.stack(actions, dim=1)
+    return torch.cat([action.unsqueeze(1) for action in actions], dim=1)
 
 
 def _exact_generator_actions(
@@ -245,7 +298,7 @@ def _exact_generator_actions(
                 vectorize=True,
             )
             batch_actions.append(jacobian.detach())
-    return torch.stack(batch_actions, dim=0)
+    return torch.cat([action.unsqueeze(0) for action in batch_actions], dim=0)
 
 
 @dataclass
@@ -576,7 +629,7 @@ def extract_local_objects(
         if require_generator:
             generator_values.append(torch.cat(generator_chunks, dim=0))
 
-    velocity_tensor = torch.stack(velocity_values, dim=1)
+    velocity_tensor = torch.cat([value.unsqueeze(1) for value in velocity_values], dim=1)
     velocity_derivatives = _central_time_derivative(velocity_tensor, physical_grid)
     velocity_norms = _flatten_norm(velocity_tensor)
 
@@ -584,7 +637,7 @@ def extract_local_objects(
     generator_derivatives = None
     generator_norms = None
     if generator_values:
-        generator_tensor = torch.stack(generator_values, dim=1)
+        generator_tensor = torch.cat([value.unsqueeze(1) for value in generator_values], dim=1)
         generator_derivatives = _central_time_derivative(generator_tensor, physical_grid)
         if jacobian_backend == "exact":
             generator_norms = generator_tensor.flatten(start_dim=2).norm(dim=-1)

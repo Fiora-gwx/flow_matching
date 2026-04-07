@@ -42,12 +42,6 @@ from training.metric_utils import (
     prepare_inception_input,
     requested_metrics,
 )
-from training.solver_aware.fixed_point import maybe_build_solver_aware_artifacts
-from training.tack import (
-    TACKProfile,
-    build_tack_config_from_namespace,
-    maybe_build_tack_profile,
-)
 from training.train_loop import MASK_TOKEN
 
 try:
@@ -62,24 +56,11 @@ except ImportError:  # pragma: no cover - depends on runtime environment.
 
 logger = logging.getLogger(__name__)
 PRINT_FREQUENCY = 50
-TACK_NUMERIC_SUMMARY_KEYS = {
-    "requested_eval_nfe",
-    "realized_nfe",
-    "tack_num_accepted_steps",
-    "tack_num_heun_steps",
-    "tack_num_ab2_steps",
-    "tack_num_ab3_steps",
-    "tack_num_halvings",
-    "tack_num_doublings",
-    "tack_mean_defect",
-    "tack_mean_chi",
-}
 SOLVER_STATS_DICT_KEYS = {"mode_histogram", "dyadic_step_histogram"}
 SOLVER_STATS_BOOL_KEYS = {
     "used_tail_step",
     "is_exact_budget",
     "is_shared_budget",
-    "tack_profile_loaded_from_cache",
 }
 
 
@@ -203,7 +184,7 @@ def _build_monitor_loader(
         int(
             batch_size
             if batch_size is not None
-            else args.solver_aware_monitor_batch_size
+            else args.batch_size
         ),
     )
     if dataset is None or not distributed_mode.is_dist_avail_and_initialized():
@@ -339,7 +320,7 @@ def eval_model(
         model_output_type=getattr(args, "model_output_type", "velocity"),
     )
     cfg_scaled_model.train(False)
-    solver_aware_monitor_model = CFGScaledModel(
+    clock_monitor_model = CFGScaledModel(
         model=_unwrap_eval_model(model),
         path_family=args.path_family,
         clock_family=args.clock_family,
@@ -347,7 +328,7 @@ def eval_model(
         signal_scale_sq=getattr(args, "signal_scale_sq", None),
         model_output_type=getattr(args, "model_output_type", "velocity"),
     )
-    solver_aware_monitor_model.train(False)
+    clock_monitor_model.train(False)
 
     if args.discrete_flow_matching:
         scheduler = PolynomialConvexScheduler(n=3.0)
@@ -368,164 +349,9 @@ def eval_model(
     if args.output_dir:
         (Path(args.output_dir) / "snapshots").mkdir(parents=True, exist_ok=True)
 
-    solver_aware_artifacts = None
-    solver_aware_time_grid = None
-    solver_aware_monitor_family = str(
-        getattr(args, "solver_aware_monitor_family", "legacy_continuous")
-    )
     shared_clock_mode = str(getattr(args, "shared_clock_mode", "off"))
     shared_clock_schedule = None
-    defect_based_monitor = solver_aware_monitor_family == "defect_based"
-    allow_eval_loader_for_monitor = bool(
-        getattr(args, "solver_aware_allow_eval_loader_for_monitor", False)
-    )
-    if (
-        shared_clock_mode != "off"
-        and getattr(args, "solver_aware_clock_mode", "off") != "off"
-    ):
-        raise ValueError(
-            "shared_clock_mode and solver_aware_clock_mode are mutually exclusive. "
-            "Choose exactly one offline clock branch."
-        )
-    if (
-        not args.discrete_flow_matching
-        and str(getattr(args, "sampling_solver", "")) != "tack"
-        and getattr(args, "solver_aware_clock_mode", "off") != "off"
-        and getattr(args, "solver_aware_use_nodes", False)
-    ):
-        if defect_based_monitor and args.solver_aware_target_solver != args.sampling_solver:
-            logger.warning(
-                "Current clock is built for one solver but consumed by another solver: "
-                "target_solver=%s, sampling_solver=%s. The theorem-backed interpretation only applies "
-                "when target_solver == sampling_solver, so this run should be treated as cross-solver heuristic transfer.",
-                args.solver_aware_target_solver,
-                args.sampling_solver,
-            )
-        step_count = _solver_step_count(
-            solver_name=args.sampling_solver,
-            nfe_budget=args.eval_nfe,
-        )
-        if distributed_mode.is_main_process():
-            use_eval_loader_for_monitor = monitor_data_loader is None
-            if not use_eval_loader_for_monitor:
-                logger.info(
-                    "Solver-aware monitor will use the provided calibration/train loader for monitor_family=%s.",
-                    solver_aware_monitor_family,
-                )
-            elif not allow_eval_loader_for_monitor:
-                logger.info(
-                    "Solver-aware monitor safety gate is active for monitor_family=%s: a valid cache hit is required and the current eval/test loader will not be used.",
-                    solver_aware_monitor_family,
-                )
-            else:
-                logger.warning(
-                    "Solver-aware monitor is allowed to use the current eval/test loader because "
-                    "--solver_aware_allow_eval_loader_for_monitor was set. This may cause evaluation leakage."
-                )
-            monitor_loader = _build_monitor_loader(
-                args=args,
-                data_loader=(
-                    data_loader if use_eval_loader_for_monitor else monitor_data_loader
-                ),
-            )
-            with torch.enable_grad():
-                solver_aware_artifacts = maybe_build_solver_aware_artifacts(
-                    mode=args.solver_aware_clock_mode,
-                    k=args.solver_aware_k,
-                    use_nodes=args.solver_aware_use_nodes,
-                    velocity_model=solver_aware_monitor_model,
-                    data_loader=monitor_loader,
-                    device=device,
-                    path_family=args.path_family,
-                    clock_family=args.clock_family,
-                    target_solver=args.solver_aware_target_solver,
-                    estimator=args.solver_aware_monitor_estimator,
-                    monitor_family=getattr(
-                        args,
-                        "solver_aware_monitor_family",
-                        "legacy_continuous",
-                    ),
-                    budget_mode=getattr(
-                        args,
-                        "solver_aware_budget_mode",
-                        "single_budget",
-                    ),
-                    target_nfe=int(getattr(args, "solver_aware_target_nfe", 0)),
-                    target_nfe_list=tuple(
-                        int(value)
-                        for value in getattr(args, "solver_aware_target_nfe_list", [])
-                    ),
-                    target_nfe_weights=tuple(
-                        float(value)
-                        for value in getattr(args, "solver_aware_target_nfe_weights", [])
-                    ),
-                    grid_size=args.solver_aware_monitor_grid_size,
-                    batch_size=args.solver_aware_monitor_batch_size,
-                    eps=args.solver_aware_eps,
-                    cfg_scale=args.cfg_scale,
-                    nfe_budget=args.eval_nfe,
-                    step_count=step_count,
-                    checkpoint_source=str(
-                        getattr(args, "solver_aware_monitor_source_checkpoint", "")
-                        or getattr(args, "resume", "")
-                    ),
-                    seed=int(getattr(args, "seed", 0)),
-                    cache_path=args.solver_aware_cache_path,
-                    sampling_solver=args.sampling_solver,
-                    using_eval_loader_for_monitor=use_eval_loader_for_monitor,
-                    require_cache_hit=bool(
-                        use_eval_loader_for_monitor
-                        and not allow_eval_loader_for_monitor
-                    ),
-                    refuse_recompute_when_cache_exists=True,
-                    stork_effective_order=float(
-                        getattr(args, "solver_aware_stork_effective_order", 4.0)
-                    ),
-                    defect_subdivide=int(
-                        getattr(args, "solver_aware_defect_subdivide", 2)
-                    ),
-                    output_dir=Path(args.output_dir) if args.output_dir else None,
-                )
-            if solver_aware_artifacts is not None:
-                logger.info(
-                    "Solver-aware monitor source resolved as loaded_from_cache=%s, eval_loader_used=%s for monitor_family=%s.",
-                    bool(
-                        solver_aware_artifacts.distribution_info.get(
-                            "monitor_loaded_from_cache", False
-                        )
-                    ),
-                    bool(
-                        solver_aware_artifacts.distribution_info.get(
-                            "monitor_used_eval_loader", False
-                        )
-                    ),
-                    solver_aware_monitor_family,
-                )
-                solver_aware_time_grid = solver_aware_artifacts.nodes.to(device=device, dtype=torch.float32)
-        if distributed_mode.is_dist_avail_and_initialized():
-            has_nodes = torch.tensor(
-                [1 if distributed_mode.is_main_process() and solver_aware_time_grid is not None else 0],
-                device=device,
-                dtype=torch.int64,
-            )
-            torch.distributed.broadcast(has_nodes, src=0)
-            if int(has_nodes.item()) == 1:
-                if not distributed_mode.is_main_process():
-                    solver_aware_time_grid = torch.empty(
-                        step_count + 1,
-                        device=device,
-                        dtype=torch.float32,
-                    )
-                solver_aware_time_grid = _broadcast_tensor(
-                    solver_aware_time_grid,
-                    device=device,
-                )
-
-    if (
-        not args.discrete_flow_matching
-        and str(getattr(args, "sampling_solver", "")) != "tack"
-        and shared_clock_mode != "off"
-    ):
+    if not args.discrete_flow_matching and shared_clock_mode != "off":
         if monitor_data_loader is None:
             raise ValueError(
                 "shared_clock_mode requires an explicit calibration/train loader. "
@@ -553,7 +379,7 @@ def eval_model(
             with torch.enable_grad():
                 shared_clock_profile = build_or_load_shared_clock(
                     clock_family=str(getattr(args, "shared_clock_family", "ab")),
-                    velocity_model=solver_aware_monitor_model,
+                    velocity_model=clock_monitor_model,
                     data_loader=shared_clock_loader,
                     device=device,
                     path_family=args.path_family,
@@ -608,42 +434,6 @@ def eval_model(
                 nfe_budget=int(schedule_payload["nfe_budget"]),
                 step_count=int(schedule_payload["step_count"]),
             )
-
-    tack_config = None
-    tack_profile = None
-    if not args.discrete_flow_matching and str(getattr(args, "sampling_solver", "")) == "tack":
-        tack_config = build_tack_config_from_namespace(
-            args,
-            requested_nfe=int(args.eval_nfe),
-            checkpoint_source=str(getattr(args, "resume", "") or ""),
-        )
-        if str(tack_config.mode) != "online_only":
-            use_eval_loader_for_tack = monitor_data_loader is None
-            tack_loader = _build_monitor_loader(
-                args=args,
-                data_loader=(
-                    data_loader if use_eval_loader_for_tack else monitor_data_loader
-                ),
-                batch_size=int(tack_config.profile_batch_size),
-            )
-            profile_payload = None
-            if distributed_mode.is_main_process():
-                logger.info(
-                    "TACK offline profile will use %s loader.",
-                    "eval/test" if use_eval_loader_for_tack else "calibration/train",
-                )
-                with torch.enable_grad():
-                    tack_profile = maybe_build_tack_profile(
-                        config=tack_config,
-                        velocity_model=solver_aware_monitor_model,
-                        data_loader=tack_loader,
-                        device=device,
-                        output_dir=Path(args.output_dir) if args.output_dir else None,
-                    )
-                profile_payload = None if tack_profile is None else tack_profile.to_dict()
-            profile_payload = _broadcast_optional_object(profile_payload)
-            if profile_payload is not None and not distributed_mode.is_main_process():
-                tack_profile = TACKProfile(**profile_payload)
 
     metric_backend = None
     if "fid" in active_metrics or "precision_recall" in active_metrics:
@@ -706,18 +496,13 @@ def eval_model(
                 "label": labels,
                 "cfg_scale": args.cfg_scale,
             }
-            if args.sampling_solver == "tack":
-                solve_kwargs["tack_config"] = tack_config
-                solve_kwargs["tack_profile"] = tack_profile
-                if args.output_dir and distributed_mode.is_main_process():
-                    solve_kwargs["artifact_dir"] = Path(args.output_dir)
             sampling = solve_fixed_budget(
                 velocity_model=cfg_scaled_model,
                 x_init=x_0,
                 solver_name=args.sampling_solver,
                 nfe_budget=args.eval_nfe,
                 return_trajectory=False,
-                time_grid=solver_aware_time_grid,
+                time_grid=None,
                 reparameterized_schedule=shared_clock_schedule,
                 **solve_kwargs,
             )
@@ -811,9 +596,9 @@ def eval_model(
         "synthetic_samples": float(num_synthetic),
     }
     if finalized_solver_stats is not None:
-        for key in TACK_NUMERIC_SUMMARY_KEYS:
-            if key in finalized_solver_stats:
-                results[key] = float(finalized_solver_stats[key])
+        for key, value in finalized_solver_stats.items():
+            if isinstance(value, (int, float)) and key not in results:
+                results[key] = float(value)
     if metric_backend is not None and "fid" in active_metrics:
         results["fid"] = float(metric_backend.compute().detach().cpu())
     if metric_backend is not None and "precision_recall" in active_metrics:

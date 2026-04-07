@@ -818,8 +818,8 @@ def _sample_stratified_time(
                 generator=generator,
             )
         )
-    stacked = torch.cat(samples, dim=0)
-    return stacked[torch.randperm(stacked.shape[0], device=device, generator=generator)]
+    merged = torch.cat(samples, dim=0)
+    return merged[torch.randperm(merged.shape[0], device=device, generator=generator)]
 
 
 def _sample_stratified_mixed_time(
@@ -865,8 +865,8 @@ def _sample_stratified_mixed_time(
         )
         selector = torch.rand(count, device=device, generator=generator) < mixed_lambda
         samples.append(torch.where(selector, importance_samples, uniform_samples))
-    stacked = torch.cat(samples, dim=0)
-    return stacked[torch.randperm(stacked.shape[0], device=device, generator=generator)]
+    merged = torch.cat(samples, dim=0)
+    return merged[torch.randperm(merged.shape[0], device=device, generator=generator)]
 
 
 def sample_time_by_strategy(

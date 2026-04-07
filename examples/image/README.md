@@ -52,11 +52,8 @@ python3 examples/image/train.py \
 ```bash
 python3 experiments/run_experiments.py --config experiments/configs/ft_clock/linear_main.yaml
 python3 experiments/run_experiments.py --config experiments/configs/ft_clock/trig_vp.yaml
-python3 experiments/run_experiments.py --config experiments/configs/ft_clock/solver_sensitivity.yaml
-python3 experiments/run_experiments.py --config experiments/configs/ft_clock/tack_solver_sensitivity.yaml
+python3 experiments/run_experiments.py --config experiments/configs/ft_clock/ge_stork_linear_uniform_12way.yaml
 ```
-
-`tack` 采样器和参数说明见 [`docs/tack.md`](../../docs/tack.md)。
 
 如果某个实验组已经训练完成，后续只是在 YAML 的 `metrics` 中新增了 `inception_score`，重新执行同一个 `run_experiments.py --config ...` 即可；runner 会复用现有 checkpoint，只回填缺失评估，不会重新训练。
 
@@ -83,27 +80,6 @@ python3 experiments/visualize_results.py \
   --out experiments/results/ft_clock_linear_main_uparam/plots_heatmap \
   --artifact_group ft_clock_linear_main_uparam \
   --plot_heatmap_only
-```
-
-## 机制分析
-
-```bash
-python3 experiments/analyze_mechanisms.py --config experiments/configs/ft_clock/mechanism_analysis.yaml
-```
-
-`mechanism_analysis.yaml` 支持两种 checkpoint 选择方式：
-
-- `checkpoint_from`
-- `checkpoint_epoch`
-- `checkpoint_path`
-
-## 采样过程图与轨迹图
-
-默认直接读取前序实验结果：
-
-```bash
-python3 experiments/plot_sampling_progression.py
-python3 experiments/plot_particle_trajectory_comparison.py
 ```
 
 ## 结果口径

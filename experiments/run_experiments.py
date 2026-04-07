@@ -38,41 +38,6 @@ logger = logging.getLogger(__name__)
 LEGACY_CONFIG_KEYS = {"alpha", "use_ft_eqm", "use_nt_ft_fm", "importance_weighting"}
 LEGACY_CLOCK_FAMILIES = {"ft_linear_beta", "ft_vp_beta"}
 CURRICULUM_SIGNATURE = "warmup0.3_linear_to1"
-EVAL_ONLY_SOLVER_AWARE_CHECKPOINT_FLAG_PREFIXES = (
-    "--solver_aware_checkpoint_path",
-    "--solver_aware_checkpoint_from_experiment",
-    "--solver_aware_checkpoint_epoch",
-)
-SOLVER_AWARE_DEFAULTS = {
-    "solver_aware_clock_mode": "off",
-    "solver_aware_target_solver": "",
-    "solver_aware_monitor_solver": "",
-    "solver_aware_monitor_family": "",
-    "solver_aware_budget_mode": "",
-    "solver_aware_target_nfe": None,
-    "solver_aware_target_nfe_list": "",
-    "solver_aware_target_nfe_weights": "",
-    "solver_aware_target_step_count": None,
-    "solver_aware_budget_step_counts": "",
-    "solver_aware_k": 0,
-    "solver_aware_monitor_estimator": "",
-    "solver_aware_eps": None,
-    "solver_aware_use_nodes": False,
-    "node_family": "uniform",
-    "monitor_source_checkpoint": "",
-    "monitor_grid_size": None,
-    "solver_aware_monitor_batch_size": None,
-    "solver_aware_theorem_backed": "",
-    "solver_aware_reference_solver": "",
-    "solver_aware_reference_nfe": None,
-    "solver_aware_reference_grid_size": None,
-    "solver_aware_reference_cache_path": "",
-    "solver_aware_reference_source": "",
-    "solver_aware_reference_cache_hit": "",
-    "solver_aware_defect_subdivide": None,
-    "solver_aware_stork_effective_order": None,
-    "solver_aware_q_curve_name": "",
-}
 SHARED_CLOCK_DEFAULTS = {
     "shared_clock_mode": "off",
     "shared_clock_family": "",
@@ -91,18 +56,6 @@ SHARED_CLOCK_DEFAULTS = {
     "shared_clock_optimizer_lr": None,
     "shared_clock_cache_path": "",
 }
-TACK_RESULT_DEFAULTS = {
-    "requested_eval_nfe": None,
-    "realized_nfe": None,
-    "tack_num_accepted_steps": None,
-    "tack_num_heun_steps": None,
-    "tack_num_ab2_steps": None,
-    "tack_num_ab3_steps": None,
-    "tack_num_halvings": None,
-    "tack_num_doublings": None,
-    "tack_mean_defect": None,
-    "tack_mean_chi": None,
-}
 
 
 def _shared_clock_family_tag(clock_family: str) -> str:
@@ -119,14 +72,6 @@ def _shared_clock_pilot_nfe_budget(pilot_solver: str, physical_grid_size: int) -
     if str(pilot_solver) == "heun2":
         return step_count * 2
     return step_count
-
-
-def _solver_aware_step_count(target_solver: str, nfe_budget: int) -> int:
-    if target_solver in {"euler", "stork4"}:
-        return int(nfe_budget)
-    if target_solver == "heun2":
-        return int(nfe_budget // 2 + (1 if nfe_budget % 2 else 0))
-    return int(nfe_budget)
 
 
 def load_config(config_path: Path) -> Dict:
@@ -312,113 +257,6 @@ def _checkpoint_semantics_for_results(
     return _resolve_strategy_fields(effective)
 
 
-def _resolve_solver_aware_result_fields(
-    spec: Dict[str, object],
-    checkpoint_path: Optional[Path],
-    current_nfe: Optional[int] = None,
-) -> Dict[str, object]:
-    mode = str(spec.get("solver_aware_clock_mode", "off"))
-    use_nodes = bool(spec.get("solver_aware_use_nodes", False))
-    target_solver = str(spec.get("solver_aware_target_solver", spec.get("sampling_solver", "")))
-    if mode == "off" or not use_nodes:
-        return dict(SOLVER_AWARE_DEFAULTS)
-
-    monitor_solver = target_solver
-    monitor_family = str(
-        spec.get("solver_aware_monitor_family", "legacy_continuous")
-    )
-    budget_mode = str(spec.get("solver_aware_budget_mode", "single_budget"))
-    theorem_backed = ""
-    if target_solver == "stork4":
-        theorem_backed = "false" if monitor_family == "legacy_continuous" else "false"
-    elif target_solver in {"euler", "heun2"}:
-        theorem_backed = "true"
-    if monitor_family == "legacy_continuous" and target_solver == "stork4":
-        monitor_solver = "heun2"
-
-    resolved_target_nfe = None
-    target_nfe_list = ""
-    target_nfe_weights = ""
-    target_step_count = None
-    budget_step_counts = ""
-    reference_solver = ""
-    reference_nfe = None
-    reference_grid_size = None
-    reference_cache_path = ""
-    reference_source = ""
-    defect_subdivide = None
-    stork_effective_order = None
-    q_curve_name = ""
-    if monitor_family == "defect_based":
-        if budget_mode == "single_budget":
-            resolved_target_nfe = int(
-                spec.get("solver_aware_target_nfe", 0) or current_nfe or 0
-            )
-            target_step_count = _solver_aware_step_count(
-                target_solver=target_solver,
-                nfe_budget=resolved_target_nfe,
-            )
-            target_nfe_list = str(resolved_target_nfe)
-            budget_step_counts = f"{resolved_target_nfe}:{target_step_count}"
-            q_curve_name = "Q_path_defect"
-        else:
-            raw_list = [
-                int(value)
-                for value in spec.get("solver_aware_target_nfe_list", [])
-                if int(value) > 0
-            ]
-            target_nfe_list = "|".join(str(value) for value in raw_list)
-            raw_weights = [float(value) for value in spec.get("solver_aware_target_nfe_weights", [])]
-            if raw_weights:
-                target_nfe_weights = "|".join(str(value) for value in raw_weights)
-            budget_step_counts = "|".join(
-                f"{budget}:{_solver_aware_step_count(target_solver=target_solver, nfe_budget=budget)}"
-                for budget in raw_list
-            )
-            q_curve_name = "M_tilde_path_defect"
-        defect_subdivide = int(spec.get("solver_aware_defect_subdivide", 2))
-        stork_effective_order = float(spec.get("solver_aware_stork_effective_order", 4.0))
-
-    return {
-        "solver_aware_clock_mode": mode,
-        "solver_aware_target_solver": target_solver,
-        "solver_aware_monitor_solver": monitor_solver,
-        "solver_aware_monitor_family": monitor_family,
-        "solver_aware_budget_mode": budget_mode if monitor_family == "defect_based" else "single_budget",
-        "solver_aware_target_nfe": resolved_target_nfe,
-        "solver_aware_target_nfe_list": target_nfe_list,
-        "solver_aware_target_nfe_weights": target_nfe_weights,
-        "solver_aware_target_step_count": target_step_count,
-        "solver_aware_budget_step_counts": budget_step_counts,
-        "solver_aware_k": int(spec.get("solver_aware_k", 0)),
-        "solver_aware_monitor_estimator": (
-            "defect"
-            if monitor_family == "defect_based"
-            else str(spec.get("solver_aware_monitor_estimator", "auto"))
-        ),
-        "solver_aware_eps": spec.get("solver_aware_eps"),
-        "solver_aware_use_nodes": "true" if use_nodes else "false",
-        "node_family": "solver_aware",
-        "monitor_source_checkpoint": str(
-            checkpoint_path
-            or spec.get("solver_aware_checkpoint_path")
-            or ""
-        ),
-        "monitor_grid_size": spec.get("solver_aware_monitor_grid_size"),
-        "solver_aware_monitor_batch_size": spec.get("solver_aware_monitor_batch_size"),
-        "solver_aware_theorem_backed": theorem_backed,
-        "solver_aware_reference_solver": reference_solver,
-        "solver_aware_reference_nfe": reference_nfe,
-        "solver_aware_reference_grid_size": reference_grid_size,
-        "solver_aware_reference_cache_path": reference_cache_path,
-        "solver_aware_reference_source": reference_source,
-        "solver_aware_reference_cache_hit": "",
-        "solver_aware_defect_subdivide": defect_subdivide,
-        "solver_aware_stork_effective_order": stork_effective_order,
-        "solver_aware_q_curve_name": q_curve_name,
-    }
-
-
 def _resolve_shared_clock_result_fields(spec: Dict[str, object]) -> Dict[str, object]:
     mode = str(spec.get("shared_clock_mode", "off"))
     if mode == "off":
@@ -450,42 +288,6 @@ def _resolve_shared_clock_result_fields(spec: Dict[str, object]) -> Dict[str, ob
         "shared_clock_optimizer_lr": float(spec.get("shared_clock_optimizer_lr", 0.05)),
         "shared_clock_cache_path": str(spec.get("shared_clock_cache_path", "none")),
     }
-
-
-def _solver_aware_fields_match(row: Dict[str, object], spec: Dict[str, object]) -> bool:
-    expected = _resolve_solver_aware_result_fields(
-        spec=spec,
-        checkpoint_path=None,
-        current_nfe=int(row.get("nfe", 0) or 0),
-    )
-    for field, expected_value in expected.items():
-        observed = row.get(field, SOLVER_AWARE_DEFAULTS.get(field, ""))
-        if observed in {"", None}:
-            observed = SOLVER_AWARE_DEFAULTS.get(field, "")
-        if expected_value in {"", None}:
-            if observed not in {"", None}:
-                return False
-            continue
-        if field in {
-            "solver_aware_k",
-            "solver_aware_target_nfe",
-            "solver_aware_target_step_count",
-            "monitor_grid_size",
-            "solver_aware_monitor_batch_size",
-            "solver_aware_reference_nfe",
-            "solver_aware_reference_grid_size",
-            "solver_aware_defect_subdivide",
-        }:
-            if int(observed) != int(expected_value):
-                return False
-            continue
-        if field in {"solver_aware_eps", "solver_aware_stork_effective_order"}:
-            if float(observed) != float(expected_value):
-                return False
-            continue
-        if str(observed) != str(expected_value):
-            return False
-    return True
 
 
 def _shared_clock_fields_match(row: Dict[str, object], spec: Dict[str, object]) -> bool:
@@ -588,31 +390,6 @@ class ExperimentManager:
             )
             if spec.get("clock_beta") is not None:
                 flags.append(f"--clock_beta {spec['clock_beta']}")
-            if spec.get("sampling_solver") == "tack" or any(
-                str(key).startswith("tack_") for key in spec.keys()
-            ):
-                flags.extend(
-                    [
-                        f"--tack_profile_grid_size {spec.get('tack_profile_grid_size', 64)}",
-                        f"--tack_profile_batch_size {spec.get('tack_profile_batch_size', 256)}",
-                        f"--tack_profile_num_batches {spec.get('tack_profile_num_batches', 8)}",
-                        f"--tack_profile_eps {spec.get('tack_profile_eps', 1.0e-8)}",
-                        f"--tack_lambda {spec.get('tack_lambda', 1.0)}",
-                        f"--tack_eta {spec.get('tack_eta', 0.25)}",
-                        f"--tack_profile_cache {_bool_flag_value(spec.get('tack_profile_cache', True))}",
-                        f"--tack_force_recompute_profile {_bool_flag_value(spec.get('tack_force_recompute_profile', False))}",
-                        f"--tack_chi_lo {spec.get('tack_chi_lo', 0.10)}",
-                        f"--tack_chi_hi {spec.get('tack_chi_hi', 0.50)}",
-                        f"--tack_tau {spec.get('tack_tau', 0.05)}",
-                        f"--tack_startup_steps {spec.get('tack_startup_steps', 2)}",
-                        f"--tack_enable_dyadic {_bool_flag_value(spec.get('tack_enable_dyadic', True))}",
-                        f"--tack_batch_shared_adapt {_bool_flag_value(spec.get('tack_batch_shared_adapt', True))}",
-                        f"--tack_min_dr_scale {spec.get('tack_min_dr_scale', 0.25)}",
-                        f"--tack_max_dr_scale {spec.get('tack_max_dr_scale', 4.0)}",
-                        f"--tack_monitor_estimator {spec.get('tack_monitor_estimator', 'auto')}",
-                        f"--tack_mode {spec.get('tack_mode', 'full')}",
-                    ]
-                )
         if spec.get("metrics"):
             flags.append("--metrics " + " ".join(spec["metrics"]))
         if spec.get("precision_recall_neighbors") is not None:
@@ -633,68 +410,6 @@ class ExperimentManager:
             flags.append(f"--class_drop_prob {spec['class_drop_prob']}")
         if spec.get("fid_samples") is not None:
             flags.append(f"--fid_samples {spec['fid_samples']}")
-        if spec.get("solver_aware_clock_mode") not in {None, "", "off"}:
-            flags.append(f"--solver_aware_clock_mode {spec['solver_aware_clock_mode']}")
-            flags.append(
-                f"--solver_aware_target_solver {spec.get('solver_aware_target_solver', spec.get('sampling_solver', 'euler'))}"
-            )
-            flags.append(
-                f"--solver_aware_monitor_family {spec.get('solver_aware_monitor_family', 'legacy_continuous')}"
-            )
-            flags.append(
-                f"--solver_aware_budget_mode {spec.get('solver_aware_budget_mode', 'single_budget')}"
-            )
-            if spec.get("solver_aware_target_nfe") is not None:
-                flags.append(f"--solver_aware_target_nfe {spec.get('solver_aware_target_nfe', 0)}")
-            if spec.get("solver_aware_target_nfe_list"):
-                flags.append(
-                    "--solver_aware_target_nfe_list "
-                    + " ".join(str(value) for value in spec["solver_aware_target_nfe_list"])
-                )
-            if spec.get("solver_aware_target_nfe_weights"):
-                flags.append(
-                    "--solver_aware_target_nfe_weights "
-                    + " ".join(str(value) for value in spec["solver_aware_target_nfe_weights"])
-                )
-            flags.append(f"--solver_aware_k {spec.get('solver_aware_k', 0)}")
-            flags.append(
-                f"--solver_aware_monitor_estimator {spec.get('solver_aware_monitor_estimator', 'auto')}"
-            )
-            if spec.get("solver_aware_monitor_grid_size") is not None:
-                flags.append(
-                    f"--solver_aware_monitor_grid_size {spec['solver_aware_monitor_grid_size']}"
-                )
-            if spec.get("solver_aware_monitor_batch_size") is not None:
-                flags.append(
-                    f"--solver_aware_monitor_batch_size {spec['solver_aware_monitor_batch_size']}"
-                )
-            if spec.get("solver_aware_eps") is not None:
-                flags.append(f"--solver_aware_eps {spec['solver_aware_eps']}")
-            if spec.get("solver_aware_cache_path") not in {None, ""}:
-                flags.append(f"--solver_aware_cache_path {spec['solver_aware_cache_path']}")
-            if spec.get("solver_aware_stork_effective_order") is not None:
-                flags.append(
-                    f"--solver_aware_stork_effective_order {spec.get('solver_aware_stork_effective_order', 4.0)}"
-                )
-            if spec.get("solver_aware_defect_subdivide") is not None:
-                flags.append(
-                    f"--solver_aware_defect_subdivide {spec.get('solver_aware_defect_subdivide', 2)}"
-                )
-            if spec.get("solver_aware_use_nodes", False):
-                flags.append("--solver_aware_use_nodes")
-            if spec.get("solver_aware_checkpoint_path") not in {None, ""}:
-                flags.append(
-                    f"--solver_aware_checkpoint_path {spec['solver_aware_checkpoint_path']}"
-                )
-            if spec.get("solver_aware_checkpoint_from_experiment") not in {None, ""}:
-                flags.append(
-                    "--solver_aware_checkpoint_from_experiment "
-                    + str(spec["solver_aware_checkpoint_from_experiment"])
-                )
-            if spec.get("solver_aware_checkpoint_epoch") is not None:
-                flags.append(
-                    f"--solver_aware_checkpoint_epoch {spec['solver_aware_checkpoint_epoch']}"
-                )
         if spec.get("shared_clock_mode") not in {None, "", "off"}:
             flags.append(f"--shared_clock_mode {spec['shared_clock_mode']}")
             flags.append(f"--shared_clock_family {spec.get('shared_clock_family', 'ab')}")
@@ -765,16 +480,7 @@ class ExperimentManager:
         eval_spec = dict(spec)
         if metrics_override is not None:
             eval_spec["metrics"] = metrics_override
-        if (
-            eval_spec.get("solver_aware_clock_mode") not in {None, "", "off"}
-            and eval_spec.get("solver_aware_cache_path") in {None, ""}
-        ):
-            eval_spec["solver_aware_cache_path"] = str(output_dir / "solver_aware_profile.pt")
         flags = self._base_flags(eval_spec, output_dir)
-        flags = self._drop_flag_prefixes(
-            flags,
-            blocked_prefixes=EVAL_ONLY_SOLVER_AWARE_CHECKPOINT_FLAG_PREFIXES,
-        )
         flags.extend(
             [
                 "--eval_only",
@@ -800,11 +506,6 @@ class ExperimentManager:
             checkpoint_path=checkpoint_path,
             spec=spec,
         )
-        solver_aware_fields = _resolve_solver_aware_result_fields(
-            spec=spec,
-            checkpoint_path=checkpoint_path,
-            current_nfe=int(stats.get("nfe", nfe)),
-        )
         shared_clock_fields = _resolve_shared_clock_result_fields(spec)
         clock_param_name, clock_param_value = infer_clock_parameter(
             effective_spec.get("clock_family", "uniform"),
@@ -816,8 +517,9 @@ class ExperimentManager:
                 "step_count",
                 "real_samples",
                 "synthetic_samples",
-                *TACK_RESULT_DEFAULTS.keys(),
                 "requested_nfe_budget",
+                "requested_eval_nfe",
+                "realized_nfe",
             }:
                 continue
             rows.append(
@@ -846,22 +548,11 @@ class ExperimentManager:
                     "time_sampling_strategy": effective_spec.get("time_sampling_strategy", "uniform"),
                     "mixed_lambda": effective_spec.get("mixed_lambda", 0.5),
                     "stratified_bins": effective_spec.get("stratified_bins", 16),
-                    **solver_aware_fields,
                     **shared_clock_fields,
                     "requested_eval_nfe": float(stats.get("requested_eval_nfe", nfe)),
-                    "realized_nfe": (
-                        None
-                        if stats.get("realized_nfe") in {"", None}
-                        else float(stats.get("realized_nfe"))
-                    ),
-                    "tack_num_accepted_steps": stats.get("tack_num_accepted_steps"),
-                    "tack_num_heun_steps": stats.get("tack_num_heun_steps"),
-                    "tack_num_ab2_steps": stats.get("tack_num_ab2_steps"),
-                    "tack_num_ab3_steps": stats.get("tack_num_ab3_steps"),
-                    "tack_num_halvings": stats.get("tack_num_halvings"),
-                    "tack_num_doublings": stats.get("tack_num_doublings"),
-                    "tack_mean_defect": stats.get("tack_mean_defect"),
-                    "tack_mean_chi": stats.get("tack_mean_chi"),
+                    "realized_nfe": None
+                    if stats.get("realized_nfe") in {"", None}
+                    else float(stats.get("realized_nfe")),
                 }
             )
         return rows
@@ -899,7 +590,6 @@ class ExperimentManager:
             and _row_strategy_fields(row).get("time_sampling_strategy") == spec.get("time_sampling_strategy", "uniform")
             and float(_row_strategy_fields(row).get("mixed_lambda", 0.5)) == float(spec.get("mixed_lambda", 0.5))
             and int(_row_strategy_fields(row).get("stratified_bins", 16)) == int(spec.get("stratified_bins", 16))
-            and _solver_aware_fields_match(row=row, spec=spec)
             and _shared_clock_fields_match(row=row, spec=spec)
         ]
         return sorted({str(row["metric"]) for row in matching_rows})
@@ -940,14 +630,6 @@ class ExperimentManager:
             spec.setdefault("eval_nfes", [base_config.get("eval_nfe", 50)])
             spec.setdefault("artifact_group", self.exp_group_name)
             spec = _resolve_strategy_fields(spec)
-            if (
-                spec.get("shared_clock_mode") not in {None, "", "off"}
-                and spec.get("solver_aware_clock_mode") not in {None, "", "off"}
-            ):
-                raise ValueError(
-                    "shared_clock_mode and solver_aware_clock_mode are mutually exclusive. "
-                    f"exp_name={spec.get('name', '<unnamed>')}."
-                )
 
             exp_dir = self.base_dir / spec["dataset"] / spec["name"]
             exp_dir.mkdir(parents=True, exist_ok=True)
