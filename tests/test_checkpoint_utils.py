@@ -123,7 +123,7 @@ class CheckpointUtilsTest(unittest.TestCase):
                 },
                 spec={
                     'dataset': 'cifar10',
-                    'name': 'linear_uniform_euler_defect_single_budget',
+                    'name': 'linear_uniform_euler_shared_clock',
                     'path_family': 'linear',
                     'clock_family': 'uniform',
                     'model_output_type': 'base_velocity',
@@ -185,7 +185,7 @@ class CheckpointUtilsTest(unittest.TestCase):
                     },
                     spec={
                         'dataset': 'cifar10',
-                        'name': 'linear_uniform_euler_defect_single_budget',
+                        'name': 'linear_uniform_euler_shared_clock',
                         'path_family': 'linear',
                         'clock_family': 'uniform',
                         'model_output_type': 'base_velocity',
@@ -229,7 +229,7 @@ class CheckpointUtilsTest(unittest.TestCase):
                     },
                     spec={
                         'dataset': 'cifar10',
-                        'name': 'linear_uniform_euler_defect_single_budget',
+                        'name': 'linear_uniform_euler_shared_clock',
                         'path_family': 'linear',
                         'clock_family': 'uniform',
                         'model_output_type': 'base_velocity',

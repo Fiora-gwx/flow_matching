@@ -19,10 +19,9 @@ def get_grad_norm_(parameters, norm_type: float = 2.0) -> Tensor:
     if norm_type == torch.inf:
         total_norm = max(p.grad.detach().abs().max().to(device) for p in parameters)
     else:
+        norms = [torch.norm(p.grad.detach(), norm_type).to(device).unsqueeze(0) for p in parameters]
         total_norm = torch.norm(
-            torch.stack(
-                [torch.norm(p.grad.detach(), norm_type).to(device) for p in parameters]
-            ),
+            torch.cat(norms, dim=0),
             norm_type,
         )
     return total_norm

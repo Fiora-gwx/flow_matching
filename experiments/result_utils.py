@@ -29,36 +29,8 @@ BASE_RESULT_FIELDS = [
     "time_sampling_strategy",
     "mixed_lambda",
     "stratified_bins",
-]
-SOLVER_AWARE_RESULT_FIELDS = [
-    "solver_aware_clock_mode",
-    "solver_aware_target_solver",
-    "solver_aware_monitor_solver",
-    "solver_aware_monitor_family",
-    "solver_aware_budget_mode",
-    "solver_aware_target_nfe",
-    "solver_aware_target_nfe_list",
-    "solver_aware_target_nfe_weights",
-    "solver_aware_target_step_count",
-    "solver_aware_budget_step_counts",
-    "solver_aware_k",
-    "solver_aware_monitor_estimator",
-    "solver_aware_eps",
-    "solver_aware_use_nodes",
-    "node_family",
-    "monitor_source_checkpoint",
-    "monitor_grid_size",
-    "solver_aware_monitor_batch_size",
-    "solver_aware_theorem_backed",
-    "solver_aware_reference_solver",
-    "solver_aware_reference_nfe",
-    "solver_aware_reference_grid_size",
-    "solver_aware_reference_cache_path",
-    "solver_aware_reference_source",
-    "solver_aware_reference_cache_hit",
-    "solver_aware_defect_subdivide",
-    "solver_aware_stork_effective_order",
-    "solver_aware_q_curve_name",
+    "requested_eval_nfe",
+    "realized_nfe",
 ]
 SHARED_CLOCK_RESULT_FIELDS = [
     "shared_clock_mode",
@@ -78,21 +50,7 @@ SHARED_CLOCK_RESULT_FIELDS = [
     "shared_clock_optimizer_lr",
     "shared_clock_cache_path",
 ]
-TACK_RESULT_FIELDS = [
-    "requested_eval_nfe",
-    "realized_nfe",
-    "tack_num_accepted_steps",
-    "tack_num_heun_steps",
-    "tack_num_ab2_steps",
-    "tack_num_ab3_steps",
-    "tack_num_halvings",
-    "tack_num_doublings",
-    "tack_mean_defect",
-    "tack_mean_chi",
-]
-LEGACY_CURRENT_RESULT_FIELDS = BASE_RESULT_FIELDS + SOLVER_AWARE_RESULT_FIELDS
-CURRENT_RESULT_FIELDS = LEGACY_CURRENT_RESULT_FIELDS + SHARED_CLOCK_RESULT_FIELDS
-RESULT_FIELDS = CURRENT_RESULT_FIELDS + TACK_RESULT_FIELDS
+RESULT_FIELDS = BASE_RESULT_FIELDS + SHARED_CLOCK_RESULT_FIELDS
 
 NUMERIC_FIELDS = {
     "seed": int,
@@ -108,16 +66,8 @@ OPTIONAL_NUMERIC_FIELDS = {
     "clock_param_value": float,
     "mixed_lambda": float,
     "stratified_bins": int,
-    "solver_aware_k": int,
-    "solver_aware_eps": float,
-    "solver_aware_target_nfe": int,
-    "solver_aware_target_step_count": int,
-    "monitor_grid_size": int,
-    "solver_aware_monitor_batch_size": int,
-    "solver_aware_reference_nfe": int,
-    "solver_aware_reference_grid_size": int,
-    "solver_aware_defect_subdivide": int,
-    "solver_aware_stork_effective_order": float,
+    "requested_eval_nfe": float,
+    "realized_nfe": float,
     "shared_clock_pilot_nfe_budget": int,
     "shared_clock_pilot_step_count": int,
     "shared_clock_physical_grid_size": int,
@@ -128,16 +78,6 @@ OPTIONAL_NUMERIC_FIELDS = {
     "shared_clock_jacobian_num_probes": int,
     "shared_clock_optimizer_steps": int,
     "shared_clock_optimizer_lr": float,
-    "requested_eval_nfe": float,
-    "realized_nfe": float,
-    "tack_num_accepted_steps": float,
-    "tack_num_heun_steps": float,
-    "tack_num_ab2_steps": float,
-    "tack_num_ab3_steps": float,
-    "tack_num_halvings": float,
-    "tack_num_doublings": float,
-    "tack_mean_defect": float,
-    "tack_mean_chi": float,
 }
 METRIC_OUTPUTS = {
     "fid": ("fid",),
@@ -170,32 +110,15 @@ def validate_results_schema(csv_path: Path) -> None:
     header = _read_header(csv_path)
     if not header:
         return
-    legacy_solver_aware_fields = [
-        "solver_aware_clock_mode",
-        "solver_aware_target_solver",
-        "solver_aware_monitor_solver",
-        "solver_aware_k",
-        "solver_aware_monitor_estimator",
-        "solver_aware_eps",
-        "solver_aware_use_nodes",
-        "node_family",
-        "monitor_source_checkpoint",
-        "monitor_grid_size",
-        "solver_aware_monitor_batch_size",
-        "solver_aware_theorem_backed",
-    ]
     accepted_headers = {
         tuple(BASE_RESULT_FIELDS),
-        tuple(BASE_RESULT_FIELDS + legacy_solver_aware_fields),
-        tuple(LEGACY_CURRENT_RESULT_FIELDS),
-        tuple(CURRENT_RESULT_FIELDS),
         tuple(RESULT_FIELDS),
     }
     if tuple(header) not in accepted_headers:
         raise ValueError(
             f"Result schema mismatch in {csv_path}. "
             f"Expected header {BASE_RESULT_FIELDS} or {RESULT_FIELDS}, got {header}. "
-            "Migrate or remove the legacy results.csv before writing new FT-clock results."
+            "Remove the stale results.csv before writing new FT-clock results."
         )
 
 
@@ -214,14 +137,6 @@ def append_result_rows(csv_path: Path, rows: Iterable[Dict[str, object]]) -> Non
     rows = list(rows)
     ensure_results_file(csv_path)
     fieldnames = _read_header(csv_path) or RESULT_FIELDS
-    missing_extra_fields = [field for field in RESULT_FIELDS if field not in fieldnames]
-    if missing_extra_fields:
-        for row in rows:
-            if any(row.get(field) not in {"", None, False} for field in missing_extra_fields):
-                raise ValueError(
-                    f"Cannot append rows with fields {missing_extra_fields} to legacy-schema CSV {csv_path}. "
-                    "Use a fresh artifact_group/results.csv so the extended schema can be written."
-                )
     with open(csv_path, "a", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         for row in rows:
@@ -242,12 +157,8 @@ def _coerce_row(row: Dict[str, str]) -> Dict[str, object]:
             result[field] = caster(row[field])
         else:
             result[field] = None
-    for field in SOLVER_AWARE_RESULT_FIELDS:
-        result.setdefault(field, "")
     for field in SHARED_CLOCK_RESULT_FIELDS:
         result.setdefault(field, "")
-    for field in TACK_RESULT_FIELDS:
-        result.setdefault(field, None)
     return result
 
 
@@ -417,14 +328,6 @@ def aggregate_seed_rows(
             "step_count",
             "requested_eval_nfe",
             "realized_nfe",
-            "tack_num_accepted_steps",
-            "tack_num_heun_steps",
-            "tack_num_ab2_steps",
-            "tack_num_ab3_steps",
-            "tack_num_halvings",
-            "tack_num_doublings",
-            "tack_mean_defect",
-            "tack_mean_chi",
         }
         group_fields = [
             field
@@ -452,14 +355,6 @@ def aggregate_seed_rows(
             "step_count",
             "requested_eval_nfe",
             "realized_nfe",
-            "tack_num_accepted_steps",
-            "tack_num_heun_steps",
-            "tack_num_ab2_steps",
-            "tack_num_ab3_steps",
-            "tack_num_halvings",
-            "tack_num_doublings",
-            "tack_mean_defect",
-            "tack_mean_chi",
         ):
             observed = [
                 float(row[sample_field])

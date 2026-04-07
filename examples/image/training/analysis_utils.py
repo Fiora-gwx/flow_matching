@@ -10,7 +10,6 @@ from training.continuous_runtime import (
     sample_time_by_strategy,
 )
 from training.fixed_step_solver import solve_fixed_budget
-from training.tack import build_tack_config_from_namespace, maybe_build_tack_profile
 
 
 @torch.no_grad()
@@ -114,45 +113,14 @@ def collect_trajectory_profile(
     labels = labels if labels is not None else torch.zeros(sample_shape[0], dtype=torch.long, device=device)
     for nfe in args.eval_nfes:
         x_init = torch.randn(sample_shape, dtype=torch.float32, device=device)
-        solve_kwargs = {
-            "label": labels,
-            "cfg_scale": args.cfg_scale,
-        }
-        if args.sampling_solver == "tack":
-            tack_config = build_tack_config_from_namespace(
-                args,
-                requested_nfe=int(nfe),
-                checkpoint_source=str(getattr(args, "resume", "") or ""),
-            )
-            if str(tack_config.mode) != "online_only":
-                if profile_data_loader is None:
-                    raise ValueError(
-                        "collect_trajectory_profile requires profile_data_loader when sampling_solver=tack "
-                        "and tack_mode is not online_only."
-                    )
-                profile_dir = None if artifact_root is None else artifact_root / f"tack_nfe{int(nfe)}"
-                with torch.enable_grad():
-                    tack_profile = maybe_build_tack_profile(
-                        config=tack_config,
-                        velocity_model=model_wrapper,
-                        data_loader=profile_data_loader,
-                        device=device,
-                        output_dir=profile_dir,
-                    )
-            else:
-                profile_dir = None if artifact_root is None else artifact_root / f"tack_nfe{int(nfe)}"
-                tack_profile = None
-            solve_kwargs["tack_config"] = tack_config
-            solve_kwargs["tack_profile"] = tack_profile
-            if profile_dir is not None:
-                solve_kwargs["artifact_dir"] = profile_dir
         sample = solve_fixed_budget(
             velocity_model=model_wrapper,
             x_init=x_init,
             solver_name=args.sampling_solver,
             nfe_budget=int(nfe),
             return_trajectory=True,
-            **solve_kwargs,
+            label=labels,
+            cfg_scale=args.cfg_scale,
         )
         if sample.deltas is None:
             continue

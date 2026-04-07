@@ -59,6 +59,8 @@ def make_row(
         'time_sampling_strategy': time_sampling_strategy,
         'mixed_lambda': mixed_lambda,
         'stratified_bins': stratified_bins,
+        'requested_eval_nfe': float(nfe),
+        'realized_nfe': float(nfe),
     }
 
 
@@ -162,65 +164,26 @@ class ResultUtilsTest(unittest.TestCase):
             csv_path.write_text(','.join(BASE_RESULT_FIELDS) + '\n', encoding='utf-8')
             validate_results_schema(csv_path)
 
-    def test_append_solver_aware_rows_to_base_schema_requires_new_file(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            csv_path = Path(tmpdir) / 'results.csv'
-            csv_path.write_text(','.join(BASE_RESULT_FIELDS) + '\n', encoding='utf-8')
-            row = dict(self.rows[0])
-            row['solver_aware_clock_mode'] = 'training_free'
-            row['node_family'] = 'solver_aware'
-            with self.assertRaises(ValueError):
-                append_result_rows(csv_path, [row])
-
-    def test_validate_results_schema_accepts_legacy_solver_aware_header(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            csv_path = Path(tmpdir) / 'results.csv'
-            legacy_header = BASE_RESULT_FIELDS + [
-                'solver_aware_clock_mode',
-                'solver_aware_target_solver',
-                'solver_aware_monitor_solver',
-                'solver_aware_k',
-                'solver_aware_monitor_estimator',
-                'solver_aware_eps',
-                'solver_aware_use_nodes',
-                'node_family',
-                'monitor_source_checkpoint',
-                'monitor_grid_size',
-                'solver_aware_monitor_batch_size',
-                'solver_aware_theorem_backed',
-            ]
-            csv_path.write_text(','.join(legacy_header) + '\n', encoding='utf-8')
-            validate_results_schema(csv_path)
-
-    def test_aggregate_seed_rows_averages_tack_runtime_fields(self):
+    def test_aggregate_seed_rows_averages_runtime_fields(self):
         rows = [
             {
-                **make_row('t0', 0, 'uniform', None, 10.0),
-                'solver': 'tack',
+                **make_row('r0', 0, 'uniform', None, 10.0),
+                'solver': 'heun2',
                 'requested_eval_nfe': 12.0,
                 'realized_nfe': 11.0,
-                'tack_num_accepted_steps': 10.0,
-                'tack_num_heun_steps': 2.0,
-                'tack_mean_defect': 0.04,
             },
             {
-                **make_row('t1', 1, 'uniform', None, 8.0),
-                'solver': 'tack',
+                **make_row('r1', 1, 'uniform', None, 8.0),
+                'solver': 'heun2',
                 'requested_eval_nfe': 12.0,
                 'realized_nfe': 13.0,
-                'tack_num_accepted_steps': 12.0,
-                'tack_num_heun_steps': 3.0,
-                'tack_mean_defect': 0.06,
             },
         ]
         aggregated = aggregate_seed_rows(rows)
         self.assertEqual(len(aggregated), 1)
-        self.assertEqual(aggregated[0]['solver'], 'tack')
+        self.assertEqual(aggregated[0]['solver'], 'heun2')
         self.assertEqual(aggregated[0]['requested_eval_nfe'], 12.0)
         self.assertEqual(aggregated[0]['realized_nfe'], 12.0)
-        self.assertEqual(aggregated[0]['tack_num_accepted_steps'], 11.0)
-        self.assertEqual(aggregated[0]['tack_num_heun_steps'], 2.5)
-        self.assertAlmostEqual(aggregated[0]['tack_mean_defect'], 0.05)
 
 
 if __name__ == '__main__':

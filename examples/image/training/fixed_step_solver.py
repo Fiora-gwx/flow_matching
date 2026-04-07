@@ -6,7 +6,6 @@ from torch import Tensor
 
 from training.nonuniform_nodes import resolve_time_grid
 from training.stork_solver import STORKState, stork4_step
-from training.tack import solve_tack
 
 
 STEP_NFE_COST = {
@@ -218,40 +217,8 @@ def solve_fixed_budget(
     reparameterized_schedule: Optional[ReparameterizedSchedule] = None,
     **model_extras,
 ) -> FixedStepSample:
-    tack_config = model_extras.pop("tack_config", None)
-    tack_profile = model_extras.pop("tack_profile", None)
-    artifact_dir = model_extras.pop("artifact_dir", None)
-
     if time_grid is not None and reparameterized_schedule is not None:
         raise ValueError("time_grid and reparameterized_schedule are mutually exclusive.")
-
-    if solver_name == "tack":
-        if time_grid is not None:
-            raise ValueError("sampling_solver=tack does not accept an external fixed time_grid.")
-        if reparameterized_schedule is not None:
-            raise ValueError("sampling_solver=tack does not support reparameterized schedules.")
-        if tack_config is None:
-            raise ValueError("sampling_solver=tack requires tack_config.")
-        tack_output = solve_tack(
-            velocity_model=velocity_model,
-            x_init=x_init,
-            config=tack_config,
-            profile=tack_profile,
-            return_trajectory=return_trajectory,
-            artifact_dir=artifact_dir,
-            **model_extras,
-        )
-        return FixedStepSample(
-            sample=tack_output.sample,
-            nfe=tack_output.nfe,
-            step_count=tack_output.step_count,
-            time_grid=tack_output.time_grid,
-            step_methods=tack_output.step_methods,
-            tau_grid=None,
-            trajectory=tack_output.trajectory,
-            deltas=tack_output.deltas,
-            solver_stats=tack_output.solver_stats,
-        )
 
     if solver_name == "stork4":
         step_count = nfe_budget
@@ -339,7 +306,7 @@ def solve_fixed_budget(
         trajectory = None
         deltas = None
         if states is not None:
-            trajectory = torch.stack(states, dim=0)
+            trajectory = torch.cat([state.unsqueeze(0) for state in states], dim=0)
             deltas = trajectory[1:] - trajectory[:-1]
 
         solver_stats = build_solver_stats(
@@ -562,7 +529,7 @@ def solve_fixed_budget(
     trajectory = None
     deltas = None
     if states is not None:
-        trajectory = torch.stack(states, dim=0)
+        trajectory = torch.cat([state.unsqueeze(0) for state in states], dim=0)
         deltas = trajectory[1:] - trajectory[:-1]
 
     solver_stats = build_solver_stats(
